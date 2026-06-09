@@ -364,6 +364,16 @@ export async function GET(_req: NextRequest) {
 
         setCachedOrders(enrichedOrders, Date.now() + CACHE_TTL_MS)
 
+        // Proactively scan for delivered orders to trigger post-delivery WhatsApp journeys
+        try {
+          const { checkAndTriggerDeliveryJourneys } = require('@/src/services/customerJourney.service')
+          checkAndTriggerDeliveryJourneys(enrichedOrders).catch((err: any) =>
+            console.error('⚠️ Failed to check/trigger post-delivery journeys:', err)
+          )
+        } catch (e) {
+          console.error('⚠️ Failed to load post-delivery journey trigger:', e)
+        }
+
         // Proactively scan for RTO email alerts
         try {
           const { shootRtoEmailAlert } = require('@/src/services/emailService')

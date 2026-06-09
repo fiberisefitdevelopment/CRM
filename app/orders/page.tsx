@@ -167,6 +167,7 @@ export default function ShiprocketDashboardPage() {
   })
   const [pageLoading, setPageLoading] = useState<boolean>(false)
   const [syncing, setSyncing] = useState<boolean>(false)
+  const [exporting, setExporting] = useState<boolean>(false)
   const syncTimeoutRef = useRef<any>(null)
 
   // Search & Basic Sorting States
@@ -857,6 +858,99 @@ export default function ShiprocketDashboardPage() {
     }
   }
 
+  // ── Export to Google Sheets ──
+  const handleExportToSheets = async () => {
+    try {
+      setExporting(true)
+      
+      const queryParams = new URLSearchParams({
+        tab: currentTab,
+        all: 'true'
+      })
+
+      if (debouncedSearchQuery) queryParams.set('search', debouncedSearchQuery)
+      if (financialFilter !== 'all') queryParams.set('financial', financialFilter)
+      if (filterPaymentType !== 'all') queryParams.set('payment', filterPaymentType)
+      if (filterChannel !== 'all') queryParams.set('channel', filterChannel)
+      if (filterCourier !== 'all') queryParams.set('courier', filterCourier)
+      if (filterPickupLocation !== 'all') queryParams.set('pickup', filterPickupLocation)
+      if (filterWeightClass !== 'all') queryParams.set('weight', filterWeightClass)
+      if (filterRtoRisk !== 'all') queryParams.set('rto', filterRtoRisk)
+      if (minPrice) queryParams.set('min_price', minPrice)
+      if (maxPrice) queryParams.set('max_price', maxPrice)
+      if (datePreset !== 'all') queryParams.set('date_preset', datePreset)
+      if (startDate) queryParams.set('start_date', startDate)
+      if (endDate) queryParams.set('end_date', endDate)
+      if (filterFulfillmentStatus !== 'all') queryParams.set('fulfillment', filterFulfillmentStatus)
+
+      const res = await fetch(`/api/shopify/orders?${queryParams.toString()}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to export orders')
+
+      const exportList: ShopifyOrder[] = data.orders || []
+      if (exportList.length === 0) {
+        triggerNotification('error', 'No orders found to export.')
+        setExporting(false)
+        return
+      }
+
+      const headers = [
+        'Order ID',
+        'Order Name',
+        'Date Created',
+        'Customer Name',
+        'Customer Phone',
+        'Customer Email',
+        'Total Price',
+        'Payment Method',
+        'Financial Status',
+        'Courier Partner',
+        'AWB/Tracking Number',
+        'Shipment Status',
+        'Source'
+      ]
+
+      const rows = exportList.map(o => {
+        const custName = o.customer ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.trim() : 'Guest Customer'
+        const latestFulfillment = (o.fulfillments?.[0] || {}) as any
+        return [
+          `"${o.id}"`,
+          `"${o.name || ''}"`,
+          `"${o.created_at}"`,
+          `"${custName.replace(/"/g, '""')}"`,
+          `"${o.customer?.phone || o.shipping_address?.phone || ''}"`,
+          `"${o.customer?.email || ''}"`,
+          `"${o.total_price || '0'}"`,
+          `"${o.financial_status === 'paid' ? 'Prepaid' : 'COD'}"`,
+          `"${o.financial_status || ''}"`,
+          `"${latestFulfillment.tracking_company || ''}"`,
+          `"${latestFulfillment.tracking_number || ''}"`,
+          `"${latestFulfillment.shipment_status || ''}"`,
+          `"${(o as any).source || 'shopify'}"`
+        ].join(',')
+      })
+
+      const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n')
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      
+      const timestamp = new Date().toISOString().slice(0, 10)
+      link.setAttribute('href', url)
+      link.setAttribute('download', `orders_export_${currentTab}_${timestamp}.csv`)
+      link.style.visibility = 'hidden'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      
+      triggerNotification('success', `Exported ${exportList.length} orders successfully!`)
+    } catch (err: any) {
+      triggerNotification('error', err.message || 'Error exporting orders.')
+    } finally {
+      setExporting(false)
+    }
+  }
+
   // ── Phone Masking Toggler ──
   const togglePhoneMask = (id: number) => {
     setUnmaskedPhones((prev) => ({ ...prev, [id]: !prev[id] }))
@@ -924,7 +1018,7 @@ export default function ShiprocketDashboardPage() {
   const endIndex = startIndex + ORDERS_PER_PAGE
 
   return (
-    <div className="min-h-screen bg-[#07090e] text-white">
+    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
       <Sidebar />
       <TopBar />
       
@@ -1011,6 +1105,19 @@ export default function ShiprocketDashboardPage() {
                 >
                   <Calendar className="w-3.5 h-3.5" />
                   Sorted: {sortOrder === 'desc' ? 'Latest First' : 'Oldest First'}
+                </button>
+
+                <button
+                  onClick={handleExportToSheets}
+                  disabled={exporting}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-xs font-semibold text-white transition-colors disabled:opacity-50"
+                >
+                  {exporting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  {exporting ? 'Exporting...' : 'Export to Sheets'}
                 </button>
 
                 <button
@@ -2113,7 +2220,9 @@ export default function ShiprocketDashboardPage() {
                                       {order.name}
                                     </span>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
-                                      {new Date(order.created_at).toLocaleString()}
+                                      {new Date(activeShipment?.created_at || order.created_at).toLocaleString('en-US', {
+                                        day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+                                      })}
                                     </span>
                                   </div>
                                 </td>

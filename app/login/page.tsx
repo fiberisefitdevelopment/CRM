@@ -10,7 +10,6 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
-  Sparkles,
   ShieldAlert
 } from 'lucide-react'
 
@@ -20,19 +19,39 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [checkingAuth, setCheckingAuth] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [rememberMe, setRememberMe] = useState(false)
 
-  // Detect concurrent kickout parameter on client-side mount safely
+  // On mount: check if already authenticated → redirect away from login
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      if (params.get('reason') === 'concurrent_login') {
-        setError('Session Terminated: This account has logged in from another device/browser.')
+    const checkExistingSession = async () => {
+      try {
+        const res = await fetch('/api/auth/me', { cache: 'no-store' })
+        const data = await res.json().catch(() => ({}))
+        if (res.ok && data.authenticated) {
+          // Already logged in — go to dashboard without adding to history
+          router.replace('/orders')
+          return
+        }
+      } catch {
+        // Not authenticated, show login
+      } finally {
+        setCheckingAuth(false)
+      }
+
+      // Detect concurrent kickout parameter
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search)
+        if (params.get('reason') === 'concurrent_login') {
+          setError('Session Terminated: This account has logged in from another device/browser.')
+        }
       }
     }
-  }, [])
+
+    checkExistingSession()
+  }, [router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -60,16 +79,25 @@ export default function LoginPage() {
 
       setSuccess('Access verified. Redirecting to dashboard...')
 
-      // Short delay for high-fidelity success animation transition
+      // Use replace() so the login page is removed from history stack
+      // (pressing Back after login won't return to this page)
       setTimeout(() => {
-        router.push('/orders')
-        router.refresh()
-      }, 50)
+        router.replace('/orders')
+      }, 400)
     } catch (err: any) {
       setError(err.message || 'Failed to connect to authentication server.')
     } finally {
       setLoading(false)
     }
+  }
+
+  // Show a blank screen while verifying session to prevent flash of login form
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen w-full bg-[#07090e] flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+      </div>
+    )
   }
 
   return (
@@ -83,12 +111,21 @@ export default function LoginPage() {
 
         {/* Top Header Panel */}
         <div className="text-center mb-8 animate-fade-in">
-          <div className="inline-flex items-center justify-center p-3 rounded-2xl bg-purple-500/10 border border-purple-500/20 mb-3 shadow-lg shadow-purple-500/5 relative animate-pulse">
-            <Sparkles className="w-6 h-6 text-purple-400" />
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-emerald-500 rounded-full"></span>
+          {/* Fiberise Logo Mark */}
+          <div className="inline-flex items-center justify-center mb-5">
+            <div className="relative">
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600 to-blue-600 flex items-center justify-center shadow-2xl shadow-purple-500/30">
+                <svg viewBox="0 0 32 32" className="w-9 h-9" fill="none">
+                  <path d="M8 24 L16 8 L24 24" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M11 19 L21 19" stroke="white" strokeWidth="2.5" strokeLinecap="round"/>
+                  <circle cx="16" cy="8" r="2.5" fill="white"/>
+                </svg>
+              </div>
+              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-[#07090e]"></span>
+            </div>
           </div>
           <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-purple-400 bg-clip-text text-transparent mb-1">
-            Fiberise Dashboard
+            Fiberise Fit
           </h1>
           <p className="text-white/50 text-xs font-semibold uppercase tracking-widest">
             Secure Administrator Access
@@ -131,6 +168,7 @@ export default function LoginPage() {
                   className="w-full rounded-xl border border-white/10 bg-white/5 pl-10 pr-4 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30 transition-all font-medium"
                   required
                   disabled={loading}
+                  autoComplete="email"
                 />
               </div>
             </div>
@@ -150,6 +188,7 @@ export default function LoginPage() {
                   className="w-full rounded-xl border border-white/10 bg-white/5 pl-10 pr-10 py-3 text-sm text-white placeholder:text-white/20 focus:outline-none focus:border-purple-500/50 focus:ring-1 focus:ring-purple-500/30 transition-all font-medium"
                   required
                   disabled={loading}
+                  autoComplete="current-password"
                 />
                 <button
                   type="button"
@@ -173,7 +212,7 @@ export default function LoginPage() {
                   disabled={loading}
                 />
                 <span className="text-xs text-white/50 group-hover:text-white/80 transition-colors font-medium">
-                  Remember me
+                  Remember me for 30 days
                 </span>
               </label>
             </div>
@@ -182,7 +221,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={loading}
-              className="w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-purple-600 hover:bg-purple-500 border border-purple-500/30 text-sm font-bold text-white shadow-lg shadow-purple-600/10 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all mt-2"
+              className="w-full inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 border border-purple-500/30 text-sm font-bold text-white shadow-lg shadow-purple-600/20 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed transition-all mt-2"
             >
               {loading ? (
                 <>
@@ -200,7 +239,7 @@ export default function LoginPage() {
         {/* Footer legalities */}
         <div className="text-center mt-8 text-[10px] text-white/30 font-semibold tracking-wider uppercase animate-fade-in flex items-center justify-center gap-1.5 select-none">
           <ShieldAlert className="w-3.5 h-3.5" />
-          Authorized personnel only • Secured by firebase
+          Authorized personnel only • Secured by Firebase
         </div>
 
       </div>

@@ -191,7 +191,7 @@ export default function Dashboard() {
   // Loading skeleton
   if (loading) {
     return (
-      <div className="min-h-screen bg-background">
+      <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
         <Sidebar />
         <TopBar />
         <main className="ml-0 lg:ml-64 p-4 lg:p-6">
@@ -199,7 +199,7 @@ export default function Dashboard() {
             <div className="flex items-center justify-center h-[600px]">
               <div className="text-center">
                 <Loader2 className="w-8 h-8 text-purple-500 animate-spin mx-auto mb-4" />
-                <p className="text-white/60">Loading users...</p>
+                <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>Loading users...</p>
               </div>
             </div>
           </div>
@@ -209,7 +209,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
       {error && <ErrorToast message={error} onClose={() => setError(null)} />}
       <Sidebar />
       <TopBar />
@@ -220,10 +220,10 @@ export default function Dashboard() {
           <div className="mb-6">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
               <div>
-                <h1 className="text-2xl lg:text-3xl font-bold text-white mb-2">
+                <h1 className="text-2xl lg:text-3xl font-bold mb-2" style={{ color: 'var(--foreground)' }}>
                   Health Monitoring Dashboard
                 </h1>
-                <p className="text-white/60 text-sm">
+                <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>
                   Monitor users across locations in real-time
                 </p>
               </div>
@@ -233,40 +233,40 @@ export default function Dashboard() {
           {/* User Statistics Tiles */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
             {/* Total Users */}
-            <div className="bg-card rounded-2xl p-6 border border-white/10">
+            <div className="crm-card p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white/60 text-sm mb-1">Total Users</p>
-                  <p className="text-3xl font-bold text-white">{userStats.total}</p>
+                  <p className="text-sm mb-1" style={{ color: 'var(--foreground-muted)' }}>Total Users</p>
+                  <p className="text-3xl font-bold" style={{ color: 'var(--foreground)' }}>{userStats.total}</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center border border-purple-500/30">
-                  <Users className="w-6 h-6 text-purple-400" />
+                  <Users className="w-6 h-6 text-purple-500" />
                 </div>
               </div>
             </div>
 
             {/* Subscribed Users */}
-            <div className="bg-card rounded-2xl p-6 border border-white/10">
+            <div className="crm-card p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white/60 text-sm mb-1">Subscribed Users</p>
-                  <p className="text-3xl font-bold text-white">{userStats.subscribed}</p>
+                  <p className="text-sm mb-1" style={{ color: 'var(--foreground-muted)' }}>Subscribed Users</p>
+                  <p className="text-3xl font-bold" style={{ color: 'var(--foreground)' }}>{userStats.subscribed}</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-green-500/20 to-emerald-500/20 flex items-center justify-center border border-green-500/30">
-                  <UserCheck className="w-6 h-6 text-green-400" />
+                  <UserCheck className="w-6 h-6 text-green-500" />
                 </div>
               </div>
             </div>
 
             {/* Unsubscribed Users */}
-            <div className="bg-card rounded-2xl p-6 border border-white/10">
+            <div className="crm-card p-6">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-white/60 text-sm mb-1">Unsubscribed Users</p>
-                  <p className="text-3xl font-bold text-white">{userStats.unsubscribed}</p>
+                  <p className="text-sm mb-1" style={{ color: 'var(--foreground-muted)' }}>Unsubscribed Users</p>
+                  <p className="text-3xl font-bold" style={{ color: 'var(--foreground)' }}>{userStats.unsubscribed}</p>
                 </div>
                 <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-500/20 to-red-500/20 flex items-center justify-center border border-orange-500/30">
-                  <UserX className="w-6 h-6 text-orange-400" />
+                  <UserX className="w-6 h-6 text-orange-500" />
                 </div>
               </div>
             </div>
@@ -274,8 +274,8 @@ export default function Dashboard() {
 
           {/* Map Section */}
           <div className="mb-6">
-            <div className="bg-card rounded-2xl p-6 border border-white/10">
-              <h2 className="text-white font-semibold text-xl mb-4">User Location Map</h2>
+            <div className="crm-card p-6">
+              <h2 className="font-semibold text-xl mb-4" style={{ color: 'var(--foreground)' }}>User Location Map</h2>
               <UserMap
                 users={geoUsers}
                 selectedState={selectedState}
@@ -287,10 +287,10 @@ export default function Dashboard() {
           </div>
 
           {/* Search, Sort, and Filter Section */}
-          <div className="bg-card rounded-2xl p-6 border border-white/10 mb-6">
+          <div className="crm-card p-6 mb-6">
             <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center">
               {/* Search Bar */}
-              <div className="flex-1 w-full lg:w-auto">
+              <div className="flex-1 w-full lg:w-auto" style={{ color: 'var(--foreground)' }}>
                 <label className="block text-white/60 text-xs mb-2">Search</label>
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-white/40" />
@@ -381,7 +381,7 @@ export default function Dashboard() {
           </div>
 
           {/* User List Table */}
-          <div className="mb-6">
+          <div className="crm-card mb-6">
             <FilteredUsersTable
               users={geoUsers}
               selectedState={selectedState}
