@@ -12,6 +12,7 @@ import {
   sendDay1Template,
   sendDay3Template,
   sendDay4Template,
+  sendDay5Template,
 } from './aisensy';
 import { normalizePhoneNumber } from './whatsapp.service';
 
@@ -95,10 +96,12 @@ export async function checkAndTriggerDeliveryJourneys(orders: any[]): Promise<vo
         day1Sent: false,
         day3Sent: false,
         day4Sent: false,
+        day5Sent: false,
         welcomeSentAt: null,
         day1SentAt: null,
         day3SentAt: null,
         day4SentAt: null,
+        day5SentAt: null,
         currentStage: 'DELIVERED',
         lastApiResponse: '',
         lastError: '',
@@ -223,23 +226,23 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
 
       console.log(`  📌 Journey ${journeyId}: Days elapsed: ${daysElapsed}, stage: ${journey.currentStage}`);
 
-      // Sequentially dispatch templates to avoid flooding a user if there was a system delay
-      if (journey.currentStage === 'DELIVERED' && daysElapsed >= 1) {
-        // Send Day 1 Reminder
-        if (journey.day1Sent) {
-          // Extra protection: step is already marked sent but stage wasn't updated, reconcile it
-          await doc.ref.update({ currentStage: 'DAY1', updatedAt: admin.firestore.Timestamp.now() });
+      // Route campaigns non-sequentially based on the exact calendar days elapsed since delivery
+      if (daysElapsed >= 5) {
+        if (journey.day5Sent) {
+          if (journey.currentStage !== 'COMPLETED') {
+            await doc.ref.update({ currentStage: 'COMPLETED', updatedAt: admin.firestore.Timestamp.now() });
+          }
           stats.skipped++;
           continue;
         }
 
         try {
-          const response = await sendDay1Template(journey.customerPhone, journey.customerName, journey.orderId);
+          const response = await sendDay5Template(journey.customerPhone, journey.customerName);
           
           await doc.ref.update({
-            day1Sent: true,
-            day1SentAt: admin.firestore.Timestamp.now(),
-            currentStage: 'DAY1',
+            day5Sent: true,
+            day5SentAt: admin.firestore.Timestamp.now(),
+            currentStage: 'COMPLETED',
             lastApiResponse: JSON.stringify(response),
             lastError: '',
             updatedAt: admin.firestore.Timestamp.now(),
@@ -248,8 +251,8 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           await addCustomerJourneyLog({
             journeyId,
             orderId: journey.orderId,
-            stage: 'DAY1',
-            templateName: 'FYBER Reminder',
+            stage: 'DAY5',
+            templateName: 'FYBER Day 5',
             status: 'sent',
             apiResponse: JSON.stringify(response),
             error: '',
@@ -260,7 +263,7 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           stats.sent++;
         } catch (err: any) {
           stats.failed++;
-          const errMsg = err.message || 'Failed to send Day 1';
+          const errMsg = err.message || 'Failed to send Day 5';
           const errResp = err.response?.data ? JSON.stringify(err.response.data) : errMsg;
 
           await doc.ref.update({
@@ -272,8 +275,8 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           await addCustomerJourneyLog({
             journeyId,
             orderId: journey.orderId,
-            stage: 'DAY1',
-            templateName: 'FYBER Reminder',
+            stage: 'DAY5',
+            templateName: 'FYBER Day 5',
             status: 'failed',
             apiResponse: errResp,
             error: errMsg,
@@ -282,10 +285,69 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           });
         }
 
-      } else if (journey.currentStage === 'DAY1' && daysElapsed >= 3) {
-        // Send Day 3 Usage Tips
+      } else if (daysElapsed === 4) {
+        if (journey.day4Sent) {
+          if (journey.currentStage !== 'DAY4' && journey.currentStage !== 'COMPLETED') {
+            await doc.ref.update({ currentStage: 'DAY4', updatedAt: admin.firestore.Timestamp.now() });
+          }
+          stats.skipped++;
+          continue;
+        }
+
+        try {
+          const response = await sendDay4Template(journey.customerPhone, journey.customerName);
+          
+          await doc.ref.update({
+            day4Sent: true,
+            day4SentAt: admin.firestore.Timestamp.now(),
+            currentStage: 'DAY4',
+            lastApiResponse: JSON.stringify(response),
+            lastError: '',
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+
+          await addCustomerJourneyLog({
+            journeyId,
+            orderId: journey.orderId,
+            stage: 'DAY4',
+            templateName: 'FYBER Benefits',
+            status: 'sent',
+            apiResponse: JSON.stringify(response),
+            error: '',
+            triggeredBy: 'system',
+            sentAt: admin.firestore.Timestamp.now(),
+          });
+
+          stats.sent++;
+        } catch (err: any) {
+          stats.failed++;
+          const errMsg = err.message || 'Failed to send Day 4';
+          const errResp = err.response?.data ? JSON.stringify(err.response.data) : errMsg;
+
+          await doc.ref.update({
+            lastError: errMsg,
+            lastApiResponse: errResp,
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+
+          await addCustomerJourneyLog({
+            journeyId,
+            orderId: journey.orderId,
+            stage: 'DAY4',
+            templateName: 'FYBER Benefits',
+            status: 'failed',
+            apiResponse: errResp,
+            error: errMsg,
+            triggeredBy: 'system',
+            sentAt: admin.firestore.Timestamp.now(),
+          });
+        }
+
+      } else if (daysElapsed === 3) {
         if (journey.day3Sent) {
-          await doc.ref.update({ currentStage: 'DAY3', updatedAt: admin.firestore.Timestamp.now() });
+          if (journey.currentStage !== 'DAY3' && journey.currentStage !== 'DAY4' && journey.currentStage !== 'COMPLETED') {
+            await doc.ref.update({ currentStage: 'DAY3', updatedAt: admin.firestore.Timestamp.now() });
+          }
           stats.skipped++;
           continue;
         }
@@ -339,21 +401,22 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           });
         }
 
-      } else if (journey.currentStage === 'DAY3' && daysElapsed >= 4) {
-        // Send Day 4 Benefits
-        if (journey.day4Sent) {
-          await doc.ref.update({ currentStage: 'COMPLETED', updatedAt: admin.firestore.Timestamp.now() });
+      } else if (daysElapsed === 1 || daysElapsed === 2) {
+        if (journey.day1Sent) {
+          if (journey.currentStage !== 'DAY1' && journey.currentStage !== 'DAY3' && journey.currentStage !== 'DAY4' && journey.currentStage !== 'COMPLETED') {
+            await doc.ref.update({ currentStage: 'DAY1', updatedAt: admin.firestore.Timestamp.now() });
+          }
           stats.skipped++;
           continue;
         }
 
         try {
-          const response = await sendDay4Template(journey.customerPhone, journey.customerName);
+          const response = await sendDay1Template(journey.customerPhone, journey.customerName, journey.orderId);
           
           await doc.ref.update({
-            day4Sent: true,
-            day4SentAt: admin.firestore.Timestamp.now(),
-            currentStage: 'COMPLETED',
+            day1Sent: true,
+            day1SentAt: admin.firestore.Timestamp.now(),
+            currentStage: 'DAY1',
             lastApiResponse: JSON.stringify(response),
             lastError: '',
             updatedAt: admin.firestore.Timestamp.now(),
@@ -362,8 +425,8 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           await addCustomerJourneyLog({
             journeyId,
             orderId: journey.orderId,
-            stage: 'DAY4',
-            templateName: 'FYBER Benefits',
+            stage: 'DAY1',
+            templateName: 'FYBER Reminder',
             status: 'sent',
             apiResponse: JSON.stringify(response),
             error: '',
@@ -374,7 +437,7 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           stats.sent++;
         } catch (err: any) {
           stats.failed++;
-          const errMsg = err.message || 'Failed to send Day 4';
+          const errMsg = err.message || 'Failed to send Day 1';
           const errResp = err.response?.data ? JSON.stringify(err.response.data) : errMsg;
 
           await doc.ref.update({
@@ -386,8 +449,8 @@ export async function processPendingJourneys(force: boolean = false): Promise<an
           await addCustomerJourneyLog({
             journeyId,
             orderId: journey.orderId,
-            stage: 'DAY4',
-            templateName: 'FYBER Benefits',
+            stage: 'DAY1',
+            templateName: 'FYBER Reminder',
             status: 'failed',
             apiResponse: errResp,
             error: errMsg,
@@ -443,6 +506,8 @@ export async function retryJourneyStage(journeyId: string): Promise<any> {
       response = await sendDay3Template(journey.customerPhone, journey.customerName, journey.orderId, journey.products || []);
     } else if (stage === 'DAY4') {
       response = await sendDay4Template(journey.customerPhone, journey.customerName);
+    } else if (stage === 'DAY5') {
+      response = await sendDay5Template(journey.customerPhone, journey.customerName);
     } else {
       throw new Error(`Cannot retry: journey is already completed`);
     }
@@ -465,6 +530,10 @@ export async function retryJourneyStage(journeyId: string): Promise<any> {
     } else if (stage === 'DAY4') {
       updates.day4Sent = true;
       updates.day4SentAt = admin.firestore.Timestamp.now();
+      updates.currentStage = 'DAY4';
+    } else if (stage === 'DAY5') {
+      updates.day5Sent = true;
+      updates.day5SentAt = admin.firestore.Timestamp.now();
       updates.currentStage = 'COMPLETED';
     }
 
@@ -539,6 +608,8 @@ export async function triggerJourneyMessageManually(journeyId: string, stage: st
       response = await sendDay3Template(journey.customerPhone, journey.customerName, journey.orderId, journey.products || []);
     } else if (stage === 'DAY4') {
       response = await sendDay4Template(journey.customerPhone, journey.customerName);
+    } else if (stage === 'DAY5') {
+      response = await sendDay5Template(journey.customerPhone, journey.customerName);
     } else {
       throw new Error(`Invalid manual trigger stage: ${stage}`);
     }
@@ -567,6 +638,12 @@ export async function triggerJourneyMessageManually(journeyId: string, stage: st
     } else if (stage === 'DAY4') {
       updates.day4Sent = true;
       updates.day4SentAt = admin.firestore.Timestamp.now();
+      if (journey.currentStage === 'DELIVERED' || journey.currentStage === 'DAY1' || journey.currentStage === 'DAY3') {
+        updates.currentStage = 'DAY4';
+      }
+    } else if (stage === 'DAY5') {
+      updates.day5Sent = true;
+      updates.day5SentAt = admin.firestore.Timestamp.now();
       updates.currentStage = 'COMPLETED';
     }
 
@@ -626,6 +703,7 @@ export async function getCustomerJourneyAnalytics(): Promise<any> {
   let day1Sent = 0;
   let day3Sent = 0;
   let day4Sent = 0;
+  let day5Sent = 0;
   let failedMessages = 0;
   let pendingMessages = 0;
 
@@ -643,6 +721,7 @@ export async function getCustomerJourneyAnalytics(): Promise<any> {
     if (j.day1Sent) day1Sent++;
     if (j.day3Sent) day3Sent++;
     if (j.day4Sent) day4Sent++;
+    if (j.day5Sent) day5Sent++;
 
     if (j.lastError) {
       failedMessages++;
@@ -658,6 +737,7 @@ export async function getCustomerJourneyAnalytics(): Promise<any> {
     day1Sent,
     day3Sent,
     day4Sent,
+    day5Sent,
     failedMessages,
     pendingMessages,
   };
@@ -694,6 +774,8 @@ function getTemplateNameForStage(stage: string): string {
       return 'FYBER Usage Tips';
     case 'DAY4':
       return 'FYBER Benefits';
+    case 'DAY5':
+      return 'FYBER Day 5';
     default:
       return 'Unknown';
   }

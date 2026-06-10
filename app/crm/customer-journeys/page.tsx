@@ -30,11 +30,13 @@ interface Journey {
   day1Sent: boolean;
   day3Sent: boolean;
   day4Sent: boolean;
+  day5Sent: boolean;
   welcomeSentAt: any;
   day1SentAt: any;
   day3SentAt: any;
   day4SentAt: any;
-  currentStage: 'DELIVERED' | 'DAY1' | 'DAY3' | 'DAY4' | 'COMPLETED';
+  day5SentAt: any;
+  currentStage: 'DELIVERED' | 'DAY1' | 'DAY3' | 'DAY4' | 'DAY5' | 'COMPLETED';
   lastError: string;
 }
 
@@ -45,6 +47,7 @@ interface Analytics {
   day1Sent: number;
   day3Sent: number;
   day4Sent: number;
+  day5Sent: number;
   failedMessages: number;
   pendingMessages: number;
 }
@@ -136,7 +139,9 @@ export default function CustomerJourneysPage() {
   const formatDate = (timestamp: any) => {
     if (!timestamp) return '—';
     // Firestore Timestamp or IsoString
-    const date = timestamp.seconds ? new Date(timestamp.seconds * 1000) : new Date(timestamp);
+    const seconds = timestamp.seconds ?? timestamp._seconds;
+    const date = seconds !== undefined ? new Date(seconds * 1000) : new Date(timestamp);
+    if (isNaN(date.getTime())) return '—';
     return date.toLocaleDateString('en-IN', {
       day: '2-digit',
       month: 'short',
@@ -154,7 +159,12 @@ export default function CustomerJourneysPage() {
             <CheckCircle2 className="w-3 h-3" /> Sent
           </span>
           <span className="text-[9px] text-white/30 font-mono">
-            {date ? new Date(date.seconds ? date.seconds * 1000 : date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}
+            {(() => {
+              if (!date) return '';
+              const seconds = date.seconds ?? date._seconds;
+              const d = seconds !== undefined ? new Date(seconds * 1000) : new Date(date);
+              return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+            })()}
           </span>
         </div>
       );
@@ -212,43 +222,76 @@ export default function CustomerJourneysPage() {
           {analytics && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
               {/* Active */}
-              <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group hover:border-purple-500/30 transition-all duration-300">
+              <button
+                onClick={() => {
+                  setStatus(status === 'active' ? 'all' : 'active');
+                  setStage('all');
+                  setPage(1);
+                }}
+                className={`w-full text-left bg-white/[0.02] rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group transition-all duration-300 hover:scale-[1.02] focus:outline-none border ${
+                  status === 'active'
+                    ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_15px_rgba(168,85,247,0.15)]'
+                    : 'border-white/10 hover:border-purple-500/30'
+                }`}
+              >
                 <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-purple-500/5 blur-xl group-hover:bg-purple-500/10 transition-colors pointer-events-none" />
                 <p className="text-white/40 text-xs font-bold uppercase tracking-wider">Active Journeys</p>
                 <h3 className="text-2xl lg:text-3xl font-extrabold text-white mt-2 font-mono">
                   {analytics.totalActive}
                 </h3>
-              </div>
+              </button>
 
               {/* Completed */}
-              <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group hover:border-emerald-500/30 transition-all duration-300">
+              <button
+                onClick={() => {
+                  setStatus(status === 'completed' ? 'all' : 'completed');
+                  setStage('all');
+                  setPage(1);
+                }}
+                className={`w-full text-left bg-white/[0.02] rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group transition-all duration-300 hover:scale-[1.02] focus:outline-none border ${
+                  status === 'completed'
+                    ? 'border-emerald-500 bg-emerald-500/10 shadow-[0_0_15px_rgba(16,185,129,0.15)]'
+                    : 'border-white/10 hover:border-emerald-500/30'
+                }`}
+              >
                 <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-emerald-500/5 blur-xl group-hover:bg-emerald-500/10 transition-colors pointer-events-none" />
                 <p className="text-white/40 text-xs font-bold uppercase tracking-wider">Completed Journeys</p>
                 <h3 className="text-2xl lg:text-3xl font-extrabold text-emerald-400 mt-2 font-mono">
                   {analytics.completed}
                 </h3>
-              </div>
+              </button>
 
               {/* Messages Dispatched */}
               <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group hover:border-blue-500/30 transition-all duration-300">
                 <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-blue-500/5 blur-xl group-hover:bg-blue-500/10 transition-colors pointer-events-none" />
                 <p className="text-white/40 text-xs font-bold uppercase tracking-wider">Total Sent Messages</p>
                 <h3 className="text-2xl lg:text-3xl font-extrabold text-blue-400 mt-2 font-mono">
-                  {analytics.welcomeSent + analytics.day1Sent + analytics.day3Sent + analytics.day4Sent}
+                  {analytics.welcomeSent + analytics.day1Sent + analytics.day3Sent + analytics.day4Sent + (analytics.day5Sent || 0)}
                 </h3>
               </div>
-
+ 
               {/* Failed / Pending */}
-              <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group hover:border-rose-500/30 transition-all duration-300">
+              <button
+                onClick={() => {
+                  setStatus(status === 'failed' ? 'all' : 'failed');
+                  setStage('all');
+                  setPage(1);
+                }}
+                className={`w-full text-left bg-white/[0.02] rounded-2xl p-4 backdrop-blur-md relative overflow-hidden group transition-all duration-300 hover:scale-[1.02] focus:outline-none border ${
+                  status === 'failed'
+                    ? 'border-rose-500 bg-rose-500/10 shadow-[0_0_15px_rgba(244,63,94,0.15)]'
+                    : 'border-white/10 hover:border-rose-500/30'
+                }`}
+              >
                 <div className="absolute top-0 right-0 w-24 h-24 rounded-full bg-rose-500/5 blur-xl group-hover:bg-rose-500/10 transition-colors pointer-events-none" />
                 <p className="text-white/40 text-xs font-bold uppercase tracking-wider">Failed Message Runs</p>
                 <h3 className="text-2xl lg:text-3xl font-extrabold text-rose-400 mt-2 font-mono">
                   {analytics.failedMessages}
                 </h3>
-              </div>
+              </button>
             </div>
           )}
-
+ 
           {/* Funnel Visualisation */}
           {analytics && (
             <div className="bg-white/[0.02] border border-white/10 rounded-2xl p-6 mb-8 backdrop-blur-md relative overflow-hidden">
@@ -256,21 +299,33 @@ export default function CustomerJourneysPage() {
                 <Sparkles className="w-4 h-4 text-purple-400" />
                 Post-Delivery Funnel Conversion
               </h4>
-              <div className="grid grid-cols-4 gap-4 items-center">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 items-center">
                 {[
-                  { label: 'Welcome (Day 0)', count: analytics.welcomeSent },
-                  { label: 'Reminder (Day 1)', count: analytics.day1Sent },
-                  { label: 'Usage Tips (Day 3)', count: analytics.day3Sent },
-                  { label: 'Benefits (Day 4)', count: analytics.day4Sent },
+                  { label: 'Welcome (Day 0)', count: analytics.welcomeSent, stageKey: 'DELIVERED' },
+                  { label: 'Reminder (Day 1)', count: analytics.day1Sent, stageKey: 'DAY1' },
+                  { label: 'Usage Tips (Day 3)', count: analytics.day3Sent, stageKey: 'DAY3' },
+                  { label: 'Day 4', count: analytics.day4Sent, stageKey: 'DAY4' },
+                  { label: 'Day 5', count: analytics.day5Sent || 0, stageKey: 'DAY5' },
                 ].map((item, idx) => (
                   <div key={idx} className="flex flex-col relative">
-                    <div className="p-3 bg-white/5 border border-white/5 rounded-xl text-center relative z-10">
+                    <button
+                      onClick={() => {
+                        setStage(stage === item.stageKey ? 'all' : item.stageKey);
+                        setStatus('all');
+                        setPage(1);
+                      }}
+                      className={`w-full p-3 rounded-xl text-center relative z-10 transition-all duration-300 hover:scale-[1.02] focus:outline-none border ${
+                        stage === item.stageKey
+                          ? 'bg-purple-500/10 border-purple-500 shadow-[0_0_15px_rgba(168,85,247,0.15)]'
+                          : 'bg-white/5 border-white/5 hover:border-purple-500/30'
+                      }`}
+                    >
                       <p className="text-white/40 text-[10px] font-bold uppercase tracking-wider">{item.label}</p>
                       <h4 className="text-lg lg:text-xl font-black text-white mt-1 font-mono">{item.count}</h4>
-                    </div>
-                    {idx < 3 && (
-                      <div className="hidden md:block absolute right-[-20%] top-1/2 -translate-y-1/2 z-0">
-                        <ArrowRight className="w-5 h-5 text-white/20" />
+                    </button>
+                    {idx < 4 && (
+                      <div className="hidden md:block absolute right-[-10%] top-1/2 -translate-y-1/2 z-0">
+                        <ArrowRight className="w-4 h-4 text-white/20" />
                       </div>
                     )}
                   </div>
@@ -310,6 +365,7 @@ export default function CustomerJourneysPage() {
                   <option value="DAY1" className="bg-[#100c28]">Day 1: Reminder</option>
                   <option value="DAY3" className="bg-[#100c28]">Day 3: Usage Tips</option>
                   <option value="DAY4" className="bg-[#100c28]">Day 4: Benefits</option>
+                  <option value="DAY5" className="bg-[#100c28]">Day 5: Check-in</option>
                   <option value="COMPLETED" className="bg-[#100c28]">Completed</option>
                 </select>
               </div>
@@ -387,6 +443,7 @@ export default function CustomerJourneysPage() {
                       <th className="px-4 py-4 text-center text-xs font-bold text-white/40 uppercase tracking-wider">Day 1</th>
                       <th className="px-4 py-4 text-center text-xs font-bold text-white/40 uppercase tracking-wider">Day 3</th>
                       <th className="px-4 py-4 text-center text-xs font-bold text-white/40 uppercase tracking-wider">Day 4</th>
+                      <th className="px-4 py-4 text-center text-xs font-bold text-white/40 uppercase tracking-wider">Day 5</th>
                       <th className="px-4 py-4 text-center text-xs font-bold text-white/40 uppercase tracking-wider">Actions</th>
                     </tr>
                   </thead>
@@ -442,6 +499,11 @@ export default function CustomerJourneysPage() {
                           {renderStatusBadge(j.day4Sent, j.currentStage === 'DAY4' && !!j.lastError, j.day4SentAt)}
                         </td>
 
+                        {/* Day 5 Status */}
+                        <td className="px-4 py-4 text-center">
+                          {renderStatusBadge(j.day5Sent, j.currentStage === 'DAY5' && !!j.lastError, j.day5SentAt)}
+                        </td>
+
                         {/* Actions */}
                         <td className="px-4 py-4 text-center">
                           <div className="flex items-center justify-center gap-1">
@@ -475,7 +537,13 @@ export default function CustomerJourneysPage() {
                               <button
                                 onClick={() => {
                                   // Manual trigger the next logical stage
-                                  const nextStage = j.currentStage === 'DELIVERED' ? 'DAY1' : j.currentStage === 'DAY1' ? 'DAY3' : 'DAY4';
+                                  const nextStage = j.currentStage === 'DELIVERED' 
+                                    ? 'DAY1' 
+                                    : j.currentStage === 'DAY1' 
+                                      ? 'DAY3' 
+                                      : j.currentStage === 'DAY3' 
+                                        ? 'DAY4' 
+                                        : 'DAY5';
                                   handleAction(j.id, 'trigger', nextStage);
                                 }}
                                 disabled={!!actionLoading}

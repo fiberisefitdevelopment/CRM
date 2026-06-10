@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   Menu,
   Route,
+  FileText,
 } from 'lucide-react'
 
 const menuItems = [
@@ -23,6 +24,7 @@ const menuItems = [
   { icon: TrendingUp,      label: 'Sales Analytics', href: '/sales-dashboard' },
   { icon: ShoppingBag,     label: 'Orders', href: '/orders' },
   { icon: PackagePlus,     label: 'Create Order', href: '/shiprocket/create-order' },
+  { icon: FileText,        label: 'Reports', href: '/reports' },
   { icon: MessageCircle,   label: 'WhatsApp', href: '/whatsapp' },
   { icon: Route,           label: 'Customer Journeys', href: '/crm/customer-journeys' },
   { icon: Ticket,          label: 'Support Tickets', href: '/tickets' },

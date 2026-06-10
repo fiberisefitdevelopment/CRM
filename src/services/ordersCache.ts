@@ -85,10 +85,20 @@ export function getCachedOrdersCount(filters: OrderFilters = {}): number {
 
 export function getCachedOrdersPaginated(page: number, perPage: number, filters: OrderFilters = {}): any[] {
   const filtered = getCachedOrdersFiltered(filters)
-  // Ensure newest-first order (already sorted by setCachedOrders, but runtime injections may alter order)
+  const tab = filters.tab || 'all'
+  // Ensure newest-first order based on relevant status date
   const sorted = [...filtered].sort((a, b) => {
-    const dateA = new Date(a.created_at || 0).getTime()
-    const dateB = new Date(b.created_at || 0).getTime()
+    let dateStrA = a.created_at
+    let dateStrB = b.created_at
+    if (tab === 'rto' || tab === 'delivered' || tab === 'in_transit') {
+      dateStrA = a.fulfillments?.[0]?.created_at || a.created_at
+      dateStrB = b.fulfillments?.[0]?.created_at || b.created_at
+    } else if (tab === 'cancelled') {
+      dateStrA = a.cancelled_at || a.created_at
+      dateStrB = b.cancelled_at || b.created_at
+    }
+    const dateA = new Date(dateStrA || 0).getTime()
+    const dateB = new Date(dateStrB || 0).getTime()
     return dateB - dateA
   })
   const start = (page - 1) * perPage
@@ -138,16 +148,70 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
     counts.test_orders = cachedOrders.filter(o => o.is_test_order === true).length
   }
 
-  const list = getCachedOrdersFiltered({ ...filters, tab: 'all' })
+  // Get list without date filters first, then apply date filters dynamically inside the loop
+  const { datePreset, startDate, endDate, ...otherFilters } = filters
+  const list = getCachedOrdersFiltered({ ...otherFilters, tab: 'all' })
   if (list.length === 0) return counts
+
+  let resolvedStart = startDate || ''
+  let resolvedEnd = endDate || ''
+
+  if (datePreset && datePreset !== 'all') {
+    const now = new Date()
+    if (datePreset === 'today') {
+      const start = new Date()
+      start.setHours(0, 0, 0, 0)
+      resolvedStart = start.toISOString()
+      resolvedEnd = now.toISOString()
+    } else if (datePreset === 'yesterday') {
+      const start = new Date()
+      start.setDate(now.getDate() - 1)
+      start.setHours(0, 0, 0, 0)
+      const end = new Date()
+      end.setDate(now.getDate() - 1)
+      end.setHours(23, 59, 59, 999)
+      resolvedStart = start.toISOString()
+      resolvedEnd = end.toISOString()
+    } else if (datePreset === '7days') {
+      const start = new Date()
+      start.setDate(now.getDate() - 7)
+      start.setHours(0, 0, 0, 0)
+      resolvedStart = start.toISOString()
+      resolvedEnd = now.toISOString()
+    } else if (datePreset === '30days') {
+      const start = new Date()
+      start.setDate(now.getDate() - 30)
+      start.setHours(0, 0, 0, 0)
+      resolvedStart = start.toISOString()
+      resolvedEnd = now.toISOString()
+    }
+  }
+
+  const startLimit = resolvedStart ? new Date(resolvedStart) : null
+  const endLimit = resolvedEnd ? new Date(resolvedEnd) : null
+
+  const checkDateInRange = (dateStr: string) => {
+    if (!dateStr) return false
+    const d = new Date(dateStr)
+    if (startLimit && d < startLimit) return false
+    if (endLimit && d > endLimit) return false
+    return true
+  }
 
   const now = Date.now()
 
   for (const o of list) {
-    counts.all++
+    const isOrderDateInRange = checkDateInRange(o.created_at)
+
+    if (isOrderDateInRange) {
+      counts.all++
+    }
 
     if (isOrderCancelled(o)) {
-      counts.cancelled++
+      const cancelDate = o.cancelled_at || o.created_at
+      if (checkDateInRange(cancelDate)) {
+        counts.cancelled++
+      }
       continue
     }
 
@@ -155,7 +219,9 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
       const ageInMs = now - new Date(o.created_at).getTime()
       const ageInDays = ageInMs / (1000 * 60 * 60 * 24)
       if (ageInDays <= 2) {
-        counts.new++
+        if (isOrderDateInRange) {
+          counts.new++
+        }
       }
       continue
     }
@@ -163,16 +229,25 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
     if (o.fulfillment_status === 'fulfilled') {
       const latest = o.fulfillments?.[0]
       const status = (latest?.shipment_status || '').toLowerCase()
+      const fulfillmentDate = latest?.created_at || o.created_at
 
       if (['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) {
-        counts.in_transit++
+        if (checkDateInRange(fulfillmentDate)) {
+          counts.in_transit++
+        }
       } else if (status === 'delivered') {
-        counts.delivered++
+        if (checkDateInRange(fulfillmentDate)) {
+          counts.delivered++
+        }
       } else if (['failure', 'rto', 'returned'].includes(status)) {
-        counts.rto++
+        if (checkDateInRange(fulfillmentDate)) {
+          counts.rto++
+        }
       } else {
         // pickup_scheduled, confirmed, label_printed, etc. → ready to ship
-        counts.ready_to_ship++
+        if (isOrderDateInRange) {
+          counts.ready_to_ship++
+        }
       }
     }
   }
@@ -368,7 +443,18 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
 
   if (resolvedStart || resolvedEnd) {
     list = list.filter((o) => {
-      const orderDate = new Date(o.created_at)
+      let relevantDateStr = o.created_at
+      if (tab === 'rto') {
+        relevantDateStr = o.fulfillments?.[0]?.created_at || o.created_at
+      } else if (tab === 'delivered') {
+        relevantDateStr = o.fulfillments?.[0]?.created_at || o.created_at
+      } else if (tab === 'in_transit') {
+        relevantDateStr = o.fulfillments?.[0]?.created_at || o.created_at
+      } else if (tab === 'cancelled') {
+        relevantDateStr = o.cancelled_at || o.created_at
+      }
+
+      const orderDate = new Date(relevantDateStr)
       if (resolvedStart) {
         const start = new Date(resolvedStart)
         if (orderDate < start) return false

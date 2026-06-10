@@ -75,7 +75,7 @@ export async function sendDay1Template(
   orderId: string
 ): Promise<any> {
   const campaignName = process.env.AISENSY_CAMPAIGN_DAY1;
-  const params: string[] = [];
+  const params: string[] = [customerName];
   return sendCampaign(campaignName, phone, customerName, params);
 }
 
@@ -101,6 +101,18 @@ export async function sendDay4Template(
   customerName: string
 ): Promise<any> {
   const campaignName = process.env.AISENSY_CAMPAIGN_DAY4;
+  const params: string[] = [];
+  return sendCampaign(campaignName, phone, customerName, params);
+}
+
+/**
+ * Day 5: Send FYBER Day 5 template.
+ */
+export async function sendDay5Template(
+  phone: string,
+  customerName: string
+): Promise<any> {
+  const campaignName = process.env.AISENSY_CAMPAIGN_DAY5;
   const params: string[] = [];
   return sendCampaign(campaignName, phone, customerName, params);
 }

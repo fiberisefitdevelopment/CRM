@@ -43,11 +43,13 @@ interface Journey {
   day1Sent: boolean;
   day3Sent: boolean;
   day4Sent: boolean;
+  day5Sent: boolean;
   welcomeSentAt: any;
   day1SentAt: any;
   day3SentAt: any;
   day4SentAt: any;
-  currentStage: 'DELIVERED' | 'DAY1' | 'DAY3' | 'DAY4' | 'COMPLETED';
+  day5SentAt: any;
+  currentStage: 'DELIVERED' | 'DAY1' | 'DAY3' | 'DAY4' | 'DAY5' | 'COMPLETED';
   lastApiResponse: string;
   lastError: string;
   products: string[];
@@ -107,7 +109,9 @@ export default function JourneyDetailsPage({ params }: { params: Promise<{ id: s
 
   const formatDate = (timestamp: any) => {
     if (!timestamp) return '—';
-    const date = timestamp.seconds ? new Date(timestamp.seconds * 1000) : new Date(timestamp);
+    const seconds = timestamp.seconds ?? timestamp._seconds;
+    const date = seconds !== undefined ? new Date(seconds * 1000) : new Date(timestamp);
+    if (isNaN(date.getTime())) return '—';
     return date.toLocaleString('en-IN', {
       day: '2-digit',
       month: 'short',
@@ -134,7 +138,9 @@ export default function JourneyDetailsPage({ params }: { params: Promise<{ id: s
       case 'DAY3':
         return 'Usage Tips (Day 3)';
       case 'DAY4':
-        return 'Benefits (Day 4)';
+        return 'Day 4';
+      case 'DAY5':
+        return 'Day 5';
       case 'COMPLETED':
         return 'Journey Completed';
       default:
@@ -285,7 +291,8 @@ export default function JourneyDetailsPage({ params }: { params: Promise<{ id: s
                         { stageKey: 'DELIVERED', label: 'Welcome (Day 0)' },
                         { stageKey: 'DAY1', label: 'Reminder (Day 1)' },
                         { stageKey: 'DAY3', label: 'Usage Tips (Day 3)' },
-                        { stageKey: 'DAY4', label: 'Benefits (Day 4)' },
+                        { stageKey: 'DAY4', label: 'Day 4' },
+                        { stageKey: 'DAY5', label: 'Day 5' },
                       ].map((s) => (
                         <button
                           key={s.stageKey}
@@ -344,10 +351,17 @@ export default function JourneyDetailsPage({ params }: { params: Promise<{ id: s
                       },
                       {
                         key: 'DAY4',
-                        title: 'Benefits Campaign (Day 4)',
+                        title: 'Day 4 Campaign (Day 4)',
                         description: 'Scheduled for 4 days post-delivery at 4:00 PM IST.',
                         sent: journey.day4Sent,
                         date: journey.day4SentAt,
+                      },
+                      {
+                        key: 'DAY5',
+                        title: 'Day 5 Campaign (Day 5)',
+                        description: 'Scheduled for 5 days post-delivery at 4:00 PM IST.',
+                        sent: journey.day5Sent,
+                        date: journey.day5SentAt,
                       },
                     ].map((step, idx) => {
                       const isCurrent = journey.currentStage === step.key;
