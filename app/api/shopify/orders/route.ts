@@ -29,7 +29,7 @@ async function fetchAllShopifyOrders(limit: number | null = null): Promise<any[]
   let shopifyOrders: any[] = []
   const fetchLimit = limit ? Math.min(limit, 250) : 250
   let nextUrl: string | null = `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/orders.json?limit=${fetchLimit}&status=any`
-  
+
   while (nextUrl) {
     const res: Response = await fetch(nextUrl, {
       method: 'GET',
@@ -79,7 +79,7 @@ export async function GET(_req: NextRequest) {
       )
     }
 
-        const { searchParams } = new URL(_req.url)
+    const { searchParams } = new URL(_req.url)
     const forceRefresh = searchParams.get('refresh') === 'true'
     const returnAll = searchParams.get('all') === 'true' // For analytics: return full list, no pagination
     const pageParam = searchParams.get('page')
@@ -378,10 +378,10 @@ export async function GET(_req: NextRequest) {
         try {
           const { shootRtoEmailAlert } = require('@/src/services/emailService')
           enrichedOrders.forEach((order) => {
-            const isRto = order.fulfillment_status === 'fulfilled' && 
-                          ['failure', 'rto', 'returned'].includes((order.fulfillments?.[0]?.shipment_status || '').toLowerCase())
+            const isRto = order.fulfillment_status === 'fulfilled' &&
+              ['failure', 'rto', 'returned'].includes((order.fulfillments?.[0]?.shipment_status || '').toLowerCase())
             if (isRto) {
-              shootRtoEmailAlert(order).catch((err: any) => 
+              shootRtoEmailAlert(order).catch((err: any) =>
                 console.error(`⚠️ Failed to shoot RTO alert email for order ${order.name || order.id}:`, err)
               )
             }
@@ -457,7 +457,7 @@ export async function DELETE(req: NextRequest) {
           auditSessionId = session.sessionId || ''
         }
       }
-    } catch {}
+    } catch { }
 
     const results = await Promise.allSettled(
       ids.map(async (id) => {
@@ -526,7 +526,7 @@ export async function DELETE(req: NextRequest) {
         details: { orderIds: ids, results: summary },
         req,
       })
-    } catch {}
+    } catch { }
 
     return NextResponse.json({ success: true, results: summary }, { status: 200 })
   } catch (error: any) {
