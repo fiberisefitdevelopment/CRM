@@ -104,6 +104,16 @@ export async function syncOrders(): Promise<any[]> {
         shipment_status = 'pickup_scheduled';
       }
 
+      // Extract shipment status reason (from delay_reason, pickup_exception_reason, or courier_remarks)
+      const reasonCandidates = [
+        srOrder.delay_reason,
+        srOrder.pickup_exception_reason,
+        latestShipment?.delay_reason,
+        srOrder.awd_etds?.courier_remarks,
+        srOrder.edd_remark
+      ].filter(Boolean);
+      const shipment_status_reason = reasonCandidates.length > 0 ? reasonCandidates[0] : null;
+
       if (matchedShopify) {
         if (tracking_number) {
           const enrichmentFulfillment = {
@@ -113,7 +123,10 @@ export async function syncOrders(): Promise<any[]> {
             tracking_company,
             tracking_url,
             shipment_status,
+            shipment_status_reason,
             created_at: srOrder.updated_at || srOrder.created_at || matchedShopify.created_at,
+            dispatch_date: latestShipment?.shipped_date || latestShipment?.pickup_date || srOrder.shipped_date || srOrder.updated_at || srOrder.created_at || matchedShopify.created_at,
+            delivery_date: latestShipment?.delivered_date || srOrder.delivered_date || (shipment_status === 'delivered' ? (srOrder.updated_at || srOrder.created_at) : null),
           };
           matchedShopify.fulfillment_status = 'fulfilled';
           matchedShopify.fulfillments = [enrichmentFulfillment];
@@ -131,7 +144,10 @@ export async function syncOrders(): Promise<any[]> {
           tracking_company,
           tracking_url,
           shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
+          shipment_status_reason: isSrCancelled ? null : shipment_status_reason,
           created_at: srOrder.updated_at || srOrder.created_at,
+          dispatch_date: latestShipment?.shipped_date || latestShipment?.pickup_date || srOrder.shipped_date || srOrder.updated_at || srOrder.created_at,
+          delivery_date: latestShipment?.delivered_date || srOrder.delivered_date || (shipment_status === 'delivered' ? (srOrder.updated_at || srOrder.created_at) : null),
         }] : [];
 
         let srPhone = srOrder.customer_phone_unmasked || srOrder.billing_phone || srOrder.phone || '';

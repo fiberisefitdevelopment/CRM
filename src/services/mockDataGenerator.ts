@@ -46,14 +46,17 @@ export interface ShopifyOrder {
     tracking_company: string | null
     tracking_url: string | null
     shipment_status: string | null
+    shipment_status_reason?: string | null
     created_at: string
+    dispatch_date?: string | null
+    delivery_date?: string | null
   }>
   source?: string
 }
 
 export function generateMockOrders(): ShopifyOrder[] {
   const now = new Date()
-  
+
   const createPastDate = (daysAgo: number, hoursAgo: number = 0) => {
     const d = new Date(now)
     d.setDate(d.getDate() - daysAgo)
@@ -91,7 +94,7 @@ export function generateMockOrders(): ShopifyOrder[] {
     const daysAgo = Math.floor(i / 1.2) // Spans over the last 20 days
     const hoursAgo = (i * 3) % 24
     const created_at = createPastDate(daysAgo, hoursAgo)
-    
+
     const customer = customers[i % customers.length]
     const numItems = (i % 2) + 1
     const line_items: LineItem[] = []
@@ -125,7 +128,7 @@ export function generateMockOrders(): ShopifyOrder[] {
     // 6: COD + Pickup Scheduled (COD Pending)
     // 7: Unfulfilled (New)
     const category = i % 8
-    
+
     let financial_status = 'paid'
     let fulfillment_status: string | null = 'fulfilled'
     let cancelled_at: string | null = null
@@ -138,6 +141,8 @@ export function generateMockOrders(): ShopifyOrder[] {
     } else if (category === 1 || category === 2) {
       financial_status = 'paid'
       fulfillment_status = 'fulfilled'
+      const dispatchDate = createPastDate(daysAgo, hoursAgo + 2)
+      const deliveryDate = createPastDate(daysAgo - 2 > 0 ? daysAgo - 2 : 0, hoursAgo + 4)
       fulfillments = [{
         id: id * 100,
         status: 'success',
@@ -145,11 +150,15 @@ export function generateMockOrders(): ShopifyOrder[] {
         tracking_company: 'Delhivery Surface',
         tracking_url: '#',
         shipment_status: 'delivered',
-        created_at: createPastDate(daysAgo, hoursAgo + 2)
+        created_at: dispatchDate,
+        dispatch_date: dispatchDate,
+        delivery_date: deliveryDate
       }]
     } else if (category === 3) {
       financial_status = 'pending' // COD
       fulfillment_status = 'fulfilled'
+      const dispatchDate = createPastDate(daysAgo, hoursAgo + 2)
+      const deliveryDate = createPastDate(daysAgo - 2 > 0 ? daysAgo - 2 : 0, hoursAgo + 4)
       fulfillments = [{
         id: id * 100,
         status: 'success',
@@ -157,11 +166,14 @@ export function generateMockOrders(): ShopifyOrder[] {
         tracking_company: 'Shadowfax Surface',
         tracking_url: '#',
         shipment_status: 'delivered',
-        created_at: createPastDate(daysAgo, hoursAgo + 2)
+        created_at: dispatchDate,
+        dispatch_date: dispatchDate,
+        delivery_date: deliveryDate
       }]
     } else if (category === 4) {
       financial_status = 'pending' // COD
       fulfillment_status = 'fulfilled'
+      const dispatchDate = createPastDate(daysAgo, hoursAgo + 2)
       fulfillments = [{
         id: id * 100,
         status: 'success',
@@ -169,11 +181,15 @@ export function generateMockOrders(): ShopifyOrder[] {
         tracking_company: 'Xpressbees Air',
         tracking_url: '#',
         shipment_status: 'rto',
-        created_at: createPastDate(daysAgo, hoursAgo + 2)
+        shipment_status_reason: i % 2 === 0 ? 'Customer refused delivery - "Address incorrect"' : 'Seller Requested Future Pick up',
+        created_at: dispatchDate,
+        dispatch_date: dispatchDate,
+        delivery_date: null
       }]
     } else if (category === 5) {
       financial_status = 'paid'
       fulfillment_status = 'fulfilled'
+      const dispatchDate = createPastDate(daysAgo, hoursAgo + 1)
       fulfillments = [{
         id: id * 100,
         status: 'success',
@@ -181,11 +197,14 @@ export function generateMockOrders(): ShopifyOrder[] {
         tracking_company: 'Ekart Logistics',
         tracking_url: '#',
         shipment_status: 'in_transit',
-        created_at: createPastDate(daysAgo, hoursAgo + 1)
+        created_at: dispatchDate,
+        dispatch_date: dispatchDate,
+        delivery_date: null
       }]
     } else if (category === 6) {
       financial_status = 'pending' // COD
       fulfillment_status = 'fulfilled'
+      const dispatchDate = createPastDate(daysAgo, hoursAgo + 1)
       fulfillments = [{
         id: id * 100,
         status: 'success',
@@ -193,7 +212,9 @@ export function generateMockOrders(): ShopifyOrder[] {
         tracking_company: 'Delhivery Surface',
         tracking_url: '#',
         shipment_status: 'pickup_scheduled',
-        created_at: createPastDate(daysAgo, hoursAgo + 1)
+        created_at: dispatchDate,
+        dispatch_date: dispatchDate,
+        delivery_date: null
       }]
     } else if (category === 7) {
       financial_status = i % 3 === 0 ? 'pending' : 'paid'

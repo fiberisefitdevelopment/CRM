@@ -96,6 +96,7 @@ interface ShopifyOrder {
     tracking_company: string | null
     tracking_url: string | null
     shipment_status: string | null
+    shipment_status_reason?: string | null
     created_at: string
   }>
   refunds?: Array<{ id: number }>
@@ -501,6 +502,9 @@ export default function OrderDetailPage() {
                       <div key={f.id} className="p-4 rounded-xl bg-white/5 border border-white/5 space-y-1.5">
                         <Row label="Status" value={<Badge label={f.status} variant={statusVariant(f.status)} />} />
                         <Row label="Shipment Status" value={f.shipment_status ?? '—'} />
+                        {f.shipment_status_reason && (
+                          <Row label="Status Reason" value={f.shipment_status_reason} />
+                        )}
                         <Row label="Courier" value={f.tracking_company ?? '—'} />
                         <Row label="Tracking #" value={f.tracking_number ?? '—'} />
                         {f.tracking_url && (

@@ -130,5 +130,11 @@ module.exports = {
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
+  plugins: [
+    require("tailwindcss-animate"),
+    // `light:` variant — applies when html does NOT have the .dark class
+    function ({ addVariant }) {
+      addVariant('light', ':root:not(.dark) &')
+    },
+  ],
 }

@@ -107,35 +107,119 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
-  /* ── Override hardcoded dark page wrappers in light mode ── */
-  /* Any page-level div that has a hardcoded dark bg will be overridden in light mode */
+  /* ── LIGHT MODE: remap hardcoded dark-theme Tailwind utilities ── */
+
+  /* Page wrappers */
+  :root:not(.dark) .min-h-screen.bg-\[\#030014\],
   :root:not(.dark) .min-h-screen.bg-\[\#07090e\],
   :root:not(.dark) .min-h-screen.bg-background {
     background-color: var(--background) !important;
     color: var(--foreground) !important;
   }
 
-  /* ── Ensure text-white becomes theme-aware in light mode ── */
-  :root:not(.dark) .text-white\/60 { color: var(--foreground-muted) !important; }
-  :root:not(.dark) .text-white\/40 { color: var(--foreground-muted) !important; opacity: 0.7; }
-  :root:not(.dark) .text-white\/30 { color: var(--foreground-muted) !important; opacity: 0.6; }
+  /* Text: white → foreground (default) */
+  :root:not(.dark) .text-white       { color: var(--foreground) !important; }
+  :root:not(.dark) .text-white\/80   { color: var(--foreground) !important; opacity: 0.9; }
+  :root:not(.dark) .text-white\/70   { color: var(--foreground-muted) !important; opacity: 1; }
+  :root:not(.dark) .text-white\/60   { color: var(--foreground-muted) !important; opacity: 1; }
+  :root:not(.dark) .text-white\/50   { color: var(--foreground-muted) !important; opacity: 1; }
+  :root:not(.dark) .text-white\/40   { color: var(--foreground-muted) !important; opacity: 0.85; }
+  :root:not(.dark) .text-white\/30   { color: var(--foreground-muted) !important; opacity: 0.7; }
+  :root:not(.dark) .text-white\/20   { color: var(--foreground-muted) !important; opacity: 0.55; }
+  :root:not(.dark) .text-white\/10   { color: var(--foreground-muted) !important; opacity: 0.4; }
+  :root:not(.dark) .text-slate-100   { color: var(--foreground) !important; }
+  :root:not(.dark) .text-slate-300   { color: var(--foreground-muted) !important; }
+  :root:not(.dark) .text-slate-400   { color: var(--foreground-muted) !important; }
 
-  /* ── Ensure card backgrounds are theme-aware ── */
-  :root:not(.dark) .bg-card {
-    background-color: var(--card) !important;
+  /* Purple tints that are too pale on white backgrounds */
+  :root:not(.dark) .text-purple-200 { color: #6D28D9 !important; }
+  :root:not(.dark) .text-purple-300 { color: #7C3AED !important; }
+
+  /* Hover text */
+  :root:not(.dark) .hover\:text-white:hover { color: var(--foreground) !important; }
+
+  /* Keep white text on solid/vivid colored surfaces */
+  :root:not(.dark) :is(
+    [class~="bg-purple-500"],
+    [class~="bg-purple-600"],
+    [class~="bg-emerald-500"],
+    [class~="bg-emerald-600"],
+    [class~="bg-red-500"],
+    [class~="bg-red-600"],
+    [class~="bg-blue-500"],
+    [class~="bg-blue-600"],
+    [class~="from-purple-500"],
+    [class~="from-purple-600"],
+    [class~="from-emerald-500"],
+    [class~="from-emerald-600"],
+    [class~="from-blue-500"],
+    [class~="from-blue-600"],
+    [class~="from-indigo-600"],
+    [class~="from-pink-500"],
+    [class~="from-pink-600"],
+    [class~="to-blue-500"],
+    [class~="to-teal-500"],
+    [class~="to-teal-600"]
+  ).text-white,
+  :root:not(.dark) .btn-primary {
+    color: #ffffff !important;
   }
+
+  /* Card / panel backgrounds */
+  :root:not(.dark) .bg-card { background-color: var(--card) !important; }
+  :root:not(.dark) .bg-\[\#030014\],
+  :root:not(.dark) .bg-\[\#07090e\],
+  :root:not(.dark) .bg-\[\#0e121a\],
+  :root:not(.dark) .bg-\[\#0e121a\]\/80,
   :root:not(.dark) .bg-\[\#0e121a\]\/90,
-  :root:not(.dark) .bg-\[\#0e121a\] {
+  :root:not(.dark) .bg-\[\#0e121a\]\/95,
+  :root:not(.dark) .bg-\[\#0b0e14\],
+  :root:not(.dark) .bg-\[\#12172A\] {
     background-color: var(--card) !important;
   }
 
-  /* ── Border overrides in light mode ── */
-  :root:not(.dark) .border-white\/10 {
-    border-color: var(--border) !important;
+  /* Placeholder text on inputs */
+  :root:not(.dark) .placeholder\:text-white\/20::placeholder,
+  :root:not(.dark) .placeholder\:text-white\/30::placeholder {
+    color: var(--foreground-muted) !important;
+    opacity: 0.55 !important;
   }
-  :root:not(.dark) .border-white\/5 {
-    border-color: var(--border-subtle) !important;
+
+  /* Gradient text that uses white/light stops — remap start/mid for light backgrounds */
+  :root:not(.dark) .bg-clip-text.from-white {
+    --tw-gradient-from: var(--foreground) var(--tw-gradient-from-position) !important;
   }
+  :root:not(.dark) .bg-clip-text.via-slate-100 {
+    --tw-gradient-stops: var(--tw-gradient-from), #581C87 var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+  }
+  :root:not(.dark) .bg-clip-text.to-purple-400 {
+    --tw-gradient-to: #7C3AED var(--tw-gradient-to-position) !important;
+  }
+
+  /* Borders tied to dark page bg */
+  :root:not(.dark) .border-\[\#07090e\] { border-color: var(--background) !important; }
+  :root:not(.dark) .border-\[\#0e121a\] { border-color: var(--card) !important; }
+
+  /* Alert text that's too light on white */
+  :root:not(.dark) .text-red-300    { color: #DC2626 !important; }
+  :root:not(.dark) .text-emerald-300 { color: #059669 !important; }
+
+  /* Frosted white overlays → subtle light surfaces */
+  :root:not(.dark) .bg-white\/3  { background-color: rgba(15, 23, 42, 0.02) !important; }
+  :root:not(.dark) .bg-white\/5  { background-color: rgba(15, 23, 42, 0.04) !important; }
+  :root:not(.dark) .bg-white\/10 { background-color: rgba(15, 23, 42, 0.06) !important; }
+  :root:not(.dark) .hover\:bg-white\/5:hover  { background-color: rgba(15, 23, 42, 0.05) !important; }
+  :root:not(.dark) .hover\:bg-white\/10:hover { background-color: rgba(15, 23, 42, 0.08) !important; }
+
+  /* Purple tinted row highlights */
+  :root:not(.dark) .bg-purple-950\/15 { background-color: rgba(124, 58, 237, 0.06) !important; }
+  :root:not(.dark) .hover\:bg-purple-950\/20:hover { background-color: rgba(124, 58, 237, 0.09) !important; }
+
+  /* Borders & dividers */
+  :root:not(.dark) .border-white\/10 { border-color: var(--border) !important; }
+  :root:not(.dark) .border-white\/5  { border-color: var(--border-subtle) !important; }
+  :root:not(.dark) .divide-white\/5 > :not([hidden]) ~ :not([hidden])  { border-color: var(--border-subtle) !important; }
+  :root:not(.dark) .divide-white\/10 > :not([hidden]) ~ :not([hidden]) { border-color: var(--border) !important; }
 }
 
 /* ─── CSS UTILITY CLASSES ─────────────────────────────────────────────────── */
@@ -193,12 +277,70 @@
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+/* ─── ORDER DRAWER (theme-aware) ───────────────────────────────────────────── */
+.order-drawer-panel {
+  background-color: var(--card);
+  border-color: var(--border);
+  color: var(--foreground);
+}
+
+.order-drawer-surface {
+  background-color: var(--card-elevated);
+  border: 1px solid var(--border);
+}
+
+.order-drawer-section-title {
+  color: var(--accent-purple);
+}
+
+.order-drawer-muted {
+  color: var(--foreground-muted);
+}
+
+.order-drawer-divider {
+  border-color: var(--border);
+}
+
+.order-drawer-overlay {
+  background-color: rgba(0, 0, 0, 0.55);
+}
+
+:root:not(.dark) .order-drawer-overlay {
+  background-color: rgba(15, 23, 42, 0.35);
+}
+
 /* ─── GRADIENT TEXT ────────────────────────────────────────────────────────── */
 .gradient-text {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+/* Theme-aware page headings (dark slate → purple in light, white → purple in dark) */
+.heading-gradient {
+  background-image: linear-gradient(
+    to right,
+    var(--heading-gradient-from),
+    var(--heading-gradient-via),
+    var(--heading-gradient-to)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+:root {
+  --heading-gradient-from: #0F172A;
+  --heading-gradient-via: #581C87;
+  --heading-gradient-to: #7C3AED;
+}
+
+.dark {
+  --heading-gradient-from: #FFFFFF;
+  --heading-gradient-via: #F1F5F9;
+  --heading-gradient-to: #C084FC;
 }
 
 /* ─── NEON GLOW ────────────────────────────────────────────────────────────── */

@@ -220,6 +220,16 @@ export async function GET(_req: NextRequest) {
             shipment_status = 'pickup_scheduled'
           }
 
+          // Extract shipment status reason (from delay_reason, pickup_exception_reason, or courier_remarks)
+          const reasonCandidates = [
+            srOrder.delay_reason,
+            srOrder.pickup_exception_reason,
+            latestShipment?.delay_reason,
+            srOrder.awd_etds?.courier_remarks,
+            srOrder.edd_remark
+          ].filter(Boolean)
+          const shipment_status_reason = reasonCandidates.length > 0 ? reasonCandidates[0] : null
+
           if (matchedShopify) {
             if (tracking_number) {
               const enrichmentFulfillment = {
@@ -229,6 +239,7 @@ export async function GET(_req: NextRequest) {
                 tracking_company,
                 tracking_url,
                 shipment_status,
+                shipment_status_reason,
                 created_at: srOrder.updated_at || srOrder.created_at || matchedShopify.created_at,
               }
               matchedShopify.fulfillment_status = 'fulfilled'
@@ -247,6 +258,7 @@ export async function GET(_req: NextRequest) {
               tracking_company,
               tracking_url,
               shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
+              shipment_status_reason: isSrCancelled ? null : shipment_status_reason,
               created_at: srOrder.updated_at || srOrder.created_at,
             }] : []
 

@@ -29,9 +29,30 @@ function relativeTime(ts: number): string {
   return `${days} day${days > 1 ? 's' : ''} ago`
 }
 
-/** Sort notifications newest-first (FIFO: latest on top) */
+/** Extract numeric serial from order name (#1721 → 1721) or notification id (notif-1721 → 1721) */
+function parseOrderSerial(orderName?: string, notifId?: string): number {
+  if (orderName) {
+    const digits = orderName.replace(/^#/, '').replace(/[^\d]/g, '')
+    if (digits) return Number(digits)
+  }
+  if (notifId?.startsWith('notif-')) {
+    const id = parseInt(notifId.replace('notif-', ''), 10)
+    if (!isNaN(id)) return id
+  }
+  return 0
+}
+
+/** Sort notifications newest-first; order notifications tie-break by highest serial on top */
 function sortNotifications(notifs: AppNotification[]): AppNotification[] {
-  return [...notifs].sort((a, b) => b.createdAt - a.createdAt)
+  return [...notifs].sort((a, b) => {
+    const timeDiff = b.createdAt - a.createdAt
+    if (timeDiff !== 0) return timeDiff
+
+    if (a.type === 'order' && b.type === 'order') {
+      return parseOrderSerial(b.orderName, b.id) - parseOrderSerial(a.orderName, a.id)
+    }
+    return 0
+  })
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -148,9 +169,18 @@ export function TopBar() {
           return
         }
 
-        const newOrders = fetchedOrders.filter((o: any) => !baselineIdsRef.current.has(o.id))
+        const newOrders = fetchedOrders
+          .filter((o: any) => !baselineIdsRef.current.has(o.id))
+          .sort((a: any, b: any) => {
+            const aTs = new Date(a.created_at).getTime() || 0
+            const bTs = new Date(b.created_at).getTime() || 0
+            if (bTs !== aTs) return bTs - aTs
+            return parseOrderSerial(b.name, `notif-${b.id}`) - parseOrderSerial(a.name, `notif-${a.id}`)
+          })
 
         if (newOrders.length > 0) {
+          const incoming: AppNotification[] = []
+
           newOrders.forEach((newOrder: any) => {
             baselineIdsRef.current.add(newOrder.id)
 
@@ -161,31 +191,40 @@ export function TopBar() {
             const itemTitle = newOrder.line_items?.[0]?.title || 'Products'
             const totalPriceFormatted = `₹${newOrder.total_price}`
 
-            const newNotif: AppNotification = {
+            incoming.push({
               id: `notif-${newOrder.id}`,
               title: `🎉 New Shopify Order ${newOrder.name}`,
               body: `${customerName} from ${city} placed an order for ${itemTitle} (Total: ${totalPriceFormatted})`,
               time: 'Just now',
-              createdAt: Date.now(),
+              createdAt: new Date(newOrder.created_at).getTime() || Date.now(),
               unread: true,
               type: 'order',
               orderName: newOrder.name,
-            }
-
-            setNotifications((prev) => {
-              if (prev.some((n) => n.id === newNotif.id)) return prev
-              // Prepend new notification and re-sort to guarantee FIFO
-              const updated = sortNotifications([newNotif, ...prev])
-              localStorage.setItem('fiberise_notifications', JSON.stringify(updated))
-              return updated
             })
+          })
+
+          setNotifications((prev) => {
+            const existingIds = new Set(prev.map((n) => n.id))
+            const uniqueIncoming = incoming.filter((n) => !existingIds.has(n.id))
+            if (uniqueIncoming.length === 0) return prev
+
+            const updated = sortNotifications([...uniqueIncoming, ...prev])
+            localStorage.setItem('fiberise_notifications', JSON.stringify(updated))
 
             setPulseBell(true)
             setTimeout(() => setPulseBell(false), 2000)
-            setActiveToast(newNotif)
+            setActiveToast(uniqueIncoming[0])
 
-            const event = new CustomEvent('shopify_new_order_received', { detail: newOrder })
-            window.dispatchEvent(event)
+            uniqueIncoming.forEach((notif) => {
+              const orderId = parseInt(notif.id.replace('notif-', ''), 10)
+              const newOrder = newOrders.find((o: any) => o.id === orderId)
+              if (newOrder) {
+                const event = new CustomEvent('shopify_new_order_received', { detail: newOrder })
+                window.dispatchEvent(event)
+              }
+            })
+
+            return updated
           })
         }
       } catch (err) {
@@ -259,16 +298,16 @@ export function TopBar() {
 
   return (
     <>
-      <header className="fixed top-0 right-0 left-0 lg:left-64 h-16 bg-[#0e121a]/90 dark:bg-[#0e121a]/90 light:bg-white/90 backdrop-blur-lg border-b border-white/10 dark:border-white/10 flex items-center justify-between px-4 lg:px-6 z-30 shadow-lg select-none transition-colors duration-300">
+      <header className="fixed top-0 right-0 left-0 lg:left-64 h-16 topbar-bg backdrop-blur-lg border-b flex items-center justify-between px-4 lg:px-6 z-30 shadow-lg select-none transition-colors duration-300">
 
         {/* Mobile menu trigger + Page Title */}
         <div className="flex items-center gap-4">
-          <button className="lg:hidden text-white/60 hover:text-white transition-colors">
+          <button className="lg:hidden text-muted hover:text-theme transition-colors">
             <Menu className="w-5 h-5" />
           </button>
           <div className="hidden lg:flex items-center gap-2">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
-            <span className="text-xs text-white/40 font-semibold">Live Sync Active</span>
+            <span className="text-xs text-muted font-semibold">Live Sync Active</span>
           </div>
         </div>
 
@@ -278,7 +317,7 @@ export function TopBar() {
           {/* 🌙/☀️ THEME TOGGLE */}
           <button
             onClick={toggleTheme}
-            className="relative text-white/60 hover:text-white transition-all duration-300 p-2 rounded-lg hover:bg-white/5 group"
+            className="relative text-muted hover:text-theme transition-all duration-300 p-2 rounded-lg hover:bg-white/5 group"
             title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           >
             <div className="relative w-5 h-5">
@@ -296,7 +335,7 @@ export function TopBar() {
           </button>
 
           {/* ❤️ Favorites */}
-          <button className="text-white/60 hover:text-white transition-colors p-2 rounded-lg hover:bg-white/5">
+          <button className="text-muted hover:text-theme transition-colors p-2 rounded-lg hover:bg-white/5">
             <Heart className="w-5 h-5" />
           </button>
 
@@ -304,7 +343,7 @@ export function TopBar() {
           <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setShowDropdown(!showDropdown)}
-              className={`relative text-white/60 hover:text-white transition-all duration-300 p-2 rounded-lg hover:bg-white/5 ${
+              className={`relative text-muted hover:text-theme transition-all duration-300 p-2 rounded-lg hover:bg-white/5 ${
                 pulseBell ? 'scale-110 text-purple-400' : ''
               }`}
             >
@@ -315,7 +354,7 @@ export function TopBar() {
               )}
 
               {unreadCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-md shadow-purple-500/20 border border-[#0e121a] animate-pulse">
+                <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 bg-gradient-to-r from-purple-500 to-pink-500 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-md shadow-purple-500/20 border border-card animate-pulse">
                   {unreadCount > 99 ? '99+' : unreadCount}
                 </span>
               )}
@@ -323,11 +362,11 @@ export function TopBar() {
 
             {/* ── GLASSMORPHIC NOTIFICATION DROPDOWN ── */}
             {showDropdown && (
-              <div className="absolute right-0 mt-3 w-96 bg-[#0e121a] border border-white/10 rounded-2xl shadow-2xl backdrop-blur-xl z-50 overflow-hidden">
+              <div className="absolute right-0 mt-3 w-96 bg-card-theme border border-theme rounded-2xl shadow-2xl backdrop-blur-xl z-50 overflow-hidden">
 
                 {/* Dropdown Header */}
-                <div className="flex items-center justify-between px-4 py-3.5 bg-white/5 border-b border-white/10">
-                  <div className="flex items-center gap-2 font-bold text-white text-sm">
+                <div className="flex items-center justify-between px-4 py-3.5 bg-white/5 border-b border-theme">
+                  <div className="flex items-center gap-2 font-bold text-theme text-sm">
                     <Sparkles className="w-4 h-4 text-purple-400" />
                     Notifications
                     {unreadCount > 0 && (
@@ -348,7 +387,7 @@ export function TopBar() {
                 </div>
 
                 {/* Category Filter Tabs */}
-                <div className="flex items-center gap-1 px-3 py-2 border-b border-white/5 bg-white/3">
+                <div className="flex items-center gap-1 px-3 py-2 border-b border-theme bg-white/3">
                   {(['all', 'order', 'system', 'alert'] as const).map((cat) => (
                     <button
                       key={cat}
@@ -356,7 +395,7 @@ export function TopBar() {
                       className={`px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide transition-all ${
                         categoryFilter === cat
                           ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
-                          : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                          : 'text-muted hover:text-theme hover:bg-white/5'
                       }`}
                     >
                       {CATEGORY_LABELS[cat]}
@@ -368,8 +407,8 @@ export function TopBar() {
                 <div className="max-h-72 overflow-y-auto divide-y divide-white/5">
                   {filteredNotifications.length === 0 ? (
                     <div className="py-12 text-center">
-                      <Bell className="w-8 h-8 text-white/10 mx-auto mb-3" />
-                      <p className="text-white/40 text-xs font-semibold">No notifications here.</p>
+                      <Bell className="w-8 h-8 text-muted opacity-30 mx-auto mb-3" />
+                      <p className="text-muted text-xs font-semibold">No notifications here.</p>
                     </div>
                   ) : (
                     filteredNotifications.map((n) => (
@@ -393,7 +432,7 @@ export function TopBar() {
 
                         <div className="flex-1 min-w-0">
                           <div className="flex items-start justify-between gap-2">
-                            <p className={`text-xs truncate font-bold ${n.unread ? 'text-purple-200' : 'text-white'}`}>
+                            <p className={`text-xs truncate font-bold ${n.unread ? 'text-purple-300' : 'text-theme'}`}>
                               {n.title}
                             </p>
                             <div className="flex items-center gap-1.5 shrink-0">
@@ -408,11 +447,11 @@ export function TopBar() {
                               )}
                             </div>
                           </div>
-                          <p className="text-[11px] text-white/50 leading-relaxed font-normal mt-0.5 line-clamp-2">
+                          <p className="text-[11px] text-muted leading-relaxed font-normal mt-0.5 line-clamp-2">
                             {n.body}
                           </p>
                           <div className="flex items-center justify-between mt-1.5">
-                            <span className="text-[9px] text-white/30 font-semibold">
+                            <span className="text-[9px] text-muted opacity-70 font-semibold">
                               {relativeTime(n.createdAt)}
                             </span>
                             <span className={`text-[8px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
@@ -436,9 +475,9 @@ export function TopBar() {
 
                 {/* Dropdown Footer */}
                 {notifications.length > 0 && (
-                  <div className="p-2 border-t border-white/10 bg-white/5 flex items-center justify-between">
-                    <span className="text-[9px] text-white/30 font-semibold ml-2">
-                      {notifications.length} total • Sorted newest first
+                  <div className="p-2 border-t border-theme bg-white/5 flex items-center justify-between">
+                    <span className="text-[9px] text-muted opacity-70 font-semibold ml-2">
+                      {notifications.length} total • Newest orders first
                     </span>
                     <button
                       onClick={handleClearAll}
@@ -458,34 +497,34 @@ export function TopBar() {
 
       {/* ── 🚀 LIVE VIEWPORT ORDER TOAST NOTIFICATION OVERLAY ── */}
       {activeToast && (
-        <div className="fixed top-20 right-4 lg:right-6 z-[9999] w-full max-w-sm bg-[#0e121a]/95 border border-purple-500/40 rounded-2xl p-4 shadow-2xl backdrop-blur-md select-none animate-in slide-in-from-right-4 duration-300">
+        <div className="fixed top-20 right-4 lg:right-6 z-[9999] w-full max-w-sm bg-card-theme border border-purple-500/40 rounded-2xl p-4 shadow-2xl backdrop-blur-md select-none animate-in slide-in-from-right-4 duration-300">
           <div className="flex gap-3.5 items-start">
 
             <div className="w-10 h-10 rounded-xl bg-purple-500/15 flex items-center justify-center border border-purple-500/30 shrink-0 text-purple-300 relative shadow-inner">
               <Package className="w-5 h-5" />
-              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-[#0e121a]"></span>
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-card"></span>
             </div>
 
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-extrabold text-white flex items-center gap-1.5">
+                <span className="text-xs font-extrabold text-theme flex items-center gap-1.5">
                   <Sparkles className="w-3.5 h-3.5 text-purple-400" />
                   New Shopify Order
                 </span>
                 <button
                   onClick={() => setActiveToast(null)}
-                  className="text-white/40 hover:text-white transition-colors"
+                  className="text-muted hover:text-theme transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
               <p className="text-xs font-bold text-purple-300 mt-1">{activeToast.title}</p>
-              <p className="text-xs text-white/70 leading-normal font-semibold mt-1">
+              <p className="text-xs text-muted leading-normal font-semibold mt-1">
                 {activeToast.body}
               </p>
 
-              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-white/5">
+              <div className="flex items-center gap-2 mt-3 pt-3 border-t border-theme">
                 <button
                   onClick={() => {
                     setActiveToast(null)
@@ -498,7 +537,7 @@ export function TopBar() {
                 </button>
                 <button
                   onClick={() => setActiveToast(null)}
-                  className="px-2.5 py-1.5 rounded-lg border border-white/10 hover:bg-white/5 text-[10px] font-bold text-white/60 hover:text-white transition-colors"
+                  className="px-2.5 py-1.5 rounded-lg border border-theme hover:bg-white/5 text-[10px] font-bold text-muted hover:text-theme transition-colors"
                 >
                   Dismiss
                 </button>

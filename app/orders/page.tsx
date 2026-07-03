@@ -88,7 +88,10 @@ interface ShopifyOrder {
     tracking_company: string | null
     tracking_url: string | null
     shipment_status: string | null
+    shipment_status_reason?: string | null
     created_at: string
+    dispatch_date?: string | null
+    delivery_date?: string | null
   }>
 }
 
@@ -114,11 +117,11 @@ interface ManifestRecord {
 
 function Badge({ label, variant = 'default' }: { label: string; variant?: 'green' | 'yellow' | 'red' | 'blue' | 'default' }) {
   const colors = {
-    green:   'bg-green-500/15 text-green-300 border-green-500/30',
-    yellow:  'bg-yellow-500/15 text-yellow-300 border-yellow-500/30',
-    red:     'bg-red-500/15 text-red-300 border-red-500/30',
-    blue:    'bg-blue-500/15 text-blue-300 border-blue-500/30',
-    default: 'bg-white/5 text-white/70 border-white/10',
+    green:   'badge-success',
+    yellow:  'badge-warning',
+    red:     'badge-danger',
+    blue:    'badge-info',
+    default: 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-white/5 dark:text-white/70 dark:border-white/10',
   }
   return (
     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${colors[variant]}`}>
@@ -147,6 +150,98 @@ function isOrderCancelled(order: ShopifyOrder): boolean {
   )
 }
 
+function parseOrderIdValue(value: string): number | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const digits = trimmed.replace(/^#/, '').replace(/[^\d]/g, '')
+  if (!digits) return null
+  const parsed = Number(digits)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function getOrderComparableId(order: ShopifyOrder): number {
+  return parseOrderIdValue(order.name) ?? order.id
+}
+
+function isOrderInExportRange(order: ShopifyOrder, fromId: string, toId: string): boolean {
+  const from = parseOrderIdValue(fromId)
+  const to = parseOrderIdValue(toId)
+  if (from === null && to === null) return true
+
+  const orderValue = getOrderComparableId(order)
+  if (from !== null && to !== null) return orderValue >= from && orderValue <= to
+  if (from !== null) return orderValue >= from
+  if (to !== null) return orderValue <= to
+  return true
+}
+
+type ExportColumnKey =
+  | 'order_id'
+  | 'order_name'
+  | 'date_created'
+  | 'customer_name'
+  | 'customer_phone'
+  | 'customer_email'
+  | 'total_price'
+  | 'payment_method'
+  | 'financial_status'
+  | 'courier_partner'
+  | 'awb_tracking'
+  | 'shipment_status'
+  | 'source'
+  | 'dispatch_date'
+  | 'delivery_date'
+
+interface ExportColumn {
+  key: ExportColumnKey
+  label: string
+  getValue: (order: ShopifyOrder) => string
+}
+
+const EXPORT_COLUMNS: ExportColumn[] = [
+  { key: 'order_id', label: 'Order ID', getValue: (o) => String(o.id) },
+  { key: 'order_name', label: 'Order Name', getValue: (o) => o.name || '' },
+  { key: 'date_created', label: 'Date Created', getValue: (o) => o.created_at },
+  {
+    key: 'customer_name',
+    label: 'Customer Name',
+    getValue: (o) => (o.customer ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.trim() : 'Guest Customer'),
+  },
+  { key: 'customer_phone', label: 'Customer Phone', getValue: (o) => o.customer?.phone || o.shipping_address?.phone || '' },
+  { key: 'customer_email', label: 'Customer Email', getValue: (o) => o.customer?.email || '' },
+  { key: 'total_price', label: 'Total Price', getValue: (o) => o.total_price || '0' },
+  { key: 'payment_method', label: 'Payment Method', getValue: (o) => (o.financial_status === 'paid' ? 'Prepaid' : 'COD') },
+  { key: 'financial_status', label: 'Financial Status', getValue: (o) => o.financial_status || '' },
+  { key: 'courier_partner', label: 'Courier Partner', getValue: (o) => o.fulfillments?.[0]?.tracking_company || '' },
+  { key: 'awb_tracking', label: 'AWB/Tracking Number', getValue: (o) => o.fulfillments?.[0]?.tracking_number || '' },
+  { key: 'shipment_status', label: 'Shipment Status', getValue: (o) => o.fulfillments?.[0]?.shipment_status || '' },
+  { key: 'source', label: 'Source', getValue: (o) => (o as any).source || 'shopify' },
+  {
+    key: 'dispatch_date',
+    label: 'Dispatch Date',
+    getValue: (o) => {
+      if (o.fulfillment_status !== 'fulfilled') return ''
+      const f = o.fulfillments?.[0]
+      return f?.dispatch_date || f?.created_at || ''
+    },
+  },
+  {
+    key: 'delivery_date',
+    label: 'Delivery Date',
+    getValue: (o) => {
+      const f = o.fulfillments?.[0]
+      if ((f?.shipment_status || '').toLowerCase() !== 'delivered') return ''
+      return f?.delivery_date || f?.created_at || ''
+    },
+  },
+]
+
+const ALL_EXPORT_COLUMN_KEYS = EXPORT_COLUMNS.map((c) => c.key)
+
+function escapeCsvCell(value: string): string {
+  return `"${String(value).replace(/"/g, '""')}"`
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function ShiprocketDashboardPage() {
@@ -168,6 +263,10 @@ export default function ShiprocketDashboardPage() {
   const [pageLoading, setPageLoading] = useState<boolean>(false)
   const [syncing, setSyncing] = useState<boolean>(false)
   const [exporting, setExporting] = useState<boolean>(false)
+  const [showExportModal, setShowExportModal] = useState<boolean>(false)
+  const [exportFromOrderId, setExportFromOrderId] = useState<string>('')
+  const [exportToOrderId, setExportToOrderId] = useState<string>('')
+  const [selectedExportColumns, setSelectedExportColumns] = useState<ExportColumnKey[]>(ALL_EXPORT_COLUMN_KEYS)
   const syncTimeoutRef = useRef<any>(null)
 
   // Search & Basic Sorting States
@@ -614,6 +713,7 @@ export default function ShiprocketDashboardPage() {
     setOrders((prev) =>
       prev.map((o) => {
         if (o.id !== orderId) return o
+        const nowIso = new Date().toISOString()
         return {
           ...o,
           fulfillment_status: 'fulfilled',
@@ -625,7 +725,9 @@ export default function ShiprocketDashboardPage() {
               tracking_company: courier.name,
               tracking_url: '#',
               shipment_status: 'pickup_scheduled',
-              created_at: new Date().toISOString()
+              created_at: nowIso,
+              dispatch_date: nowIso,
+              delivery_date: null
             }
           ]
         }
@@ -859,9 +961,41 @@ export default function ShiprocketDashboardPage() {
   }
 
   // ── Export to Google Sheets ──
-  const handleExportToSheets = async () => {
+  const handleExportToSheets = async (fromOrderId = exportFromOrderId, toOrderId = exportToOrderId) => {
+    const trimmedFrom = fromOrderId.trim()
+    const trimmedTo = toOrderId.trim()
+
+    if (!trimmedFrom || !trimmedTo) {
+      triggerNotification('error', 'Please enter both From and To Order IDs.')
+      return
+    }
+
+    const fromNum = parseOrderIdValue(trimmedFrom)
+    const toNum = parseOrderIdValue(trimmedTo)
+
+    if (trimmedFrom && fromNum === null) {
+      triggerNotification('error', 'Invalid From Order ID. Use values like R_1650 or 1650.')
+      return
+    }
+    if (trimmedTo && toNum === null) {
+      triggerNotification('error', 'Invalid To Order ID. Use values like R_1670 or 1670.')
+      return
+    }
+    if (fromNum !== null && toNum !== null && fromNum > toNum) {
+      triggerNotification('error', 'From Order ID cannot be greater than To Order ID.')
+      return
+    }
+
+    if (selectedExportColumns.length === 0) {
+      triggerNotification('error', 'Please select at least one column to export.')
+      return
+    }
+
+    const columnsToExport = EXPORT_COLUMNS.filter((col) => selectedExportColumns.includes(col.key))
+
     try {
       setExporting(true)
+      setShowExportModal(false)
       
       const queryParams = new URLSearchParams({
         tab: currentTab,
@@ -887,48 +1021,25 @@ export default function ShiprocketDashboardPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to export orders')
 
-      const exportList: ShopifyOrder[] = data.orders || []
-      if (exportList.length === 0) {
+      const allOrders: ShopifyOrder[] = data.orders || []
+      const exportList = allOrders.filter((o) => isOrderInExportRange(o, trimmedFrom, trimmedTo))
+
+      if (allOrders.length === 0) {
         triggerNotification('error', 'No orders found to export.')
         setExporting(false)
         return
       }
+      if (exportList.length === 0) {
+        triggerNotification('error', 'No orders found in the selected Order ID range.')
+        setExporting(false)
+        return
+      }
 
-      const headers = [
-        'Order ID',
-        'Order Name',
-        'Date Created',
-        'Customer Name',
-        'Customer Phone',
-        'Customer Email',
-        'Total Price',
-        'Payment Method',
-        'Financial Status',
-        'Courier Partner',
-        'AWB/Tracking Number',
-        'Shipment Status',
-        'Source'
-      ]
+      const headers = columnsToExport.map((col) => col.label)
 
-      const rows = exportList.map(o => {
-        const custName = o.customer ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.trim() : 'Guest Customer'
-        const latestFulfillment = (o.fulfillments?.[0] || {}) as any
-        return [
-          `"${o.id}"`,
-          `"${o.name || ''}"`,
-          `"${o.created_at}"`,
-          `"${custName.replace(/"/g, '""')}"`,
-          `"${o.customer?.phone || o.shipping_address?.phone || ''}"`,
-          `"${o.customer?.email || ''}"`,
-          `"${o.total_price || '0'}"`,
-          `"${o.financial_status === 'paid' ? 'Prepaid' : 'COD'}"`,
-          `"${o.financial_status || ''}"`,
-          `"${latestFulfillment.tracking_company || ''}"`,
-          `"${latestFulfillment.tracking_number || ''}"`,
-          `"${latestFulfillment.shipment_status || ''}"`,
-          `"${(o as any).source || 'shopify'}"`
-        ].join(',')
-      })
+      const rows = exportList.map((o) =>
+        columnsToExport.map((col) => escapeCsvCell(col.getValue(o))).join(',')
+      )
 
       const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n')
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
@@ -936,8 +1047,11 @@ export default function ShiprocketDashboardPage() {
       const link = document.createElement('a')
       
       const timestamp = new Date().toISOString().slice(0, 10)
+      const rangeSuffix = trimmedFrom || trimmedTo
+        ? `_${trimmedFrom || 'start'}_to_${trimmedTo || 'end'}`
+        : ''
       link.setAttribute('href', url)
-      link.setAttribute('download', `orders_export_${currentTab}_${timestamp}.csv`)
+      link.setAttribute('download', `orders_export_${currentTab}${rangeSuffix}_${timestamp}.csv`)
       link.style.visibility = 'hidden'
       document.body.appendChild(link)
       link.click()
@@ -1048,7 +1162,7 @@ export default function ShiprocketDashboardPage() {
                   Shiprocket Logistics Core
                 </div>
               </div>
-              <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-r from-white via-slate-100 to-purple-400 bg-clip-text text-transparent">
+              <h1 className="text-3xl font-extrabold tracking-tight heading-gradient">
                 Shiprocket Order Panel
               </h1>
             </div>
@@ -1108,7 +1222,7 @@ export default function ShiprocketDashboardPage() {
                 </button>
 
                 <button
-                  onClick={handleExportToSheets}
+                  onClick={() => setShowExportModal(true)}
                   disabled={exporting}
                   className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-xs font-semibold text-white transition-colors disabled:opacity-50"
                 >
@@ -2264,7 +2378,7 @@ export default function ShiprocketDashboardPage() {
 
                                 {/* RTO Reason */}
                                 <td className="px-6 py-4 text-xs text-red-300 font-bold max-w-[200px] leading-relaxed">
-                                  Customer refused delivery - "Address incorrect"
+                                  {activeShipment?.shipment_status_reason || '—'}
                                 </td>
 
                                 {/* Status */}
@@ -2536,6 +2650,146 @@ export default function ShiprocketDashboardPage() {
       </div>
     </main>
 
+      {/* ── EXPORT TO SHEETS MODAL ── */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="bg-card border border-white/10 rounded-3xl w-full max-w-lg p-6 shadow-2xl relative animate-scale-up max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setShowExportModal(false)}
+              className="absolute right-4 top-4 order-drawer-muted hover:opacity-80 transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-500 dark:text-emerald-400">
+                <Download className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold" style={{ color: 'var(--foreground)' }}>Export to Sheets</h3>
+                <p className="text-xs order-drawer-muted font-normal">Choose order range and columns to export</p>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider order-drawer-muted mb-1.5">
+                    From Order ID
+                  </label>
+                  <input
+                    type="text"
+                    value={exportFromOrderId}
+                    onChange={(e) => setExportFromOrderId(e.target.value)}
+                    placeholder="e.g. R_1650 or 1650"
+                    className="crm-input w-full px-4 py-2.5 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider order-drawer-muted mb-1.5">
+                    To Order ID
+                  </label>
+                  <input
+                    type="text"
+                    value={exportToOrderId}
+                    onChange={(e) => setExportToOrderId(e.target.value)}
+                    placeholder="e.g. R_1670 or 1670"
+                    className="crm-input w-full px-4 py-2.5 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-bold uppercase tracking-wider order-drawer-muted">
+                    Columns to Export
+                  </label>
+                  <div className="flex items-center gap-2 text-[11px] font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedExportColumns(ALL_EXPORT_COLUMN_KEYS)}
+                      className="text-emerald-600 dark:text-emerald-400 hover:underline"
+                    >
+                      Select All
+                    </button>
+                    <span className="order-drawer-muted">|</span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedExportColumns([])}
+                      className="order-drawer-muted hover:underline"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+
+                <div className="order-drawer-surface rounded-2xl p-3 grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-52 overflow-y-auto">
+                  {EXPORT_COLUMNS.map((col) => {
+                    const checked = selectedExportColumns.includes(col.key)
+                    return (
+                      <label
+                        key={col.key}
+                        className={`flex items-center gap-2.5 px-3 py-2 rounded-xl cursor-pointer transition-colors ${
+                          checked
+                            ? 'bg-emerald-500/10 border border-emerald-500/25'
+                            : 'hover:bg-white/5 border border-transparent'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            setSelectedExportColumns((prev) =>
+                              prev.includes(col.key)
+                                ? prev.filter((k) => k !== col.key)
+                                : [...prev, col.key]
+                            )
+                          }}
+                          className="rounded border-white/20 bg-white/5 text-emerald-600 focus:ring-emerald-500/30 focus:ring-offset-0"
+                        />
+                        <span className="text-xs font-medium" style={{ color: 'var(--foreground)' }}>
+                          {col.label}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+                <p className="text-[11px] order-drawer-muted mt-2">
+                  {selectedExportColumns.length} of {EXPORT_COLUMNS.length} columns selected
+                </p>
+              </div>
+
+              <p className="text-[11px] order-drawer-muted leading-relaxed">
+                Current tab filters and search still apply. Only orders within the ID range and selected columns will be exported.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 mt-6">
+              <button
+                onClick={() => setShowExportModal(false)}
+                className="flex-1 py-2.5 rounded-xl order-drawer-surface text-xs font-bold hover:opacity-90 transition-all"
+                style={{ color: 'var(--foreground-muted)' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleExportToSheets()}
+                disabled={exporting || selectedExportColumns.length === 0}
+                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 text-xs font-bold text-white transition-all disabled:opacity-50"
+              >
+                {exporting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Download className="w-3.5 h-3.5" />
+                )}
+                {exporting ? 'Exporting...' : 'Export CSV'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── COURIER SELECTION MODAL (Ship Now triggered) ── */}
       {activeCourierOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
@@ -2777,76 +3031,76 @@ export default function ShiprocketDashboardPage() {
 
       {/* ── GORGEOUS SLIDING ORDER DETAILS DRAWER ── */}
       {activeDetailOrder && (
-        <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => { setActiveDetailOrder(null); setDrawerPhoneRevealed(false) }}>
+        <div className="order-drawer-overlay fixed inset-0 z-50 flex justify-end backdrop-blur-sm animate-fade-in" onClick={() => { setActiveDetailOrder(null); setDrawerPhoneRevealed(false) }}>
           <div
-            className="bg-[#0b0e14] border-l border-white/10 w-full max-w-xl h-full p-6 shadow-2xl relative flex flex-col animate-slide-left text-white overflow-y-auto"
+            className="order-drawer-panel border-l w-full max-w-xl h-full p-6 shadow-2xl relative flex flex-col animate-slide-left overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Close button */}
             <button
               onClick={() => { setActiveDetailOrder(null); setDrawerPhoneRevealed(false) }}
-              className="absolute right-4 top-4 text-white/40 hover:text-white transition-colors"
+              className="absolute right-4 top-4 order-drawer-muted hover:opacity-80 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
 
             {/* Header info */}
-            <div className="flex items-center gap-3 mb-6 border-b border-white/10 pb-4">
-              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+            <div className="flex items-center gap-3 mb-6 border-b order-drawer-divider pb-4">
+              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-600 dark:text-purple-400 shrink-0">
                 <ShoppingCart className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xl font-extrabold text-white flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="text-xl font-extrabold flex items-center gap-2">
                     {activeDetailOrder.name}
                     {(activeDetailOrder as any).is_test_order && <Badge label="TEST ORDER" variant="red" />}
                   </h3>
                   <Badge label={activeDetailOrder.financial_status} variant={statusVariant(activeDetailOrder.financial_status)} />
                   <Badge label={activeDetailOrder.fulfillment_status ?? 'Unfulfilled'} variant={statusVariant(activeDetailOrder.fulfillment_status)} />
                 </div>
-                <p className="text-xs text-white/50 mt-1">Placed on {new Date(activeDetailOrder.created_at).toLocaleString()}</p>
+                <p className="text-xs order-drawer-muted mt-1">Placed on {new Date(activeDetailOrder.created_at).toLocaleString()}</p>
               </div>
             </div>
 
             <div className="flex-1 space-y-6">
               {/* Items Summary */}
               <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5">
+                <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                   <Package className="w-3.5 h-3.5" />
                   Items Ordered
                 </p>
-                <div className="bg-white/5 border border-white/5 p-4 rounded-2xl divide-y divide-white/5 space-y-3">
+                <div className="order-drawer-surface p-4 rounded-2xl divide-y space-y-3" style={{ borderColor: 'var(--border)' }}>
                   {activeDetailOrder.line_items.map((item, idx) => (
-                    <div key={item.id} className={`flex items-start justify-between gap-4 text-xs ${idx > 0 ? 'pt-3' : ''}`}>
+                    <div key={item.id} className={`flex items-start justify-between gap-4 text-xs ${idx > 0 ? 'pt-3 border-t order-drawer-divider' : ''}`}>
                       <div className="flex-1">
-                        <p className="text-white font-bold">{item.title}</p>
+                        <p className="font-bold">{item.title}</p>
                         {item.variant_title && (
-                          <p className="text-white/50 text-[10px] mt-0.5">{item.variant_title}</p>
+                          <p className="order-drawer-muted text-[10px] mt-0.5">{item.variant_title}</p>
                         )}
-                        {item.sku && <p className="text-white/40 text-[10px]">SKU: {item.sku}</p>}
+                        {item.sku && <p className="order-drawer-muted text-[10px] opacity-80">SKU: {item.sku}</p>}
                       </div>
                       <div className="text-right shrink-0">
-                        <p className="text-white font-semibold">
+                        <p className="font-semibold">
                           ₹{item.price} × {item.quantity}
                         </p>
-                        <p className="text-white/50 text-[10px] mt-0.5">{item.fulfillment_status ?? 'Unfulfilled'}</p>
+                        <p className="order-drawer-muted text-[10px] mt-0.5">{item.fulfillment_status ?? 'Unfulfilled'}</p>
                       </div>
                     </div>
                   ))}
 
                   {/* Pricing Breakdown */}
-                  <div className="pt-3 border-t border-white/10 space-y-1.5 text-xs text-white/60">
+                  <div className="pt-3 border-t order-drawer-divider space-y-1.5 text-xs order-drawer-muted">
                     <div className="flex justify-between">
                       <span>Subtotal</span>
-                      <span className="text-white">₹{parseFloat(activeDetailOrder.total_price) - 40}.00</span>
+                      <span className="font-semibold" style={{ color: 'var(--foreground)' }}>₹{parseFloat(activeDetailOrder.total_price) - 40}.00</span>
                     </div>
                     <div className="flex justify-between">
                       <span>Shipping Fees</span>
-                      <span className="text-white">₹40.00</span>
+                      <span className="font-semibold" style={{ color: 'var(--foreground)' }}>₹40.00</span>
                     </div>
-                    <div className="flex justify-between pt-2 border-t border-white/5 text-sm font-bold">
-                      <span className="text-white">Total Amount</span>
-                      <span className="text-purple-400">₹{activeDetailOrder.total_price} INR</span>
+                    <div className="flex justify-between pt-2 border-t order-drawer-divider text-sm font-bold">
+                      <span>Total Amount</span>
+                      <span className="text-purple-600 dark:text-purple-400">₹{activeDetailOrder.total_price} INR</span>
                     </div>
                   </div>
                 </div>
@@ -2854,27 +3108,27 @@ export default function ShiprocketDashboardPage() {
 
               {/* Customer summary */}
               <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5">
+                <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                   <User className="w-3.5 h-3.5" />
                   Customer Details
                 </p>
-                <div className="bg-white/5 border border-white/5 p-4 rounded-2xl text-xs space-y-2.5 font-semibold">
-                  <div className="flex justify-between">
-                    <span className="text-white/40 font-normal">Contact Name</span>
-                    <span className="text-white">
+                <div className="order-drawer-surface p-4 rounded-2xl text-xs space-y-2.5 font-semibold">
+                  <div className="flex justify-between gap-4">
+                    <span className="order-drawer-muted font-normal shrink-0">Contact Name</span>
+                    <span className="text-right">
                       {activeDetailOrder.customer?.first_name} {activeDetailOrder.customer?.last_name}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-white/40 font-normal">Email Address</span>
-                    <span className="text-white truncate max-w-[200px]" title={activeDetailOrder.customer?.email || ''}>
+                  <div className="flex justify-between gap-4">
+                    <span className="order-drawer-muted font-normal shrink-0">Email Address</span>
+                    <span className="truncate max-w-[200px] text-right" title={activeDetailOrder.customer?.email || ''}>
                       {activeDetailOrder.customer?.email || 'N/A'}
                     </span>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-white/40 font-normal">Phone Coordinates</span>
+                  <div className="flex justify-between items-center gap-4">
+                    <span className="order-drawer-muted font-normal shrink-0">Phone Coordinates</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-white font-mono">
+                      <span className="font-mono">
                         {drawerPhoneRevealed
                           ? (activeDetailOrder.customer?.phone || activeDetailOrder.shipping_address?.phone || 'N/A')
                           : 'xxxxxxxxxx'
@@ -2882,7 +3136,7 @@ export default function ShiprocketDashboardPage() {
                       </span>
                       <button
                         onClick={() => setDrawerPhoneRevealed(v => !v)}
-                        className="text-white/30 hover:text-purple-400 transition-colors"
+                        className="order-drawer-muted hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
                         title={drawerPhoneRevealed ? 'Hide phone' : 'Reveal phone'}
                       >
                         {drawerPhoneRevealed ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -2895,22 +3149,22 @@ export default function ShiprocketDashboardPage() {
               {/* Addresses */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5">
+                  <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5" />
                     Shipping Address
                   </p>
-                  <div className="bg-white/5 border border-white/5 p-4 rounded-2xl text-xs text-white/80 leading-relaxed font-semibold">
-                    <p className="font-bold text-white mb-1">
+                  <div className="order-drawer-surface p-4 rounded-2xl text-xs leading-relaxed font-semibold">
+                    <p className="font-bold mb-1">
                       {activeDetailOrder.shipping_address?.first_name} {activeDetailOrder.shipping_address?.last_name}
                     </p>
-                    <p className="font-normal">{activeDetailOrder.shipping_address?.address1}</p>
+                    <p className="font-normal order-drawer-muted">{activeDetailOrder.shipping_address?.address1}</p>
                     {activeDetailOrder.shipping_address?.address2 && (
-                      <p className="font-normal">{activeDetailOrder.shipping_address.address2}</p>
+                      <p className="font-normal order-drawer-muted">{activeDetailOrder.shipping_address.address2}</p>
                     )}
-                    <p className="font-normal">
+                    <p className="font-normal order-drawer-muted">
                       {activeDetailOrder.shipping_address?.city}, {activeDetailOrder.shipping_address?.province} - {activeDetailOrder.shipping_address?.zip}
                     </p>
-                    <div className="flex items-center gap-1.5 font-normal text-white/50 mt-1">
+                    <div className="flex items-center gap-1.5 font-normal order-drawer-muted mt-1">
                       <span>Ph:</span>
                       <span className="font-mono">
                         {drawerPhoneRevealed
@@ -2920,7 +3174,7 @@ export default function ShiprocketDashboardPage() {
                       </span>
                       <button
                         onClick={() => setDrawerPhoneRevealed(v => !v)}
-                        className="text-white/30 hover:text-purple-400 transition-colors"
+                        className="order-drawer-muted hover:text-purple-600 dark:hover:text-purple-400 transition-colors"
                         title={drawerPhoneRevealed ? 'Hide phone' : 'Reveal phone'}
                       >
                         {drawerPhoneRevealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
@@ -2930,16 +3184,16 @@ export default function ShiprocketDashboardPage() {
                 </div>
 
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5">
+                  <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                     <MapPin className="w-3.5 h-3.5" />
                     Billing Address
                   </p>
-                  <div className="bg-white/5 border border-white/5 p-4 rounded-2xl text-xs text-white/80 leading-relaxed font-semibold">
-                    <p className="font-bold text-white mb-1">
+                  <div className="order-drawer-surface p-4 rounded-2xl text-xs leading-relaxed font-semibold">
+                    <p className="font-bold mb-1">
                       {activeDetailOrder.billing_address?.first_name} {activeDetailOrder.billing_address?.last_name}
                     </p>
-                    <p className="font-normal">{activeDetailOrder.billing_address?.address1}</p>
-                    <p className="font-normal">
+                    <p className="font-normal order-drawer-muted">{activeDetailOrder.billing_address?.address1}</p>
+                    <p className="font-normal order-drawer-muted">
                       {activeDetailOrder.billing_address?.city}, {activeDetailOrder.billing_address?.province} - {activeDetailOrder.billing_address?.zip}
                     </p>
                   </div>
@@ -2949,24 +3203,24 @@ export default function ShiprocketDashboardPage() {
               {/* Shiprocket logistics stats */}
               {activeDetailOrder.fulfillment_status === 'fulfilled' && (
                 <div>
-                  <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3 flex items-center gap-1.5">
+                  <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                     <Truck className="w-3.5 h-3.5" />
                     Shiprocket Courier Routing
                   </p>
-                  <div className="bg-white/5 border border-white/5 p-4 rounded-2xl text-xs space-y-2.5 font-semibold">
-                    <div className="flex justify-between">
-                      <span className="text-white/40 font-normal">Assigned Courier</span>
-                      <span className="text-white">{activeDetailOrder.fulfillments?.[0]?.tracking_company}</span>
+                  <div className="order-drawer-surface p-4 rounded-2xl text-xs space-y-2.5 font-semibold">
+                    <div className="flex justify-between gap-4">
+                      <span className="order-drawer-muted font-normal">Assigned Courier</span>
+                      <span>{activeDetailOrder.fulfillments?.[0]?.tracking_company}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-white/40 font-normal">AWB Number</span>
-                      <span className="font-mono text-purple-300 underline cursor-pointer hover:text-purple-200" onClick={() => { setActiveDetailOrder(null); setActiveTrackingOrder(activeDetailOrder); }}>
+                    <div className="flex justify-between gap-4">
+                      <span className="order-drawer-muted font-normal">AWB Number</span>
+                      <span className="font-mono text-purple-600 dark:text-purple-300 underline cursor-pointer hover:opacity-80" onClick={() => { setActiveDetailOrder(null); setActiveTrackingOrder(activeDetailOrder); }}>
                         {activeDetailOrder.fulfillments?.[0]?.tracking_number}
                       </span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-white/40 font-normal">Courier Status</span>
-                      <span className="text-yellow-400 uppercase">{activeDetailOrder.fulfillments?.[0]?.shipment_status || 'scheduled'}</span>
+                    <div className="flex justify-between gap-4">
+                      <span className="order-drawer-muted font-normal">Courier Status</span>
+                      <span className="text-amber-600 dark:text-yellow-400 uppercase">{activeDetailOrder.fulfillments?.[0]?.shipment_status || 'scheduled'}</span>
                     </div>
                   </div>
                 </div>
@@ -2974,18 +3228,18 @@ export default function ShiprocketDashboardPage() {
             </div>
 
             {/* Bottom Actions */}
-            <div className="mt-8 pt-4 border-t border-white/10 flex flex-col gap-3 shrink-0">
+            <div className="mt-8 pt-4 border-t order-drawer-divider flex flex-col gap-3 shrink-0">
               {!isOrderCancelled(activeDetailOrder) && (
                 <div className="flex gap-2.5">
                   <button
                     onClick={() => handleDeleteOrder(activeDetailOrder.id)}
                     disabled={deletingOrderId === activeDetailOrder.id}
-                    className="flex-1 py-2.5 rounded-xl bg-red-950/40 hover:bg-red-950/60 border border-red-500/30 text-xs font-extrabold text-red-400 text-center transition-all shadow-lg shadow-red-900/10 active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 py-2.5 rounded-xl bg-red-500/10 hover:bg-red-500/15 border border-red-500/30 text-xs font-extrabold text-red-600 dark:text-red-400 text-center transition-all active:scale-95 flex items-center justify-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {deletingOrderId === activeDetailOrder.id ? (
-                      <Loader2 className="w-4.5 h-4.5 animate-spin text-red-400" />
+                      <Loader2 className="w-4.5 h-4.5 animate-spin" />
                     ) : (
-                      <Trash2 className="w-4 h-4 text-red-400" />
+                      <Trash2 className="w-4 h-4" />
                     )}
                     {deletingOrderId === activeDetailOrder.id ? 'Cancelling...' : 'Cancel Order'}
                   </button>
@@ -2995,8 +3249,8 @@ export default function ShiprocketDashboardPage() {
                     disabled={togglingTestOrderId === activeDetailOrder.id}
                     className={`flex-1 py-2.5 rounded-xl border text-xs font-extrabold text-center transition-all active:scale-95 flex items-center justify-center gap-1.5 ${
                       (activeDetailOrder as any).is_test_order
-                        ? 'bg-[#854d0e]/20 hover:bg-[#854d0e]/30 border-amber-500/30 text-amber-400'
-                        : 'bg-purple-950/40 hover:bg-purple-950/60 border-purple-500/30 text-purple-400'
+                        ? 'bg-amber-500/10 hover:bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-400'
+                        : 'bg-purple-500/10 hover:bg-purple-500/15 border-purple-500/30 text-purple-700 dark:text-purple-400'
                     }`}
                   >
                     {togglingTestOrderId === activeDetailOrder.id ? (
@@ -3015,8 +3269,8 @@ export default function ShiprocketDashboardPage() {
                   disabled={togglingTestOrderId === activeDetailOrder.id}
                   className={`w-full py-2.5 rounded-xl border text-xs font-extrabold text-center transition-all active:scale-95 flex items-center justify-center gap-1.5 ${
                     (activeDetailOrder as any).is_test_order
-                      ? 'bg-[#854d0e]/20 hover:bg-[#854d0e]/30 border-amber-500/30 text-amber-400'
-                      : 'bg-purple-950/40 hover:bg-purple-950/60 border-purple-500/30 text-purple-400'
+                      ? 'bg-amber-500/10 hover:bg-amber-500/15 border-amber-500/30 text-amber-700 dark:text-amber-400'
+                      : 'bg-purple-500/10 hover:bg-purple-500/15 border-purple-500/30 text-purple-700 dark:text-purple-400'
                   }`}
                 >
                   {togglingTestOrderId === activeDetailOrder.id ? (
@@ -3038,7 +3292,7 @@ export default function ShiprocketDashboardPage() {
                 </button>
                 <button
                   onClick={() => setActiveDetailOrder(null)}
-                  className="flex-1 py-2.5 rounded-xl bg-white/5 border border-white/10 text-xs font-bold text-white hover:bg-white/10 transition-all text-center"
+                  className="flex-1 py-2.5 rounded-xl order-drawer-surface text-xs font-bold hover:opacity-90 transition-all text-center"
                 >
                   Close Drawer
                 </button>

@@ -31,7 +31,8 @@ interface ShopifyOrder {
   line_items: LineItem[]
   fulfillments?: Array<{ id: number; status: string; tracking_number: string | null
     tracking_company: string | null; tracking_url: string | null
-    shipment_status: string | null; created_at: string }>
+    shipment_status: string | null; created_at: string
+    dispatch_date?: string | null; delivery_date?: string | null }>
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -130,12 +131,17 @@ function CODTable({ orders }: { orders: ShopifyOrder[] }) {
   }, [orders, search, remittanceFilter, logisticsFilter])
 
   const exportCSV = () => {
-    const header = 'Order,Customer,City,State,Pincode,Amount,Logistics,Remittance'
+    const header = 'Order,Customer,City,State,Pincode,Amount,Logistics,Remittance,Dispatch Date,Delivery Date'
     const rows = filtered.map((o) => {
       const cust = o.customer ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.trim() : 'Guest'
       const status = getShipStatus(o)
       const remit = !o.fulfillment_status ? 'Pending' : status === 'delivered' ? 'Settled' : ['failure','rto','returned'].includes(status) ? 'RTO Unrealized' : 'Pending'
-      return `${o.name},"${cust}","${o.shipping_address?.city||''}","${o.shipping_address?.province||''}","${o.shipping_address?.zip||''}",${o.total_price},${status||'Unfulfilled'},${remit}`
+      
+      const latestFulfillment = (o.fulfillments?.[0] || {}) as any
+      const dispatchDate = o.fulfillment_status ? (latestFulfillment.dispatch_date || latestFulfillment.created_at || '') : ''
+      const deliveryDate = status === 'delivered' ? (latestFulfillment.delivery_date || latestFulfillment.created_at || '') : ''
+      
+      return `${o.name},"${cust}","${o.shipping_address?.city||''}","${o.shipping_address?.province||''}","${o.shipping_address?.zip||''}",${o.total_price},${status||'Unfulfilled'},${remit},"${dispatchDate}","${deliveryDate}"`
     })
     const csv = [header, ...rows].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
