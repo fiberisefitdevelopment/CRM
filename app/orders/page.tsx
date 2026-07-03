@@ -2353,7 +2353,10 @@ export default function ShiprocketDashboardPage() {
                                 <td className="px-6 py-4 font-medium">
                                   <div className="flex flex-col gap-1.5">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
-                                    <Badge label="COD" variant="yellow" />
+                                    <Badge
+                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
+                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                    />
                                   </div>
                                 </td>
 
