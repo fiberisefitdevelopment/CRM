@@ -215,6 +215,7 @@ type ExportColumnKey =
   | 'customer_name'
   | 'customer_phone'
   | 'customer_email'
+  | 'shipping_address'
   | 'total_price'
   | 'payment_method'
   | 'financial_status'
@@ -242,6 +243,11 @@ const EXPORT_COLUMNS: ExportColumn[] = [
   },
   { key: 'customer_phone', label: 'Customer Phone', getValue: (o) => o.customer?.phone || o.shipping_address?.phone || '' },
   { key: 'customer_email', label: 'Customer Email', getValue: (o) => o.customer?.email || '' },
+  {
+    key: 'shipping_address',
+    label: 'Shipping Address',
+    getValue: (o) => formatShippingAddressFull(getOrderShippingAddress(o)).replace(/\n/g, ', '),
+  },
   { key: 'total_price', label: 'Total Price', getValue: (o) => o.total_price || '0' },
   { key: 'payment_method', label: 'Payment Method', getValue: (o) => (o.financial_status === 'paid' ? 'Prepaid' : 'COD') },
   { key: 'financial_status', label: 'Financial Status', getValue: (o) => o.financial_status || '' },
