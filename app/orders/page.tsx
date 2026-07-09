@@ -63,6 +63,22 @@ interface Address {
   phone?: string
 }
 
+function getOrderShippingAddress(order: ShopifyOrder): Address | null | undefined {
+  return order.shipping_address || order.billing_address
+}
+
+function formatShippingAddressFull(addr?: Address | null): string {
+  if (!addr) return 'N/A'
+  return [
+    addr.address1,
+    addr.address2,
+    [addr.city, addr.province].filter(Boolean).join(', ') + (addr.zip ? ` - ${addr.zip}` : ''),
+    addr.country,
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
 interface ShopifyOrder {
   id: number
   name: string
@@ -175,6 +191,23 @@ function isOrderInExportRange(order: ShopifyOrder, fromId: string, toId: string)
   return true
 }
 
+function getOrderDateKey(order: ShopifyOrder): string {
+  const d = new Date(order.created_at)
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function isOrderInExportDateRange(order: ShopifyOrder, fromDate: string, toDate: string): boolean {
+  if (!fromDate && !toDate) return true
+  const orderDay = getOrderDateKey(order)
+  if (fromDate && toDate) return orderDay >= fromDate && orderDay <= toDate
+  if (fromDate) return orderDay >= fromDate
+  if (toDate) return orderDay <= toDate
+  return true
+}
+
 type ExportColumnKey =
   | 'order_id'
   | 'order_name'
@@ -266,6 +299,8 @@ export default function ShiprocketDashboardPage() {
   const [showExportModal, setShowExportModal] = useState<boolean>(false)
   const [exportFromOrderId, setExportFromOrderId] = useState<string>('')
   const [exportToOrderId, setExportToOrderId] = useState<string>('')
+  const [exportFromDate, setExportFromDate] = useState<string>('')
+  const [exportToDate, setExportToDate] = useState<string>('')
   const [selectedExportColumns, setSelectedExportColumns] = useState<ExportColumnKey[]>(ALL_EXPORT_COLUMN_KEYS)
   const syncTimeoutRef = useRef<any>(null)
 
@@ -961,12 +996,32 @@ export default function ShiprocketDashboardPage() {
   }
 
   // ── Export to Google Sheets ──
-  const handleExportToSheets = async (fromOrderId = exportFromOrderId, toOrderId = exportToOrderId) => {
+  const handleExportToSheets = async (
+    fromOrderId = exportFromOrderId,
+    toOrderId = exportToOrderId,
+    fromDate = exportFromDate,
+    toDate = exportToDate,
+  ) => {
     const trimmedFrom = fromOrderId.trim()
     const trimmedTo = toOrderId.trim()
+    const trimmedFromDate = fromDate.trim()
+    const trimmedToDate = toDate.trim()
 
-    if (!trimmedFrom || !trimmedTo) {
+    const hasOrderIdRange = Boolean(trimmedFrom || trimmedTo)
+    const hasDateRange = Boolean(trimmedFromDate || trimmedToDate)
+
+    if (!hasOrderIdRange && !hasDateRange) {
+      triggerNotification('error', 'Please enter an Order ID range and/or a date range.')
+      return
+    }
+
+    if (hasOrderIdRange && (!trimmedFrom || !trimmedTo)) {
       triggerNotification('error', 'Please enter both From and To Order IDs.')
+      return
+    }
+
+    if (hasDateRange && (!trimmedFromDate || !trimmedToDate)) {
+      triggerNotification('error', 'Please enter both From Date and Till Date.')
       return
     }
 
@@ -983,6 +1038,10 @@ export default function ShiprocketDashboardPage() {
     }
     if (fromNum !== null && toNum !== null && fromNum > toNum) {
       triggerNotification('error', 'From Order ID cannot be greater than To Order ID.')
+      return
+    }
+    if (trimmedFromDate && trimmedToDate && trimmedFromDate > trimmedToDate) {
+      triggerNotification('error', 'From Date cannot be after Till Date.')
       return
     }
 
@@ -1012,9 +1071,14 @@ export default function ShiprocketDashboardPage() {
       if (filterRtoRisk !== 'all') queryParams.set('rto', filterRtoRisk)
       if (minPrice) queryParams.set('min_price', minPrice)
       if (maxPrice) queryParams.set('max_price', maxPrice)
-      if (datePreset !== 'all') queryParams.set('date_preset', datePreset)
-      if (startDate) queryParams.set('start_date', startDate)
-      if (endDate) queryParams.set('end_date', endDate)
+      if (hasDateRange) {
+        queryParams.set('start_date', trimmedFromDate)
+        queryParams.set('end_date', trimmedToDate)
+      } else {
+        if (datePreset !== 'all') queryParams.set('date_preset', datePreset)
+        if (startDate) queryParams.set('start_date', startDate)
+        if (endDate) queryParams.set('end_date', endDate)
+      }
       if (filterFulfillmentStatus !== 'all') queryParams.set('fulfillment', filterFulfillmentStatus)
 
       const res = await fetch(`/api/shopify/orders?${queryParams.toString()}`)
@@ -1022,7 +1086,11 @@ export default function ShiprocketDashboardPage() {
       if (!res.ok) throw new Error(data.error || 'Failed to export orders')
 
       const allOrders: ShopifyOrder[] = data.orders || []
-      const exportList = allOrders.filter((o) => isOrderInExportRange(o, trimmedFrom, trimmedTo))
+      const exportList = allOrders.filter(
+        (o) =>
+          isOrderInExportRange(o, trimmedFrom, trimmedTo) &&
+          isOrderInExportDateRange(o, trimmedFromDate, trimmedToDate)
+      )
 
       if (allOrders.length === 0) {
         triggerNotification('error', 'No orders found to export.')
@@ -1030,7 +1098,7 @@ export default function ShiprocketDashboardPage() {
         return
       }
       if (exportList.length === 0) {
-        triggerNotification('error', 'No orders found in the selected Order ID range.')
+        triggerNotification('error', 'No orders found in the selected range.')
         setExporting(false)
         return
       }
@@ -1047,11 +1115,12 @@ export default function ShiprocketDashboardPage() {
       const link = document.createElement('a')
       
       const timestamp = new Date().toISOString().slice(0, 10)
-      const rangeSuffix = trimmedFrom || trimmedTo
-        ? `_${trimmedFrom || 'start'}_to_${trimmedTo || 'end'}`
-        : ''
+      const rangeSuffix = [
+        trimmedFrom || trimmedTo ? `${trimmedFrom || 'start'}_to_${trimmedTo || 'end'}` : '',
+        trimmedFromDate || trimmedToDate ? `${trimmedFromDate || 'start'}_to_${trimmedToDate || 'end'}` : '',
+      ].filter(Boolean).join('_')
       link.setAttribute('href', url)
-      link.setAttribute('download', `orders_export_${currentTab}${rangeSuffix}_${timestamp}.csv`)
+      link.setAttribute('download', `orders_export_${currentTab}${rangeSuffix ? `_${rangeSuffix}` : ''}_${timestamp}.csv`)
       link.style.visibility = 'hidden'
       document.body.appendChild(link)
       link.click()
@@ -1656,14 +1725,14 @@ export default function ShiprocketDashboardPage() {
             {loading ? (
               <div className="overflow-hidden">
                 {/* Skeleton Table Header */}
-                <div className="grid grid-cols-7 gap-4 px-6 py-4 border-b border-white/5">
-                  {['Order Details', 'Customer Details', 'Product Details', 'Package Details', 'Payment', 'Pickup Address', ''].map((h, i) => (
+                <div className="grid grid-cols-8 gap-4 px-6 py-4 border-b border-white/5">
+                  {['Order Details', 'Customer Details', 'Shipping Address', 'Product Details', 'Package Details', 'Payment', 'Pickup Address', ''].map((h, i) => (
                     <div key={i} className="h-3.5 bg-white/5 rounded-md animate-pulse" style={{ width: h ? `${60 + Math.random() * 40}%` : '30%' }} />
                   ))}
                 </div>
                 {/* Skeleton Rows */}
                 {Array.from({ length: 7 }).map((_, rowIdx) => (
-                  <div key={rowIdx} className="grid grid-cols-7 gap-4 px-6 py-5 border-b border-white/5" style={{ opacity: 1 - rowIdx * 0.08 }}>
+                  <div key={rowIdx} className="grid grid-cols-8 gap-4 px-6 py-5 border-b border-white/5" style={{ opacity: 1 - rowIdx * 0.08 }}>
                     {/* Order Details col */}
                     <div className="space-y-2">
                       <div className="h-3.5 w-16 bg-white/8 rounded animate-pulse" />
@@ -1675,6 +1744,12 @@ export default function ShiprocketDashboardPage() {
                       <div className="h-3.5 w-28 bg-white/8 rounded animate-pulse" />
                       <div className="h-2.5 w-20 bg-white/5 rounded animate-pulse" />
                       <div className="h-2.5 w-36 bg-white/5 rounded animate-pulse" />
+                    </div>
+                    {/* Shipping Address col */}
+                    <div className="space-y-2">
+                      <div className="h-3.5 w-32 bg-white/8 rounded animate-pulse" />
+                      <div className="h-2.5 w-28 bg-white/5 rounded animate-pulse" />
+                      <div className="h-2.5 w-24 bg-white/5 rounded animate-pulse" />
                     </div>
                     {/* Product Details col */}
                     <div className="space-y-2">
@@ -1760,6 +1835,7 @@ export default function ShiprocketDashboardPage() {
                         <>
                           <th className="px-6 py-4 min-w-[150px] text-left">Order Details</th>
                           <th className="px-6 py-4 min-w-[200px] text-left">Customer Details</th>
+                          <th className="px-6 py-4 min-w-[220px] text-left">Shipping Address</th>
                           <th className="px-6 py-4 min-w-[180px] text-left">Product Details</th>
                           <th className="px-6 py-4 min-w-[160px] text-left">Package Details</th>
                           <th className="px-6 py-4 min-w-[120px] text-left">Payment</th>
@@ -1958,9 +2034,6 @@ export default function ShiprocketDashboardPage() {
                                         {isPhoneUnmasked ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                                       </button>
                                     </div>
-                                    <span className="text-white/40 truncate font-normal max-w-[180px]" title={order.shipping_address?.address1}>
-                                      {order.shipping_address?.address1 || 'N/A'}, {order.shipping_address?.city || ''}
-                                    </span>
                                     <button
                                       onClick={(e) => { e.stopPropagation(); setActiveRtoRiskOrder(order); }}
                                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-bold mt-1 w-max transition-colors ${
@@ -1975,6 +2048,36 @@ export default function ShiprocketDashboardPage() {
                                       {rtoAssessment.score}
                                     </button>
                                   </div>
+                                </td>
+
+                                {/* Shipping address */}
+                                <td className="px-6 py-4 text-xs font-medium">
+                                  {(() => {
+                                    const addr = getOrderShippingAddress(order)
+                                    if (!addr?.address1 && !addr?.city) {
+                                      return <span className="text-white/40 font-normal">N/A</span>
+                                    }
+                                    return (
+                                      <div
+                                        className="flex flex-col gap-0.5 max-w-[220px]"
+                                        title={formatShippingAddressFull(addr)}
+                                      >
+                                        {addr.address1 && (
+                                          <span className="text-white/80 font-normal line-clamp-2">{addr.address1}</span>
+                                        )}
+                                        {addr.address2 && (
+                                          <span className="text-white/60 font-normal truncate">{addr.address2}</span>
+                                        )}
+                                        <span className="text-white/50 font-normal">
+                                          {[addr.city, addr.province].filter(Boolean).join(', ')}
+                                          {addr.zip ? ` - ${addr.zip}` : ''}
+                                        </span>
+                                        {addr.country && (
+                                          <span className="text-white/40 font-normal">{addr.country}</span>
+                                        )}
+                                      </div>
+                                    )
+                                  })()}
                                 </td>
 
                                 {/* Product details */}
@@ -2670,7 +2773,7 @@ export default function ShiprocketDashboardPage() {
               </div>
               <div>
                 <h3 className="text-lg font-bold" style={{ color: 'var(--foreground)' }}>Export to Sheets</h3>
-                <p className="text-xs order-drawer-muted font-normal">Choose order range and columns to export</p>
+                <p className="text-xs order-drawer-muted font-normal">Choose order range, date range, and columns to export</p>
               </div>
             </div>
 
@@ -2698,6 +2801,32 @@ export default function ShiprocketDashboardPage() {
                     value={exportToOrderId}
                     onChange={(e) => setExportToOrderId(e.target.value)}
                     placeholder="e.g. R_1670 or 1670"
+                    className="crm-input w-full px-4 py-2.5 text-sm"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider order-drawer-muted mb-1.5">
+                    From Date
+                  </label>
+                  <input
+                    type="date"
+                    value={exportFromDate}
+                    onChange={(e) => setExportFromDate(e.target.value)}
+                    className="crm-input w-full px-4 py-2.5 text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider order-drawer-muted mb-1.5">
+                    Till Date
+                  </label>
+                  <input
+                    type="date"
+                    value={exportToDate}
+                    onChange={(e) => setExportToDate(e.target.value)}
                     className="crm-input w-full px-4 py-2.5 text-sm"
                   />
                 </div>
@@ -2764,7 +2893,7 @@ export default function ShiprocketDashboardPage() {
               </div>
 
               <p className="text-[11px] order-drawer-muted leading-relaxed">
-                Current tab filters and search still apply. Only orders within the ID range and selected columns will be exported.
+                Current tab filters and search still apply. Provide an Order ID range and/or a date range. Only matching orders and selected columns will be exported.
               </p>
             </div>
 

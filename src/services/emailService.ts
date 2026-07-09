@@ -1,63 +1,5 @@
-import fs from 'fs';
-import path from 'path';
 import nodemailer from 'nodemailer';
-
-const LOG_FILE_PATH = path.join(process.cwd(), 'src/services/rto_notified_orders.json');
-
-/**
- * Get the list of order IDs that have already been notified for RTO.
- */
-function getNotifiedOrders(): Set<string> {
-  try {
-    if (fs.existsSync(LOG_FILE_PATH)) {
-      const data = fs.readFileSync(LOG_FILE_PATH, 'utf-8');
-      const list = JSON.parse(data);
-      return new Set(list);
-    }
-  } catch (error) {
-    console.error('⚠️ Failed to read RTO notified orders registry:', error);
-  }
-  return new Set();
-}
-
-/**
- * Save a new order ID to the notified RTO registry.
- */
-function markOrderAsNotified(orderId: string): void {
-  try {
-    const notified = getNotifiedOrders();
-    notified.add(String(orderId));
-
-    // Ensure parent directories exist
-    const dir = path.dirname(LOG_FILE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    fs.writeFileSync(LOG_FILE_PATH, JSON.stringify(Array.from(notified), null, 2), 'utf-8');
-  } catch (error) {
-    console.error('⚠️ Failed to update RTO notified orders registry:', error);
-  }
-}
-
-/**
- * Remove an order ID from the notified RTO registry.
- */
-function removeOrderFromNotified(orderId: string): void {
-  try {
-    const notified = getNotifiedOrders();
-    notified.delete(String(orderId));
-    
-    const dir = path.dirname(LOG_FILE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    
-    fs.writeFileSync(LOG_FILE_PATH, JSON.stringify(Array.from(notified), null, 2), 'utf-8');
-  } catch (error) {
-    console.error('⚠️ Failed to remove order from RTO notified registry:', error);
-  }
-}
+import { claimRtoNotification, releaseRtoNotificationClaim } from './rtoNotificationRegistry';
 
 /**
  * Core function to send RTO email alerts.
@@ -66,17 +8,12 @@ function removeOrderFromNotified(orderId: string): void {
  */
 export async function shootRtoEmailAlert(order: any): Promise<boolean> {
   const orderId = String(order.id);
-  const notified = getNotifiedOrders();
+  const orderName = order.name || `#${orderId}`;
 
-  // Prevent duplicate sends
-  if (notified.has(orderId)) {
+  const claimed = await claimRtoNotification(orderId, orderName);
+  if (!claimed) {
     return false;
   }
-
-  // Lock order immediately in registry to prevent race conditions during async calls
-  markOrderAsNotified(orderId);
-
-  const orderName = order.name || `#${orderId}`;
   const customerName = order.customer
     ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim()
     : 'Guest Customer';
@@ -304,7 +241,7 @@ export async function shootRtoEmailAlert(order: any): Promise<boolean> {
       }
     } catch (dispatchError: any) {
       // Revert the lock so we can retry on next interval since send failed
-      removeOrderFromNotified(orderId);
+      await releaseRtoNotificationClaim(orderId);
       throw dispatchError;
     }
   }
