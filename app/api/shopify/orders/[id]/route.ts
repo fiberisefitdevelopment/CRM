@@ -15,7 +15,18 @@ export async function GET(
   try {
     const { id } = await params
 
+    // Prefer live Shopify; fall back to CRM cache (Shiprocket-only / offline)
+    const cached = getCachedOrderById(id)
+    if (cached?.source === 'shiprocket') {
+      const { lookupNote } = require('@/src/services/orderNotesStore')
+      const note = lookupNote(id) || cached.note || null
+      return NextResponse.json({ order: { ...cached, note } }, { status: 200 })
+    }
+
     if (!SHOP_DOMAIN || !ADMIN_TOKEN) {
+      if (cached) {
+        return NextResponse.json({ order: cached }, { status: 200 })
+      }
       return NextResponse.json(
         { error: 'Shopify credentials are not configured.' },
         { status: 500 },
@@ -34,6 +45,9 @@ export async function GET(
     })
 
     if (!res.ok) {
+      if (cached) {
+        return NextResponse.json({ order: cached }, { status: 200 })
+      }
       const text = await res.text().catch(() => '')
       return NextResponse.json(
         { error: `Shopify API error: ${res.status} ${res.statusText}`, details: text },
@@ -42,7 +56,13 @@ export async function GET(
     }
 
     const data = await res.json()
-    return NextResponse.json({ order: data.order }, { status: 200 })
+    const { lookupNote } = require('@/src/services/orderNotesStore')
+    const crmNote = lookupNote(id)
+    const order = {
+      ...data.order,
+      note: crmNote || data.order?.note || null,
+    }
+    return NextResponse.json({ order }, { status: 200 })
   } catch (error: any) {
     console.error('Error fetching Shopify order:', error)
     return NextResponse.json(
@@ -197,6 +217,59 @@ export async function PATCH(
     console.error('Error toggling test order:', error)
     return NextResponse.json(
       { error: error.message || 'Failed to toggle test order' },
+      { status: 500 },
+    )
+  }
+}
+
+/** Update CRM / Shopify order note */
+export async function PUT(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params
+    const body = await req.json().catch(() => ({}))
+    if (typeof body.note !== 'string') {
+      return NextResponse.json({ error: 'Missing note string in body' }, { status: 400 })
+    }
+
+    const note = body.note.trim()
+    const cachedOrder = getCachedOrderById(id)
+    const isShiprocket = cachedOrder?.source === 'shiprocket'
+
+    const { storeNote } = require('@/src/services/orderNotesStore')
+    const { updateOrderNoteInCache } = require('@/src/services/ordersCache')
+
+    storeNote(id, note)
+    updateOrderNoteInCache(id, note)
+
+    // Sync to Shopify when this is a Shopify order
+    if (!isShiprocket && SHOP_DOMAIN && ADMIN_TOKEN) {
+      try {
+        const url = `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/orders/${id}.json`
+        const res = await fetch(url, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Shopify-Access-Token': ADMIN_TOKEN,
+          },
+          body: JSON.stringify({ order: { id: Number(id) || id, note } }),
+        })
+        if (!res.ok) {
+          const text = await res.text().catch(() => '')
+          console.warn(`⚠️ Shopify note sync failed for ${id}:`, res.status, text)
+        }
+      } catch (e: any) {
+        console.warn('⚠️ Shopify note sync error:', e?.message || e)
+      }
+    }
+
+    return NextResponse.json({ success: true, note: note || null }, { status: 200 })
+  } catch (error: any) {
+    console.error('Error saving order note:', error)
+    return NextResponse.json(
+      { error: error.message || 'Failed to save note' },
       { status: 500 },
     )
   }

@@ -1,13 +1,56 @@
 // Dedicated in-memory cache service for Shopify and Shiprocket orders
 // to comply with Next.js App Router route file export limitations.
+// Also persists a disk snapshot so cold starts / HMR can serve instantly.
+
+import fs from 'fs'
+import path from 'path'
 
 export let cachedOrders: any[] | null = null
 export let cacheExpiresAt = 0
 export const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes in-memory cache
+/** How long a disk snapshot is considered usable for instant boot. */
+export const DISK_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+const DISK_CACHE_PATH = path.join(process.cwd(), '.orders-cache.json')
 
 export let activeFetchPromise: Promise<any> | null = null
 
+function hydrateFromDisk() {
+  if (cachedOrders && cachedOrders.length > 0) return
+  try {
+    if (!fs.existsSync(DISK_CACHE_PATH)) return
+    const raw = JSON.parse(fs.readFileSync(DISK_CACHE_PATH, 'utf-8'))
+    const orders = Array.isArray(raw?.orders) ? raw.orders : null
+    const savedAt = typeof raw?.savedAt === 'number' ? raw.savedAt : 0
+    if (!orders?.length) return
+    if (Date.now() - savedAt > DISK_CACHE_MAX_AGE_MS) return
+    cachedOrders = orders
+    // Stale TTL so the next request still triggers a background refresh
+    cacheExpiresAt = 0
+    console.log(`⚡ Hydrated ${orders.length} orders from disk cache`)
+  } catch (e) {
+    console.warn('⚠️ Failed to hydrate orders disk cache:', (e as Error)?.message || e)
+  }
+}
+
+function persistToDisk(orders: any[]) {
+  try {
+    // Fire-and-forget style write; keep payload lean enough for cold starts
+    fs.writeFileSync(
+      DISK_CACHE_PATH,
+      JSON.stringify({ savedAt: Date.now(), orders }),
+      'utf-8',
+    )
+  } catch (e) {
+    console.warn('⚠️ Failed to persist orders disk cache:', (e as Error)?.message || e)
+  }
+}
+
+// Hydrate once on module load so the first API hit is instant after restart
+hydrateFromDisk()
+
 export function getCachedOrders() {
+  if (!cachedOrders || cachedOrders.length === 0) hydrateFromDisk()
   return cachedOrders
 }
 
@@ -19,10 +62,16 @@ export function setCachedOrders(orders: any[], expiresAt: number) {
     return dateB - dateA // descending
   })
   cacheExpiresAt = expiresAt
+  persistToDisk(cachedOrders)
 }
 
 export function getCacheExpiresAt() {
   return cacheExpiresAt
+}
+
+/** Force the next request to treat cache as stale and re-sync. */
+export function expireOrdersCache() {
+  cacheExpiresAt = 0
 }
 
 export function getCachedOrderById(id: string | number) {
@@ -187,12 +236,17 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
     }
   }
 
-  const startLimit = resolvedStart ? new Date(resolvedStart) : null
-  const endLimit = resolvedEnd ? new Date(resolvedEnd) : null
+  const startLimit = resolvedStart
+    ? (/^\d{4}-\d{2}-\d{2}$/.test(resolvedStart) ? new Date(`${resolvedStart}T00:00:00`) : new Date(resolvedStart))
+    : null
+  const endLimit = resolvedEnd
+    ? (/^\d{4}-\d{2}-\d{2}$/.test(resolvedEnd) ? new Date(`${resolvedEnd}T23:59:59.999`) : new Date(resolvedEnd))
+    : null
 
   const checkDateInRange = (dateStr: string) => {
     if (!dateStr) return false
     const d = new Date(dateStr)
+    if (isNaN(d.getTime())) return false
     if (startLimit && d < startLimit) return false
     if (endLimit && d > endLimit) return false
     return true
@@ -229,18 +283,17 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
     if (o.fulfillment_status === 'fulfilled') {
       const latest = o.fulfillments?.[0]
       const status = (latest?.shipment_status || '').toLowerCase()
-      const fulfillmentDate = latest?.created_at || o.created_at
 
       if (['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) {
-        if (checkDateInRange(fulfillmentDate)) {
+        if (isOrderDateInRange) {
           counts.in_transit++
         }
       } else if (status === 'delivered') {
-        if (checkDateInRange(fulfillmentDate)) {
+        if (isOrderDateInRange) {
           counts.delivered++
         }
       } else if (['failure', 'rto', 'returned'].includes(status)) {
-        if (checkDateInRange(fulfillmentDate)) {
+        if (isOrderDateInRange) {
           counts.rto++
         }
       } else {
@@ -341,12 +394,17 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
     list = list.filter((o) => (o.financial_status || '').toLowerCase() === targetStatus)
   }
 
-  // 4. Payment Type
+  // 4. Payment Type — prefer Shiprocket payment_method over Shopify financial_status
   if (filters.paymentType && filters.paymentType !== 'all') {
     list = list.filter((o) => {
-      const isPaid = o.financial_status?.toLowerCase() === 'paid'
-      const matchesCod = filters.paymentType === 'cod' && !isPaid
-      const matchesPrepaid = filters.paymentType === 'prepaid' && isPaid
+      const pm = String(o.payment_method || '').toLowerCase()
+      let isCod: boolean
+      if (pm.includes('cod')) isCod = true
+      else if (pm.includes('prepaid') || pm.includes('pre-paid') || pm === 'online') isCod = false
+      else isCod = o.financial_status?.toLowerCase() !== 'paid'
+
+      const matchesCod = filters.paymentType === 'cod' && isCod
+      const matchesPrepaid = filters.paymentType === 'prepaid' && !isCod
       return matchesCod || matchesPrepaid
     })
   }
@@ -442,25 +500,25 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
   }
 
   if (resolvedStart || resolvedEnd) {
+    // Match Shiprocket UI: date range always filters by order created date,
+    // even on Delivered / RTO / In Transit tabs (not fulfillment/updated timestamps).
     list = list.filter((o) => {
-      let relevantDateStr = o.created_at
-      if (tab === 'rto') {
-        relevantDateStr = o.fulfillments?.[0]?.created_at || o.created_at
-      } else if (tab === 'delivered') {
-        relevantDateStr = o.fulfillments?.[0]?.created_at || o.created_at
-      } else if (tab === 'in_transit') {
-        relevantDateStr = o.fulfillments?.[0]?.created_at || o.created_at
-      } else if (tab === 'cancelled') {
-        relevantDateStr = o.cancelled_at || o.created_at
-      }
-
+      const relevantDateStr = o.created_at
       const orderDate = new Date(relevantDateStr)
+      if (isNaN(orderDate.getTime())) return false
+
       if (resolvedStart) {
-        const start = new Date(resolvedStart)
+        // YYYY-MM-DD → local start-of-day; ISO strings keep their instant
+        const start = /^\d{4}-\d{2}-\d{2}$/.test(resolvedStart)
+          ? new Date(`${resolvedStart}T00:00:00`)
+          : new Date(resolvedStart)
         if (orderDate < start) return false
       }
       if (resolvedEnd) {
-        const end = new Date(resolvedEnd)
+        // YYYY-MM-DD must be inclusive through end-of-day (UTC midnight would drop most of the day)
+        const end = /^\d{4}-\d{2}-\d{2}$/.test(resolvedEnd)
+          ? new Date(`${resolvedEnd}T23:59:59.999`)
+          : new Date(resolvedEnd)
         if (orderDate > end) return false
       }
       return true
@@ -521,6 +579,13 @@ export function toggleTestOrderInCache(id: string | number, isTest: boolean) {
       return o
     })
   }
+}
+
+export function updateOrderNoteInCache(id: string | number, note: string) {
+  if (!cachedOrders) return
+  cachedOrders = cachedOrders.map((o) =>
+    String(o.id) === String(id) ? { ...o, note: note || null } : o,
+  )
 }
 
 

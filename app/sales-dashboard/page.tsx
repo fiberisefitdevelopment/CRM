@@ -3,12 +3,13 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
+import { isCodOrder, getPaymentLabel } from '@/src/utils/orderPayment'
 import {
   TrendingUp, ShoppingBag, DollarSign, CreditCard, Truck, RefreshCw,
   Loader2, AlertCircle, Award, ChevronRight, Sparkles, TrendingDown,
   Coins, FileSpreadsheet, Search, MapPin, Users, BarChart2, X,
   Download, CheckCircle, XCircle, Clock, Package, ArrowUpRight,
-  ArrowDownRight, Globe, Filter, Tag
+  ArrowDownRight, Globe, Filter, Tag, Calendar
 } from 'lucide-react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, LineChart, Line, Area, AreaChart } from 'recharts'
 
@@ -24,7 +25,8 @@ interface Address {
 }
 interface ShopifyOrder {
   id: number; name: string; created_at: string
-  financial_status: string; fulfillment_status: string | null
+  financial_status: string; payment_method?: string | null
+  fulfillment_status: string | null
   total_price: string; currency: string; cancelled_at?: string | null
   customer?: { first_name?: string; last_name?: string; email?: string; phone?: string } | null
   shipping_address?: Address | null; billing_address?: Address | null
@@ -51,6 +53,29 @@ function isOrderCancelled(o: ShopifyOrder): boolean {
 
 function getShipStatus(o: ShopifyOrder): string {
   return (o.fulfillments?.[0]?.shipment_status || '').toLowerCase()
+}
+
+/** Local YYYY-MM-DD for an order timestamp (handles ISO + "27 Jul 2026, 11:53 AM"). */
+function toDayKey(dateStr: string | null | undefined): string | null {
+  if (!dateStr) return null
+  if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10)
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return null
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function localTodayKey(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function localDaysAgoKey(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
@@ -101,7 +126,7 @@ function CODTable({ orders }: { orders: ShopifyOrder[] }) {
   const filtered = useMemo(() => {
     return orders.filter((o) => {
       if (isOrderCancelled(o)) return false
-      if (o.financial_status?.toLowerCase() === 'paid') return false
+      if (!isCodOrder(o)) return false
       if (search.trim()) {
         const q = search.toLowerCase()
         const name = (o.name || '').toLowerCase()
@@ -607,7 +632,9 @@ export default function SalesDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isOffline, setIsOffline] = useState(false)
-  const [timeFilter, setTimeFilter] = useState<'all' | '30days' | '7days' | 'today'>('all')
+  const [timeFilter, setTimeFilter] = useState<'all' | '30days' | '7days' | 'today' | 'custom'>('all')
+  const [customStart, setCustomStart] = useState('')
+  const [customEnd, setCustomEnd] = useState('')
   const [activeTab, setActiveTab] = useState<'orders' | 'remittance'>('orders')
   const [refreshTrigger, setRefreshTrigger] = useState(0)
 
@@ -626,6 +653,14 @@ export default function SalesDashboardPage() {
       const res = await fetch(url)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to fetch sales database')
+
+      // Cold start: cache still building — keep polling until orders arrive
+      if (data.syncing && (!data.orders || data.orders.length === 0)) {
+        setError(null)
+        setTimeout(() => fetchOrders(false), 2000)
+        return
+      }
+
       setOrders(data.orders || [])
       setIsOffline(!!data.isOffline)
       setError(null)
@@ -641,18 +676,24 @@ export default function SalesDashboardPage() {
   const processedOrders = useMemo(() => {
     return orders.filter((order) => {
       if (timeFilter === 'all') return true
-      const orderDate = new Date(order.created_at)
-      const now = new Date()
-      const diffDays = (now.getTime() - orderDate.getTime()) / (1000 * 60 * 60 * 24)
-      if (timeFilter === '30days') return diffDays <= 30
-      if (timeFilter === '7days') return diffDays <= 7
-      if (timeFilter === 'today') {
-        const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
-        return orderDate >= todayStart
+
+      const orderDay = toDayKey(order.created_at)
+      if (!orderDay) return false
+
+      if (timeFilter === 'custom') {
+        if (!customStart && !customEnd) return true
+        if (customStart && orderDay < customStart) return false
+        if (customEnd && orderDay > customEnd) return false
+        return true
       }
+
+      const today = localTodayKey()
+      if (timeFilter === 'today') return orderDay === today
+      if (timeFilter === '7days') return orderDay >= localDaysAgoKey(6) && orderDay <= today
+      if (timeFilter === '30days') return orderDay >= localDaysAgoKey(29) && orderDay <= today
       return true
     })
-  }, [orders, timeFilter])
+  }, [orders, timeFilter, customStart, customEnd])
 
   const metrics = useMemo(() => {
     const activeOrders = processedOrders.filter(o => !isOrderCancelled(o))
@@ -667,7 +708,7 @@ export default function SalesDashboardPage() {
     activeOrders.forEach((o) => {
       const price = parseFloat(o.total_price) || 0
       totalRevenue += price
-      const isPaid = o.financial_status?.toLowerCase() === 'paid'
+      const isPaid = !isCodOrder(o)
       const dateKey = new Date(o.created_at).toLocaleDateString('en-IN', { day:'2-digit', month:'short' })
       dailyMap[dateKey] = (dailyMap[dateKey] || 0) + price
 
@@ -728,7 +769,7 @@ export default function SalesDashboardPage() {
         if (!name.includes(q) && !cust.includes(q)) return false
       }
       if (txPaymentFilter !== 'all') {
-        const isPaid = o.financial_status?.toLowerCase() === 'paid'
+        const isPaid = !isCodOrder(o)
         if (txPaymentFilter === 'prepaid' && !isPaid) return false
         if (txPaymentFilter === 'cod' && isPaid) return false
       }
@@ -748,7 +789,7 @@ export default function SalesDashboardPage() {
     })
   }, [processedOrders, txSearch, txPaymentFilter, txStatusFilter])
 
-  const codOrders = useMemo(() => processedOrders.filter(o => !isOrderCancelled(o) && o.financial_status?.toLowerCase() !== 'paid'), [processedOrders])
+  const codOrders = useMemo(() => processedOrders.filter(o => !isOrderCancelled(o) && isCodOrder(o)), [processedOrders])
 
   const TABS = [
     { id: 'orders', label: '📦 Prepaid & COD Orders', desc: 'Order analytics, payment split, delivery funnel' },
@@ -790,24 +831,75 @@ export default function SalesDashboardPage() {
                 Live Shopify data · {metrics.totalOrders} active orders
               </p>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="flex rounded-xl p-1 border" style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)' }}>
-                {(['all', '30days', '7days', 'today'] as const).map((f) => (
-                  <button key={f} onClick={() => setTimeFilter(f)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
-                      timeFilter === f ? 'bg-purple-600 text-white shadow-md' : 'hover:bg-purple-500/10'
-                    }`}
-                    style={timeFilter !== f ? { color: 'var(--foreground-muted)' } : {}}>
-                    {f === '30days' ? 'Last 30D' : f === '7days' ? 'Last 7D' : f}
-                  </button>
-                ))}
+            <div className="flex flex-col items-stretch md:items-end gap-2">
+              <div className="flex items-center gap-2">
+                <div className="flex rounded-xl p-1 border" style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)' }}>
+                  {(['all', '30days', '7days', 'today', 'custom'] as const).map((f) => (
+                    <button
+                      key={f}
+                      onClick={() => {
+                        setTimeFilter(f)
+                        // Seed a recent range so Custom never lands on an empty selection
+                        if (f === 'custom' && !customStart && !customEnd) {
+                          setCustomStart(localDaysAgoKey(6))
+                          setCustomEnd(localTodayKey())
+                        }
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all flex items-center gap-1 ${
+                        timeFilter === f ? 'bg-purple-600 text-white shadow-md' : 'hover:bg-purple-500/10'
+                      }`}
+                      style={timeFilter !== f ? { color: 'var(--foreground-muted)' } : {}}>
+                      {f === '30days' ? 'Last 30D' : f === '7days' ? 'Last 7D' : f === 'custom' ? (
+                        <><Calendar className="w-3 h-3" /> Custom</>
+                      ) : f}
+                    </button>
+                  ))}
+                </div>
+                <button onClick={() => fetchOrders(true)} disabled={loading}
+                  className="p-2.5 rounded-xl border transition-all hover:border-purple-500/40 active:scale-95"
+                  style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)', color: 'var(--foreground-muted)' }}
+                  title="Refresh Data">
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                </button>
               </div>
-              <button onClick={() => fetchOrders(true)} disabled={loading}
-                className="p-2.5 rounded-xl border transition-all hover:border-purple-500/40 active:scale-95"
-                style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)', color: 'var(--foreground-muted)' }}
-                title="Refresh Data">
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-              </button>
+              {timeFilter === 'custom' && (
+                <div className="flex items-center gap-2 rounded-xl p-1.5 border"
+                  style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)' }}>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[9px] font-bold uppercase tracking-wider px-1" style={{ color: 'var(--foreground-muted)' }}>From</label>
+                    <input
+                      type="date"
+                      value={customStart}
+                      max={customEnd || undefined}
+                      onChange={(e) => setCustomStart(e.target.value)}
+                      className="px-2 py-1 rounded-lg text-xs border focus:outline-none focus:border-purple-500/50"
+                      style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-0.5">
+                    <label className="text-[9px] font-bold uppercase tracking-wider px-1" style={{ color: 'var(--foreground-muted)' }}>To</label>
+                    <input
+                      type="date"
+                      value={customEnd}
+                      min={customStart || undefined}
+                      max={localTodayKey()}
+                      onChange={(e) => setCustomEnd(e.target.value)}
+                      className="px-2 py-1 rounded-lg text-xs border focus:outline-none focus:border-purple-500/50"
+                      style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                    />
+                  </div>
+                  {(customStart || customEnd) && (
+                    <button
+                      onClick={() => { setCustomStart(''); setCustomEnd('') }}
+                      className="p-1.5 rounded-lg hover:bg-purple-500/10 transition-colors mt-3"
+                      style={{ color: 'var(--foreground-muted)' }}
+                      title="Clear dates"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1121,8 +1213,8 @@ export default function SalesDashboardPage() {
                                   {new Date(o.created_at).toLocaleDateString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}
                                 </td>
                                 <td className="px-4 py-3">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${o.financial_status === 'paid' ? 'badge-success' : 'badge-warning'}`}>
-                                    {o.financial_status === 'paid' ? 'Prepaid' : 'COD'}
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isCodOrder(o) ? 'badge-warning' : 'badge-success'}`}>
+                                    {getPaymentLabel(o)}
                                   </span>
                                 </td>
                                 <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${statusClass}`}>{dispStatus}</span></td>

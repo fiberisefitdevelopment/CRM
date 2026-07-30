@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getAllShiprocketOrders, cancelShiprocketOrder } from '@/src/services/shiprocketClient'
 import { lookupPhone, lookupPhoneByChannel, storePhone, storePhoneByChannel } from '@/src/services/phoneStore'
+import { parseShiprocketDate } from '@/src/utils/orderPayment'
 
 const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
@@ -131,12 +132,13 @@ export async function GET(_req: NextRequest) {
 
     // Helper: build a paginated JSON response from current cache
     function serveCachedResponse(isOffline = false) {
+      const { applyNotesToOrders } = require('@/src/services/orderNotesStore')
       const total = getCachedOrdersCount(filters)
       const tabCounts = computeTabCounts(filters)
 
       if (returnAll) {
         // Analytics mode: return ALL matching orders, no pagination
-        const allOrders = getCachedOrdersFiltered(filters)
+        const allOrders = applyNotesToOrders(getCachedOrdersFiltered(filters))
         return NextResponse.json(
           {
             orders: allOrders,
@@ -150,7 +152,7 @@ export async function GET(_req: NextRequest) {
       }
 
       const totalPages = Math.ceil(total / perPage) || 1
-      const paginatedSlice = getCachedOrdersPaginated(page, perPage, filters)
+      const paginatedSlice = applyNotesToOrders(getCachedOrdersPaginated(page, perPage, filters))
 
       return NextResponse.json(
         {
@@ -168,19 +170,37 @@ export async function GET(_req: NextRequest) {
     function triggerBackgroundSync() {
       if (getActiveFetchPromise()) return // Already syncing
 
-      const syncPromise = Promise.all([
-        fetchAllShopifyOrders(),
-        getAllShiprocketOrders(),
-        (() => {
-          try {
-            const { getAllTestOrderIds } = require('@/src/services/firestore.service')
-            return getAllTestOrderIds()
-          } catch {
-            return new Set<string>()
+      const syncPromise = (async () => {
+        try {
+          const shopifyPromise = fetchAllShopifyOrders()
+          const shiprocketPromise = getAllShiprocketOrders()
+          const testPromise = (async () => {
+            try {
+              const { getAllTestOrderIds } = require('@/src/services/firestore.service')
+              return await getAllTestOrderIds()
+            } catch {
+              return new Set<string>()
+            }
+          })()
+
+          // Seed cache as soon as Shopify returns so the UI is never stuck waiting on Shiprocket
+          const shopifyOrders = await shopifyPromise
+          const existing = getCachedOrders()
+          if ((!existing || existing.length === 0) && shopifyOrders.length > 0) {
+            setCachedOrders(
+              shopifyOrders.map((o: any) => ({ ...o, is_test_order: o.is_test_order === true })),
+              Date.now() + 60 * 1000,
+            )
+            console.log(`⚡ Early cache seeded with ${shopifyOrders.length} Shopify orders (Shiprocket still loading)`)
           }
-        })()
-      ]).then(([shopifyOrders, shiprocketOrders, testOrderIds]) => {
-        setActiveFetchPromise(null)
+
+          const [shiprocketOrders, testOrderIds] = await Promise.all([shiprocketPromise, testPromise])
+
+        if (!shiprocketOrders || shiprocketOrders.length === 0) {
+          console.warn(
+            '⚠️ Shiprocket returned 0 orders — Shopify cache will lack payment_method/status enrichment. Check date filters / Shiprocket API.',
+          )
+        }
 
         // Map Shopify orders for rapid deduplication lookup
         const shopifyMap = new Map<string, any>()
@@ -207,18 +227,32 @@ export async function GET(_req: NextRequest) {
           const tracking_url = srOrder.last_mile_awb_track_url || null
 
           const srStatus = (srOrder.status || '').toLowerCase()
-          let shipment_status = null
+          let shipment_status: string | null = null
+          // Check RTO before "delivered" so "RTO DELIVERED" maps to rto, not delivered
           if (srStatus.includes('rto') || srStatus.includes('returned')) {
             shipment_status = 'rto'
-          } else if (srStatus.includes('undelivered') || srStatus.includes('fail') || srStatus.includes('error')) {
+          } else if (srStatus.includes('lost') || srStatus.includes('undelivered') || srStatus.includes('fail') || srStatus.includes('error')) {
             shipment_status = 'failure'
-          } else if (srStatus.includes('delivered')) {
+          } else if (srStatus === 'delivered' || srStatus.startsWith('delivered')) {
             shipment_status = 'delivered'
           } else if (srStatus.includes('transit') || srStatus.includes('out for delivery')) {
             shipment_status = 'in_transit'
           } else if (srStatus.includes('pickup') || srStatus.includes('scheduled')) {
             shipment_status = 'pickup_scheduled'
+          } else if (srStatus.includes('cancel')) {
+            shipment_status = 'cancelled'
           }
+
+          const srPaymentRaw = String(srOrder.payment_method || '').toLowerCase().trim()
+          const srIsCod = srPaymentRaw.includes('cod')
+          const srPaymentMethod = srIsCod ? 'cod' : (srPaymentRaw ? 'prepaid' : null)
+
+          const srCreatedAt =
+            parseShiprocketDate(srOrder.created_at) ||
+            parseShiprocketDate(srOrder.channel_created_at) ||
+            null
+          const srDeliveredAt = parseShiprocketDate(srOrder.delivered_date) || null
+          const srUpdatedAt = parseShiprocketDate(srOrder.updated_at) || srCreatedAt
 
           // Extract shipment status reason (from delay_reason, pickup_exception_reason, or courier_remarks)
           const reasonCandidates = [
@@ -231,27 +265,65 @@ export async function GET(_req: NextRequest) {
           const shipment_status_reason = reasonCandidates.length > 0 ? reasonCandidates[0] : null
 
           if (matchedShopify) {
-            if (tracking_number) {
+            // Always stamp Shiprocket payment method — Shopify marks COD as "paid" after collection
+            if (srPaymentMethod) {
+              matchedShopify.payment_method = srPaymentMethod
+            }
+
+            const isSrCancelled = srStatus.includes('cancel')
+            if (isSrCancelled) {
+              matchedShopify.cancelled_at =
+                matchedShopify.cancelled_at || srUpdatedAt || new Date().toISOString()
+              if (!matchedShopify.financial_status || matchedShopify.financial_status === 'paid') {
+                matchedShopify.financial_status = 'voided'
+              }
+            }
+
+            // Enrich logistics from Shiprocket whenever we have status and/or AWB
+            if (shipment_status || tracking_number) {
               const enrichmentFulfillment = {
                 id: latestShipment?.id || Math.floor(Math.random() * 10000),
                 status: 'success',
                 tracking_number,
                 tracking_company,
                 tracking_url,
-                shipment_status,
+                shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
                 shipment_status_reason,
-                created_at: srOrder.updated_at || srOrder.created_at || matchedShopify.created_at,
+                // Keep order-date semantics for fulfillment created_at (not updated_at)
+                created_at: srCreatedAt || matchedShopify.created_at,
+                dispatch_date: parseShiprocketDate(srOrder.pickup_booked_date) || srCreatedAt,
+                delivery_date: srDeliveredAt,
               }
-              matchedShopify.fulfillment_status = 'fulfilled'
+              if (shipment_status && shipment_status !== 'cancelled') {
+                matchedShopify.fulfillment_status = 'fulfilled'
+              }
               matchedShopify.fulfillments = [enrichmentFulfillment]
             }
-          } else {
-            const isCod = (srOrder.payment_method || '').toLowerCase() === 'cod'
-            const isSrCancelled = srStatus.includes('cancelled') || srStatus.includes('canceled')
-            const financial_status = isSrCancelled ? 'voided' : (isCod ? 'pending' : 'paid')
-            const cancelled_at = isSrCancelled ? (srOrder.updated_at || srOrder.created_at || new Date().toISOString()) : null
 
-            const enrichFulfillment = tracking_number ? [{
+            matchedShopify.source = matchedShopify.source || 'shopify'
+            matchedShopify.shiprocket_order_id = srOrder.id
+            matchedShopify.shiprocket_meta = {
+              activities: Array.isArray(srOrder.activities) ? srOrder.activities : [],
+              status: srOrder.status || null,
+              pickup_location: srOrder.pickup_location || null,
+              shipping_method: srOrder.shipping_method || srOrder.ship_type || null,
+              payment_status: srOrder.payment_status || null,
+              picked_up_date: srOrder.picked_up_date || null,
+              pickup_booked_date: srOrder.pickup_booked_date || null,
+              out_for_delivery_date: srOrder.out_for_delivery_date || srOrder.first_out_for_delivery_date || null,
+              delivered_date: srOrder.delivered_date || null,
+              etd_date: srOrder.etd_date || srOrder.updated_edd_date || null,
+              delay_reason: srOrder.delay_reason || null,
+              delivery_delayed: Boolean(srOrder.delivery_delayed || srOrder.is_delayed),
+              has_calls: Boolean(srOrder.has_calls),
+              rto_reason: srOrder.rto_reason || null,
+            }
+          } else {
+            const isSrCancelled = srStatus.includes('cancel')
+            const financial_status = isSrCancelled ? 'voided' : (srIsCod ? 'pending' : 'paid')
+            const cancelled_at = isSrCancelled ? (srUpdatedAt || new Date().toISOString()) : null
+
+            const enrichFulfillment = (shipment_status || tracking_number) ? [{
               id: latestShipment?.id || Math.floor(Math.random() * 10000),
               status: 'success',
               tracking_number,
@@ -259,7 +331,9 @@ export async function GET(_req: NextRequest) {
               tracking_url,
               shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
               shipment_status_reason: isSrCancelled ? null : shipment_status_reason,
-              created_at: srOrder.updated_at || srOrder.created_at,
+              created_at: srCreatedAt || new Date().toISOString(),
+              dispatch_date: parseShiprocketDate(srOrder.pickup_booked_date) || srCreatedAt,
+              delivery_date: srDeliveredAt,
             }] : []
 
             // Shiprocket masks customer_phone as "xxxxxxxxxx" in list API.
@@ -310,10 +384,11 @@ export async function GET(_req: NextRequest) {
             const formattedCustomOrder = {
               id: srOrder.id,
               name: srOrder.channel_order_id ? (srOrder.channel_order_id.startsWith('#') ? srOrder.channel_order_id : '#' + srOrder.channel_order_id) : `#SR-${srOrder.id}`,
-              created_at: srOrder.created_at || srOrder.channel_created_at || new Date().toISOString(),
+              created_at: srCreatedAt || new Date().toISOString(),
               financial_status,
+              payment_method: srPaymentMethod || (srIsCod ? 'cod' : 'prepaid'),
               cancelled_at,
-              fulfillment_status: tracking_number ? 'fulfilled' : null,
+              fulfillment_status: (shipment_status && shipment_status !== 'cancelled') || tracking_number ? 'fulfilled' : null,
               total_price: String(srOrder.total || '0'),
               currency: 'INR',
               customer: {
@@ -345,6 +420,23 @@ export async function GET(_req: NextRequest) {
               })),
               fulfillments: enrichFulfillment,
               source: 'shiprocket',
+              shiprocket_order_id: srOrder.id,
+              shiprocket_meta: {
+                activities: Array.isArray(srOrder.activities) ? srOrder.activities : [],
+                status: srOrder.status || null,
+                pickup_location: srOrder.pickup_location || null,
+                shipping_method: srOrder.shipping_method || srOrder.ship_type || null,
+                payment_status: srOrder.payment_status || null,
+                picked_up_date: srOrder.picked_up_date || null,
+                pickup_booked_date: srOrder.pickup_booked_date || null,
+                out_for_delivery_date: srOrder.out_for_delivery_date || srOrder.first_out_for_delivery_date || null,
+                delivered_date: srOrder.delivered_date || null,
+                etd_date: srOrder.etd_date || srOrder.updated_edd_date || null,
+                delay_reason: srOrder.delay_reason || null,
+                delivery_delayed: Boolean(srOrder.delivery_delayed || srOrder.is_delayed),
+                has_calls: Boolean(srOrder.has_calls),
+                rto_reason: srOrder.rto_reason || null,
+              },
             }
 
             customOrders.push(formattedCustomOrder)
@@ -363,6 +455,25 @@ export async function GET(_req: NextRequest) {
             console.log(`ℹ️ Preserving ${orphaned.length} injected order(s) not yet in Shiprocket sync`)
             combinedOrders.push(...orphaned)
           }
+
+          // If Shiprocket returned nothing, keep prior payment_method + fulfillment enrichment
+          if (shiprocketOrders.length === 0) {
+            const prevById = new Map(existingCache.map((o: any) => [String(o.id), o]))
+            const prevByName = new Map(
+              existingCache.map((o: any) => [String(o.name || '').replace(/^#/, '').trim().toLowerCase(), o]),
+            )
+            for (const order of combinedOrders) {
+              const prev =
+                prevById.get(String(order.id)) ||
+                prevByName.get(String(order.name || '').replace(/^#/, '').trim().toLowerCase())
+              if (!prev) continue
+              if (!order.payment_method && prev.payment_method) order.payment_method = prev.payment_method
+              if ((!order.fulfillments || order.fulfillments.length === 0) && prev.fulfillments?.length) {
+                order.fulfillments = prev.fulfillments
+                order.fulfillment_status = prev.fulfillment_status || order.fulfillment_status
+              }
+            }
+          }
         }
 
         // Enrich combined orders with test status
@@ -374,7 +485,9 @@ export async function GET(_req: NextRequest) {
           };
         });
 
-        setCachedOrders(enrichedOrders, Date.now() + CACHE_TTL_MS)
+        // Short TTL if Shiprocket failed so the next request re-syncs quickly with a working fetch
+        const ttl = shiprocketOrders.length === 0 ? 30 * 1000 : CACHE_TTL_MS
+        setCachedOrders(enrichedOrders, Date.now() + ttl)
 
         // Proactively scan for delivered orders to trigger post-delivery WhatsApp journeys
         try {
@@ -403,21 +516,39 @@ export async function GET(_req: NextRequest) {
         }
 
         console.log(`✅ Background sync complete: ${combinedOrders.length} orders cached`)
-      }).catch((err) => {
-        setActiveFetchPromise(null)
-        console.warn('Background sync failed:', err.message || err)
-      })
+        } catch (err: any) {
+          console.warn('Background sync failed:', err?.message || err)
+        } finally {
+          setActiveFetchPromise(null)
+        }
+      })()
 
       setActiveFetchPromise(syncPromise)
     }
 
+    // ─── Force refresh: re-sync in background but never blank the UI if we have data ───
+    if (forceRefresh) {
+      triggerBackgroundSync()
+      if (cacheHasData) return serveCachedResponse()
+      return NextResponse.json(
+        {
+          orders: [],
+          pagination: { page, per_page: perPage, total: 0, total_pages: 0 },
+          tabCounts: { new: 0, ready_to_ship: 0, pickups_manifests: 0, in_transit: 0, delivered: 0, rto: 0, cancelled: 0, all: 0 },
+          isOffline: false,
+          syncing: true,
+        },
+        { status: 200 },
+      )
+    }
+
     // ─── FAST PATH A: Cache is fresh → serve instantly ───
-    if (!forceRefresh && cacheIsFresh) {
+    if (cacheIsFresh) {
       return serveCachedResponse()
     }
 
     // ─── FAST PATH B: Cache exists but is stale → serve stale immediately + refresh in background ───
-    if (!forceRefresh && cacheHasData) {
+    if (cacheHasData) {
       triggerBackgroundSync() // Fire-and-forget, does NOT block
       return serveCachedResponse() // Serve stale data instantly
     }

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
+import { getPaymentLabel, isCodOrder } from '@/src/utils/orderPayment'
 import {
   Loader2,
   RefreshCw,
@@ -84,6 +85,8 @@ interface ShopifyOrder {
   name: string
   created_at: string
   financial_status: string
+  /** Shiprocket payment method when enriched: 'cod' | 'prepaid' */
+  payment_method?: string | null
   fulfillment_status: string | null
   total_price: string
   currency: string
@@ -109,6 +112,8 @@ interface ShopifyOrder {
     dispatch_date?: string | null
     delivery_date?: string | null
   }>
+  source?: string
+  is_test_order?: boolean
 }
 
 interface CourierQuote {
@@ -249,7 +254,7 @@ const EXPORT_COLUMNS: ExportColumn[] = [
     getValue: (o) => formatShippingAddressFull(getOrderShippingAddress(o)).replace(/\n/g, ', '),
   },
   { key: 'total_price', label: 'Total Price', getValue: (o) => o.total_price || '0' },
-  { key: 'payment_method', label: 'Payment Method', getValue: (o) => (o.financial_status === 'paid' ? 'Prepaid' : 'COD') },
+  { key: 'payment_method', label: 'Payment Method', getValue: (o) => getPaymentLabel(o) },
   { key: 'financial_status', label: 'Financial Status', getValue: (o) => o.financial_status || '' },
   { key: 'courier_partner', label: 'Courier Partner', getValue: (o) => o.fulfillments?.[0]?.tracking_company || '' },
   { key: 'awb_tracking', label: 'AWB/Tracking Number', getValue: (o) => o.fulfillments?.[0]?.tracking_number || '' },
@@ -399,7 +404,7 @@ export default function ShiprocketDashboardPage() {
       billing_phone: sanitizedPhone,
       shipping_is_billing: true,
       order_items: orderItems,
-      payment_method: order.financial_status === 'paid' ? 'Prepaid' : 'COD',
+      payment_method: getPaymentLabel(order),
       sub_total: Number(order.total_price) || 0,
       length: 15,
       breadth: 10,
@@ -1162,7 +1167,7 @@ export default function ShiprocketDashboardPage() {
   // ── RTO Risk Assessment Engine ──
   const getRtoRisk = (order: ShopifyOrder) => {
     const price = parseFloat(order.total_price)
-    const isCod = order.financial_status?.toLowerCase() === 'pending'
+    const isCod = isCodOrder(order)
     if (isCod && price > 1000) {
       return { score: 'High Risk', pct: '68% Risk Score', color: 'red' as const, factors: ['COD Payment Method', 'High Value Ticket Item', 'Pincode delivery failure rate: 12.4%'] }
     }
@@ -2116,8 +2121,8 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col gap-1.5">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
                                     <Badge
-                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
-                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                      label={getPaymentLabel(order)}
+                                      variant={isCodOrder(order) ? 'yellow' : 'green'}
                                     />
                                   </div>
                                 </td>
@@ -2187,8 +2192,8 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col gap-1.5">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
                                     <Badge
-                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
-                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                      label={getPaymentLabel(order)}
+                                      variant={isCodOrder(order) ? 'yellow' : 'green'}
                                     />
                                   </div>
                                 </td>
@@ -2289,8 +2294,8 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col gap-1.5">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
                                     <Badge
-                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
-                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                      label={getPaymentLabel(order)}
+                                      variant={isCodOrder(order) ? 'yellow' : 'green'}
                                     />
                                   </div>
                                 </td>
@@ -2379,10 +2384,10 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col gap-1">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
                                     <Badge
-                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
-                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                      label={getPaymentLabel(order)}
+                                      variant={isCodOrder(order) ? 'yellow' : 'green'}
                                     />
-                                    {order.financial_status !== 'paid' && (
+                                    {isCodOrder(order) && (
                                       <span className="text-[9px] text-white/40 mt-1.5 max-w-[130px] font-normal leading-normal">
                                         Remittance: {new Date(Date.now() + 5*24*60*60*1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} - {new Date(Date.now() + 8*24*60*60*1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                                       </span>
@@ -2463,8 +2468,8 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col gap-1.5">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
                                     <Badge
-                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
-                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                      label={getPaymentLabel(order)}
+                                      variant={isCodOrder(order) ? 'yellow' : 'green'}
                                     />
                                   </div>
                                 </td>
@@ -2607,8 +2612,8 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col gap-1.5">
                                     <span className="font-bold text-sm text-white">₹{order.total_price}</span>
                                     <Badge
-                                      label={order.financial_status === 'paid' ? 'Prepaid' : 'COD'}
-                                      variant={order.financial_status === 'paid' ? 'green' : 'yellow'}
+                                      label={getPaymentLabel(order)}
+                                      variant={isCodOrder(order) ? 'yellow' : 'green'}
                                     />
                                   </div>
                                 </td>
@@ -2970,7 +2975,9 @@ export default function ShiprocketDashboardPage() {
               <div>
                 <p className="text-white/40 font-normal">COD / Prepaid</p>
                 <p className="font-bold text-white mt-0.5">
-                  {activeCourierOrder.financial_status === 'paid' ? 'Prepaid (₹0.00 to collect)' : `COD (Collect ₹${activeCourierOrder.total_price})`}
+                  {isCodOrder(activeCourierOrder)
+                    ? `COD (Collect ₹${activeCourierOrder.total_price})`
+                    : 'Prepaid (₹0.00 to collect)'}
                 </p>
               </div>
             </div>

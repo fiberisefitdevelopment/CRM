@@ -28,6 +28,11 @@ yarn-error.log*
 .env
 .env*.local
 
+# local caches (runtime)
+.orders-cache.json
+.shiprocket-phones.json
+.order-notes.json
+
 
 # vercel
 .vercel

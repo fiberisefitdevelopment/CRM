@@ -148,33 +148,82 @@ export async function findShiprocketOrderByChannelNumber(
   }
 }
 
-export async function getAllShiprocketOrders(): Promise<any[]> {
-  try {
-    // 1. Fetch page 1 to discover total pages
-    const data = await shiprocketGet(`/orders?per_page=100&page=1`)
-    let allOrders = data?.data ?? data?.orders ?? []
-    if (!Array.isArray(allOrders)) {
-      allOrders = []
-    }
+function toYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
-    const totalPages = data?.meta?.pagination?.total_pages
-    if (typeof totalPages === 'number' && totalPages > 1) {
-      // 2. Fetch all remaining pages in parallel concurrently
-      const remainingPromises: Promise<any>[] = []
-      for (let p = 2; p <= totalPages; p++) {
-        remainingPromises.push(shiprocketGet(`/orders?per_page=100&page=${p}`))
+async function fetchShiprocketOrderPages(qs: string): Promise<any[]> {
+  const path = qs ? `/orders?${qs}&per_page=100&page=1` : `/orders?per_page=100&page=1`
+  const data = await shiprocketGet(path)
+
+  // Shiprocket sometimes returns HTTP 200 with an error message and empty data
+  if (data?.message && (!data?.data || data.data.length === 0) && !data?.meta?.pagination?.total) {
+    console.warn(`⚠️ Shiprocket orders empty for [${qs || 'default'}]: ${data.message}`)
+    return []
+  }
+
+  let allOrders = data?.data ?? data?.orders ?? []
+  if (!Array.isArray(allOrders)) allOrders = []
+
+  const totalPages = data?.meta?.pagination?.total_pages
+  if (typeof totalPages === 'number' && totalPages > 1) {
+    const batchSize = 5
+    for (let start = 2; start <= totalPages; start += batchSize) {
+      const end = Math.min(start + batchSize - 1, totalPages)
+      const pagePromises: Promise<any>[] = []
+      for (let p = start; p <= end; p++) {
+        const pagePath = qs
+          ? `/orders?${qs}&per_page=100&page=${p}`
+          : `/orders?per_page=100&page=${p}`
+        pagePromises.push(shiprocketGet(pagePath))
       }
-
-      const results = await Promise.all(remainingPromises)
+      const results = await Promise.all(pagePromises)
       results.forEach((res) => {
         const list = res?.data ?? res?.orders ?? []
-        if (Array.isArray(list)) {
-          allOrders = allOrders.concat(list)
-        }
+        if (Array.isArray(list)) allOrders = allOrders.concat(list)
       })
     }
+  }
 
-    return allOrders
+  return allOrders
+}
+
+/**
+ * Fetch Shiprocket orders for enrichment.
+ *
+ * IMPORTANT: Shiprocket's `from`/`to` rejects some wide/old ranges (e.g. lookback
+ * into the previous calendar year with YYYY-MM-DD) and returns 0 rows with a parse
+ * error — which previously wiped payment/status enrichment. We fetch year-to-date
+ * (known-good) and fall back to the default recent list.
+ */
+export async function getAllShiprocketOrders(): Promise<any[]> {
+  try {
+    const today = new Date()
+    const ytdFrom = `${today.getFullYear()}-01-01`
+    const ytdTo = toYmd(today)
+
+    const [ytdOrders, recentOrders] = await Promise.all([
+      fetchShiprocketOrderPages(`from=${ytdFrom}&to=${ytdTo}`),
+      fetchShiprocketOrderPages(''),
+    ])
+
+    // If YTD somehow comes back empty, keep recent list so sync is not blind
+    let allOrders = ytdOrders.length > 0 ? ytdOrders.concat(recentOrders) : recentOrders
+
+    // Dedupe by Shiprocket order id
+    const seen = new Set<string>()
+    const deduped: any[] = []
+    for (const o of allOrders) {
+      const key = String(o.id ?? '')
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      deduped.push(o)
+    }
+
+    console.log(
+      `📦 Shiprocket sync fetched ${deduped.length} orders (YTD ${ytdFrom}→${ytdTo}: ${ytdOrders.length}, recent: ${recentOrders.length})`,
+    )
+    return deduped
   } catch (error) {
     console.error('Error fetching Shiprocket orders in parallel:', error)
     return []
@@ -194,4 +243,10 @@ export async function getShiprocketManifest(shipmentIds: number[]) {
 export async function generateShiprocketLabels(shipmentIds: number[]) {
   // POST /courier/generate/label with { shipment_id: [...] }
   return shiprocketPost('/courier/generate/label', { shipment_id: shipmentIds })
+}
+
+export async function getShiprocketTrackingByAwb(awb: string): Promise<any> {
+  const clean = String(awb || '').trim()
+  if (!clean) throw new Error('AWB is required')
+  return shiprocketGet(`/courier/track/awb/${encodeURIComponent(clean)}`)
 }

@@ -138,7 +138,12 @@ export function buildZoneStats(orders: any[]): Record<IndiaZone, ZoneStats> {
     if (!zone) return
 
     const price = parseFloat(order.total_price) || 0
-    const isCOD = order.financial_status?.toLowerCase() !== 'paid'
+    const pm = String(order.payment_method || '').toLowerCase()
+    const isCOD = pm.includes('cod')
+      ? true
+      : (pm.includes('prepaid') || pm.includes('pre-paid'))
+        ? false
+        : order.financial_status?.toLowerCase() !== 'paid'
     const status = (order.fulfillments?.[0]?.shipment_status || '').toLowerCase()
     const isDelivered = status === 'delivered'
     const isRTO = ['failure', 'rto', 'returned'].includes(status)

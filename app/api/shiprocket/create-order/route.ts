@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
       const { addOrderToCache } = require('@/src/services/ordersCache')
       
       const srPhone = body.billing_phone || ''
-      const isCod = (body.payment_method || '').toLowerCase() === 'cod'
+      const isCod = String(body.payment_method || '').toLowerCase().includes('cod')
       
       const formattedCustomOrder = {
         id: data.order_id || Math.floor(1000000 + Math.random() * 9000000),
@@ -87,6 +87,7 @@ export async function POST(req: NextRequest) {
         name: body.order_id ? (body.order_id.startsWith('#') ? body.order_id : '#' + body.order_id) : `#SR-${data.order_id}`,
         created_at: body.order_date ? new Date(body.order_date).toISOString() : new Date().toISOString(),
         financial_status: isCod ? 'pending' : 'paid',
+        payment_method: isCod ? 'cod' : 'prepaid',
         cancelled_at: null,
         fulfillment_status: null,
         total_price: String(body.sub_total || '0'),

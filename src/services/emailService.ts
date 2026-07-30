@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import { claimRtoNotification, releaseRtoNotificationClaim } from './rtoNotificationRegistry';
+import { getPaymentLabel } from '@/src/utils/orderPayment';
 
 /**
  * Core function to send RTO email alerts.
@@ -29,7 +30,7 @@ export async function shootRtoEmailAlert(order: any): Promise<boolean> {
   const trackingUrl = latestFulfillment?.tracking_url || '#';
 
   const totalPrice = parseFloat(order.total_price || '0').toLocaleString('en-IN', { style: 'currency', currency: 'INR' });
-  const paymentType = order.financial_status === 'paid' ? 'Prepaid (Paid Online)' : 'COD (Cash on Delivery)';
+  const paymentType = getPaymentLabel(order) === 'COD' ? 'COD (Cash on Delivery)' : 'Prepaid (Paid Online)';
 
   // Build items rows for both text and HTML versions
   const itemsText = (order.line_items || []).map(

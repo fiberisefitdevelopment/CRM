@@ -92,17 +92,22 @@ export async function syncOrders(): Promise<any[]> {
 
       const srStatus = (srOrder.status || '').toLowerCase();
       let shipment_status = null;
+      // RTO before delivered so "RTO DELIVERED" maps correctly
       if (srStatus.includes('rto') || srStatus.includes('returned')) {
         shipment_status = 'rto';
-      } else if (srStatus.includes('undelivered') || srStatus.includes('fail') || srStatus.includes('error')) {
+      } else if (srStatus.includes('lost') || srStatus.includes('undelivered') || srStatus.includes('fail') || srStatus.includes('error')) {
         shipment_status = 'failure';
-      } else if (srStatus.includes('delivered')) {
+      } else if (srStatus === 'delivered' || srStatus.startsWith('delivered')) {
         shipment_status = 'delivered';
       } else if (srStatus.includes('transit') || srStatus.includes('out for delivery')) {
         shipment_status = 'in_transit';
       } else if (srStatus.includes('pickup') || srStatus.includes('scheduled')) {
         shipment_status = 'pickup_scheduled';
       }
+
+      const srPaymentRaw = String(srOrder.payment_method || '').toLowerCase().trim();
+      const srIsCod = srPaymentRaw.includes('cod');
+      const srPaymentMethod = srIsCod ? 'cod' : (srPaymentRaw ? 'prepaid' : null);
 
       // Extract shipment status reason (from delay_reason, pickup_exception_reason, or courier_remarks)
       const reasonCandidates = [
@@ -115,7 +120,8 @@ export async function syncOrders(): Promise<any[]> {
       const shipment_status_reason = reasonCandidates.length > 0 ? reasonCandidates[0] : null;
 
       if (matchedShopify) {
-        if (tracking_number) {
+        if (srPaymentMethod) matchedShopify.payment_method = srPaymentMethod;
+        if (shipment_status || tracking_number) {
           const enrichmentFulfillment = {
             id: latestShipment?.id || Math.floor(Math.random() * 10000),
             status: 'success',
@@ -124,20 +130,20 @@ export async function syncOrders(): Promise<any[]> {
             tracking_url,
             shipment_status,
             shipment_status_reason,
-            created_at: srOrder.updated_at || srOrder.created_at || matchedShopify.created_at,
-            dispatch_date: latestShipment?.shipped_date || latestShipment?.pickup_date || srOrder.shipped_date || srOrder.updated_at || srOrder.created_at || matchedShopify.created_at,
+            created_at: srOrder.created_at || matchedShopify.created_at,
+            dispatch_date: latestShipment?.shipped_date || latestShipment?.pickup_date || srOrder.shipped_date || srOrder.created_at || matchedShopify.created_at,
             delivery_date: latestShipment?.delivered_date || srOrder.delivered_date || (shipment_status === 'delivered' ? (srOrder.updated_at || srOrder.created_at) : null),
           };
           matchedShopify.fulfillment_status = 'fulfilled';
           matchedShopify.fulfillments = [enrichmentFulfillment];
         }
       } else {
-        const isCod = (srOrder.payment_method || '').toLowerCase() === 'cod';
+        const isCod = srIsCod;
         const isSrCancelled = srStatus.includes('cancelled') || srStatus.includes('canceled');
         const financial_status = isSrCancelled ? 'voided' : (isCod ? 'pending' : 'paid');
         const cancelled_at = isSrCancelled ? (srOrder.updated_at || srOrder.created_at || new Date().toISOString()) : null;
 
-        const enrichFulfillment = tracking_number ? [{
+        const enrichFulfillment = (shipment_status || tracking_number) ? [{
           id: latestShipment?.id || Math.floor(Math.random() * 10000),
           status: 'success',
           tracking_number,
@@ -145,8 +151,8 @@ export async function syncOrders(): Promise<any[]> {
           tracking_url,
           shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
           shipment_status_reason: isSrCancelled ? null : shipment_status_reason,
-          created_at: srOrder.updated_at || srOrder.created_at,
-          dispatch_date: latestShipment?.shipped_date || latestShipment?.pickup_date || srOrder.shipped_date || srOrder.updated_at || srOrder.created_at,
+          created_at: srOrder.created_at || srOrder.updated_at,
+          dispatch_date: latestShipment?.shipped_date || latestShipment?.pickup_date || srOrder.shipped_date || srOrder.created_at,
           delivery_date: latestShipment?.delivered_date || srOrder.delivered_date || (shipment_status === 'delivered' ? (srOrder.updated_at || srOrder.created_at) : null),
         }] : [];
 
@@ -158,8 +164,9 @@ export async function syncOrders(): Promise<any[]> {
           name: srOrder.channel_order_id ? (srOrder.channel_order_id.startsWith('#') ? srOrder.channel_order_id : '#' + srOrder.channel_order_id) : `#SR-${srOrder.id}`,
           created_at: srOrder.created_at || srOrder.channel_created_at || new Date().toISOString(),
           financial_status,
+          payment_method: srPaymentMethod || (isCod ? 'cod' : 'prepaid'),
           cancelled_at,
-          fulfillment_status: tracking_number ? 'fulfilled' : null,
+          fulfillment_status: (shipment_status && shipment_status !== 'cancelled') || tracking_number ? 'fulfilled' : null,
           total_price: String(srOrder.total || '0'),
           currency: 'INR',
           customer: {

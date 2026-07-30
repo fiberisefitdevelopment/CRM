@@ -1,0 +1,405 @@
+/** Helpers to map Shopify + Shiprocket data into a scannable order journey. */
+
+export type TimelineStepKey =
+  | 'created'
+  | 'payment'
+  | 'processing'
+  | 'packed'
+  | 'ready_pickup'
+  | 'picked_up'
+  | 'dispatched'
+  | 'in_transit'
+  | 'out_for_delivery'
+  | 'attempt'
+  | 'delivered'
+  | 'failed'
+  | 'rto'
+  | 'cancelled'
+  | 'refunded'
+
+export interface TimelineStep {
+  key: TimelineStepKey
+  label: string
+  description: string
+  timestamp: string | null
+  completed: boolean
+  current: boolean
+  tone: 'neutral' | 'blue' | 'amber' | 'emerald' | 'red' | 'purple'
+}
+
+export interface OrderAlert {
+  type: string
+  label: string
+  tone: 'amber' | 'red' | 'emerald'
+}
+
+const ACTIVITY_TO_STEP: Record<string, TimelineStepKey> = {
+  ORDER_FETCHED: 'created',
+  LABEL_GENERATED: 'packed',
+  PICKUP_SCHEDULED: 'ready_pickup',
+  OUT_FOR_PICKUP: 'ready_pickup',
+  PICKED_UP: 'picked_up',
+  ORDER_IN_TRANSIT: 'in_transit',
+  'REACHED AT DESTINATION HUB': 'in_transit',
+  ORDER_OUT_FOR_DELIVERY: 'out_for_delivery',
+  ORDER_DELIVERED: 'delivered',
+  ORDER_RTO: 'rto',
+  RTO_INITIATED: 'rto',
+  RTO_DELIVERED: 'rto',
+  CANCELLED: 'cancelled',
+}
+
+export function normalizeShipmentStatus(order: any): string {
+  const metaStatus = String(order?.shiprocket_meta?.status || '').toLowerCase()
+  const shipStatus = String(order?.fulfillments?.[0]?.shipment_status || '').toLowerCase()
+  if (metaStatus.includes('rto')) return 'rto'
+  if (metaStatus.includes('cancel')) return 'cancelled'
+  if (metaStatus.includes('lost') || metaStatus.includes('undelivered')) return 'failed'
+  if (metaStatus === 'delivered' || metaStatus.startsWith('delivered')) return 'delivered'
+  if (metaStatus.includes('out for delivery')) return 'out_for_delivery'
+  if (metaStatus.includes('transit')) return 'in_transit'
+  if (metaStatus.includes('pickup')) return 'ready_pickup'
+  if (shipStatus) return shipStatus
+  if (!order?.fulfillment_status) return 'unfulfilled'
+  return 'processing'
+}
+
+export function paymentLabel(order: any): 'Paid' | 'Pending' | 'Failed' | 'Refunded' {
+  const fs = String(order?.financial_status || '').toLowerCase()
+  if (fs === 'refunded' || fs === 'voided') return 'Refunded'
+  if (fs === 'paid') return 'Paid'
+  if (fs === 'pending' || fs === 'authorized' || fs === 'partially_paid') return 'Pending'
+  if (fs.includes('fail')) return 'Failed'
+  const pm = String(order?.payment_method || '').toLowerCase()
+  if (pm.includes('cod')) return 'Pending'
+  return fs ? (fs.charAt(0).toUpperCase() + fs.slice(1)) as any : 'Pending'
+}
+
+export function buildAlerts(order: any): OrderAlert[] {
+  const alerts: OrderAlert[] = []
+  const status = normalizeShipmentStatus(order)
+  const meta = order?.shiprocket_meta || {}
+
+  if (isOrderDelayed(order)) {
+    const days = getDelayDays(order)
+    const reason = days > 0
+      ? `Delayed by ${days} day${days === 1 ? '' : 's'}`
+      : meta.delay_reason
+        ? `Delayed: ${meta.delay_reason}`
+        : 'Delivery Delayed'
+    alerts.push({ type: 'delayed', label: reason, tone: 'red' })
+  }
+  if (status === 'in_transit' && (meta.delay_reason || meta.delivery_delayed)) {
+    alerts.push({ type: 'stuck', label: 'Shipment may be stuck', tone: 'red' })
+  }
+  if (status === 'rto') {
+    alerts.push({ type: 'rto', label: meta.rto_reason ? `RTO: ${meta.rto_reason}` : 'RTO Initiated', tone: 'red' })
+  }
+  if (status === 'cancelled' || order?.cancelled_at) {
+    alerts.push({ type: 'cancelled', label: 'Cancelled Order', tone: 'red' })
+  }
+  if (String(order?.financial_status || '').toLowerCase() === 'refunded') {
+    alerts.push({ type: 'refund', label: 'Refund Completed', tone: 'emerald' })
+  }
+  if (status === 'failed') {
+    alerts.push({ type: 'failed', label: 'Delivery Attempt Failed', tone: 'red' })
+  }
+  return alerts
+}
+
+/** True when Shiprocket marked delay, or ETD has passed and order is still undelivered. */
+export function isOrderDelayed(order: any): boolean {
+  const status = normalizeShipmentStatus(order)
+  if (['delivered', 'cancelled', 'rto'].includes(status)) return false
+
+  const meta = order?.shiprocket_meta || {}
+  if (meta.delivery_delayed || meta.delay_reason) return true
+
+  const etdRaw = meta.etd_date
+  if (!etdRaw) return false
+  const etd = parseFlexibleDate(etdRaw)
+  if (!etd) return false
+  const etdDay = startOfDay(etd)
+  const todayDay = startOfDay(new Date())
+  return etdDay.getTime() < todayDay.getTime()
+}
+
+function startOfDay(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate())
+}
+
+/** Parse Shiprocket / ISO / DD-MM-YYYY style dates. */
+export function parseFlexibleDate(value?: string | null): Date | null {
+  if (!value) return null
+  const raw = String(value).trim()
+  if (!raw) return null
+
+  const iso = new Date(raw)
+  if (!isNaN(iso.getTime())) return iso
+
+  // DD-MM-YYYY HH:mm:ss or DD-MM-YYYY
+  const m = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
+  if (m) {
+    const d = new Date(
+      Number(m[3]),
+      Number(m[2]) - 1,
+      Number(m[1]),
+      Number(m[4] || 0),
+      Number(m[5] || 0),
+      Number(m[6] || 0),
+    )
+    if (!isNaN(d.getTime())) return d
+  }
+  return null
+}
+
+/** Best-known shipment / pickup date for an order. */
+export function getShipmentDate(order: any): string | null {
+  const meta = order?.shiprocket_meta || {}
+  const fulfillment = order?.fulfillments?.[0] || {}
+  const candidates = [
+    meta.picked_up_date,
+    meta.pickup_booked_date,
+    fulfillment.dispatch_date,
+    fulfillment.created_at,
+  ]
+  for (const c of candidates) {
+    if (c && parseFlexibleDate(c)) return String(c)
+  }
+  return null
+}
+
+/**
+ * Days past ETD (calendar days). Returns 0 if not delayed / no ETD.
+ * Uses today vs ETD for undelivered delayed orders.
+ */
+export function getDelayDays(order: any): number {
+  if (!isOrderDelayed(order)) return 0
+  const meta = order?.shiprocket_meta || {}
+  const etd = parseFlexibleDate(meta.etd_date)
+  if (!etd) return 0
+  const etdDay = startOfDay(etd)
+  const todayDay = startOfDay(new Date())
+  const diff = Math.floor((todayDay.getTime() - etdDay.getTime()) / (1000 * 60 * 60 * 24))
+  return Math.max(0, diff)
+}
+
+export function buildTimeline(order: any, tracking?: any): TimelineStep[] {
+  const meta = order?.shiprocket_meta || {}
+  const fulfillment = order?.fulfillments?.[0] || {}
+  const status = normalizeShipmentStatus(order)
+  const activities: string[] = Array.isArray(meta.activities) ? meta.activities : []
+  const trackActs: any[] = tracking?.tracking_data?.shipment_track_activities || []
+
+  const findTrackTime = (...labels: string[]) => {
+    const hit = trackActs.find((a) => {
+      const blob = `${a.activity || ''} ${a['sr-status-label'] || ''} ${a.status || ''}`.toLowerCase()
+      return labels.some((l) => blob.includes(l.toLowerCase()))
+    })
+    return hit?.date || null
+  }
+
+  const isCancelled = status === 'cancelled' || !!order?.cancelled_at
+  const isRto = status === 'rto'
+  const isFailed = status === 'failed'
+  const isDelivered = status === 'delivered'
+  const isOfd = status === 'out_for_delivery'
+  const isTransit = status === 'in_transit' || isOfd || isDelivered || isRto || isFailed
+  const isPicked = isTransit || activities.includes('PICKED_UP') || !!meta.picked_up_date
+  const isReadyPickup =
+    isPicked ||
+    activities.includes('PICKUP_SCHEDULED') ||
+    activities.includes('OUT_FOR_PICKUP') ||
+    activities.includes('LABEL_GENERATED') ||
+    !!fulfillment.tracking_number
+  const isPacked = isReadyPickup || activities.includes('LABEL_GENERATED')
+  const isProcessing = !!order?.fulfillment_status || isPacked
+  const isPaid =
+    String(order?.financial_status || '').toLowerCase() === 'paid' ||
+    (String(order?.payment_method || '').toLowerCase().includes('prepaid') && !isCancelled)
+
+  const steps: TimelineStep[] = [
+    {
+      key: 'created',
+      label: 'Order Created',
+      description: 'Order placed on storefront / channel',
+      timestamp: order?.created_at || null,
+      completed: true,
+      current: false,
+      tone: 'blue',
+    },
+    {
+      key: 'payment',
+      label: isPaid ? 'Payment Received' : 'Payment Pending',
+      description: isPaid ? 'Payment confirmed' : 'Awaiting payment / COD collection',
+      timestamp: isPaid ? order?.created_at || null : null,
+      completed: isPaid || isDelivered,
+      current: !isPaid && !isCancelled && !isDelivered,
+      tone: isPaid || isDelivered ? 'emerald' : 'amber',
+    },
+    {
+      key: 'processing',
+      label: 'Processing',
+      description: 'Order accepted for fulfillment',
+      timestamp: order?.created_at || null,
+      completed: isProcessing || isPacked || isReadyPickup || isPicked || isTransit || isDelivered,
+      current: !isProcessing && !isCancelled,
+      tone: 'purple',
+    },
+    {
+      key: 'packed',
+      label: 'Packed',
+      description: 'Label generated / package prepared',
+      timestamp: findTrackTime('label', 'data received') || (activities.includes('LABEL_GENERATED') ? meta.pickup_booked_date || order?.created_at : null),
+      completed: isPacked || isReadyPickup || isPicked || isTransit || isDelivered,
+      current: isProcessing && !isPacked && !isCancelled,
+      tone: 'purple',
+    },
+    {
+      key: 'ready_pickup',
+      label: 'Ready for Pickup',
+      description: 'Awaiting courier pickup',
+      timestamp: meta.pickup_booked_date || findTrackTime('out for pickup', 'pickup scheduled'),
+      completed: isReadyPickup || isPicked || isTransit || isDelivered,
+      current: isPacked && !isPicked && !isCancelled && !isRto,
+      tone: 'amber',
+    },
+    {
+      key: 'picked_up',
+      label: 'Pickup Completed',
+      description: 'Courier collected the shipment',
+      timestamp: meta.picked_up_date || findTrackTime('pickup done', 'picked up'),
+      completed: isPicked || isTransit || isDelivered,
+      current: isReadyPickup && !isPicked && !isCancelled,
+      tone: 'blue',
+    },
+    {
+      key: 'dispatched',
+      label: 'Dispatched',
+      description: 'Shipment left origin hub',
+      timestamp: fulfillment.dispatch_date || meta.picked_up_date || findTrackTime('in transit'),
+      completed: isTransit || isDelivered,
+      current: isPicked && !isTransit && !isCancelled,
+      tone: 'blue',
+    },
+    {
+      key: 'in_transit',
+      label: 'In Transit',
+      description: 'Moving through courier network',
+      timestamp: findTrackTime('in transit', 'reached at destination'),
+      completed: isTransit || isDelivered,
+      current: status === 'in_transit',
+      tone: 'blue',
+    },
+    {
+      key: 'out_for_delivery',
+      label: 'Out for Delivery',
+      description: 'With delivery executive',
+      timestamp: meta.out_for_delivery_date || findTrackTime('out for delivery'),
+      completed: isOfd || isDelivered || isFailed || isRto,
+      current: isOfd,
+      tone: 'amber',
+    },
+    {
+      key: 'delivered',
+      label: 'Delivered',
+      description: 'Successfully delivered to customer',
+      timestamp: meta.delivered_date || fulfillment.delivery_date || findTrackTime('delivered'),
+      completed: isDelivered,
+      current: isDelivered,
+      tone: 'emerald',
+    },
+    {
+      key: 'failed',
+      label: 'Delivery Attempt Failed',
+      description: 'Courier could not complete delivery',
+      timestamp: findTrackTime('undelivered', 'failed', 'attempt'),
+      completed: isFailed,
+      current: isFailed,
+      tone: 'red',
+    },
+    {
+      key: 'rto',
+      label: 'Returned to Origin (RTO)',
+      description: meta.rto_reason || 'Shipment returning / returned to warehouse',
+      timestamp: findTrackTime('rto') || (isRto ? meta.delivered_date || order?.updated_at : null),
+      completed: isRto,
+      current: isRto,
+      tone: 'red',
+    },
+    {
+      key: 'cancelled',
+      label: 'Cancelled',
+      description: 'Order cancelled',
+      timestamp: order?.cancelled_at || null,
+      completed: isCancelled,
+      current: isCancelled,
+      tone: 'red',
+    },
+    {
+      key: 'refunded',
+      label: 'Refunded',
+      description: 'Refund completed',
+      timestamp: String(order?.financial_status || '').toLowerCase() === 'refunded' ? order?.updated_at || order?.cancelled_at : null,
+      completed: String(order?.financial_status || '').toLowerCase() === 'refunded',
+      current: String(order?.financial_status || '').toLowerCase() === 'refunded',
+      tone: 'emerald',
+    },
+  ]
+
+  // Mark a single current step when none set
+  if (!steps.some((s) => s.current)) {
+    const lastDone = [...steps].reverse().find((s) => s.completed)
+    if (lastDone && !['delivered', 'rto', 'cancelled', 'refunded', 'failed'].includes(lastDone.key)) {
+      const idx = steps.findIndex((s) => s.key === lastDone.key)
+      if (idx >= 0 && idx < steps.length - 1) steps[idx].current = true
+    }
+  }
+
+  // Hide terminal-negative steps unless relevant
+  return steps.filter((s) => {
+    if (s.key === 'failed') return isFailed || s.completed
+    if (s.key === 'rto') return isRto || s.completed
+    if (s.key === 'cancelled') return isCancelled || s.completed
+    if (s.key === 'refunded') return s.completed
+    return true
+  })
+}
+
+export function fulfillmentStageLabel(status: string): string {
+  const map: Record<string, string> = {
+    unfulfilled: 'Order Created',
+    processing: 'Processing',
+    packed: 'Packed',
+    ready_pickup: 'Ready for Pickup',
+    pickup_scheduled: 'Ready for Pickup',
+    picked_up: 'Pickup Completed',
+    dispatched: 'Dispatched',
+    in_transit: 'In Transit',
+    out_for_delivery: 'Out for Delivery',
+    delivered: 'Delivered',
+    failed: 'Delivery Attempt Failed',
+    failure: 'Delivery Attempt Failed',
+    rto: 'Returned to Origin (RTO)',
+    cancelled: 'Cancelled',
+    refunded: 'Refunded',
+  }
+  return map[status] || status.replace(/_/g, ' ')
+}
+
+export function mapActivityToLabel(activity: string): string {
+  const key = ACTIVITY_TO_STEP[activity]
+  if (!key) return activity.replace(/_/g, ' ')
+  const labels: Record<string, string> = {
+    created: 'Order Created',
+    packed: 'Packed / Label Generated',
+    ready_pickup: 'Ready for Pickup',
+    picked_up: 'Picked Up',
+    in_transit: 'In Transit',
+    out_for_delivery: 'Out for Delivery',
+    delivered: 'Delivered',
+    rto: 'RTO',
+    cancelled: 'Cancelled',
+  }
+  return labels[key] || activity
+}

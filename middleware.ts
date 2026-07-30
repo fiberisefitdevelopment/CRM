@@ -76,6 +76,7 @@ export const config = {
   matcher: [
     '/',
     '/orders/:path*',
+    '/order-status/:path*',
     '/whatsapp/:path*',
     '/shiprocket/:path*',
     '/sales-dashboard/:path*',
@@ -84,6 +85,7 @@ export const config = {
     '/tickets/:path*',
     '/products/:path*',
     '/user/:path*',
+    '/crm/:path*',
     '/login',
     '/api/:path*',
   ],

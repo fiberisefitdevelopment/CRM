@@ -17,12 +17,14 @@ import {
   Menu,
   Route,
   FileText,
+  PackageSearch,
 } from 'lucide-react'
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
   { icon: TrendingUp,      label: 'Sales Analytics', href: '/sales-dashboard' },
   { icon: ShoppingBag,     label: 'Orders', href: '/orders' },
+  { icon: PackageSearch,   label: 'Order Status', href: '/order-status' },
   { icon: PackagePlus,     label: 'Create Order', href: '/shiprocket/create-order' },
   { icon: FileText,        label: 'Reports', href: '/reports' },
   { icon: MessageCircle,   label: 'WhatsApp', href: '/whatsapp' },
