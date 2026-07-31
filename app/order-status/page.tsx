@@ -24,6 +24,7 @@ import {
   User,
   X,
   XCircle,
+  CalendarDays,
 } from 'lucide-react'
 import { getPaymentLabel, isCodOrder } from '@/src/utils/orderPayment'
 import {
@@ -32,11 +33,25 @@ import {
   fulfillmentStageLabel,
   getDelayDays,
   getShipmentDate,
+  hasRtoInitiated,
+  isActiveRtoStatus,
+  isCreatedInDateRange,
   isOrderDelayed,
+  isShiprocketDeliveredStatus,
+  isShiprocketInTransitStatus,
   normalizeShipmentStatus,
   paymentLabel,
+  toIstDateKey,
   type TimelineStep,
 } from '@/src/utils/orderTimeline'
+
+/** Default Order Status window: last 30 calendar days in IST (inclusive). */
+function getDefaultDateRange(): { start: string; end: string } {
+  const end = toIstDateKey(new Date().toISOString())
+  const startMs = Date.now() - 29 * 24 * 60 * 60 * 1000
+  const start = toIstDateKey(new Date(startMs).toISOString())
+  return { start, end }
+}
 
 interface OrderRow {
   id: number
@@ -113,6 +128,23 @@ function customerPhone(o: OrderRow) {
   return o.customer?.phone || o.shipping_address?.phone || '—'
 }
 
+/** Strip leading # and lowercase for clone/parent matching. */
+function cleanOrderName(name?: string | null): string {
+  return String(name || '').replace(/^#/, '').trim().toLowerCase()
+}
+
+/** True when order name follows clone convention: `{parent}-C`. */
+function isCloneOrderName(name?: string | null): boolean {
+  return cleanOrderName(name).endsWith('-c')
+}
+
+/** Parent base name for a clone (`1128-c` → `1128`). Null if not a clone. */
+function getCloneParentBase(name?: string | null): string | null {
+  const clean = cleanOrderName(name)
+  if (!clean.endsWith('-c')) return null
+  return clean.slice(0, -2)
+}
+
 function badgeTone(tone: string) {
   switch (tone) {
     case 'emerald':
@@ -132,8 +164,15 @@ function badgeTone(tone: string) {
 
 function statusTone(status: string): string {
   if (status === 'delivered') return 'emerald'
-  if (status === 'rto' || status === 'failed' || status === 'cancelled') return 'red'
-  if (status === 'out_for_delivery' || status === 'ready_pickup' || status === 'pickup_scheduled') return 'amber'
+  if (status === 'rto' || status === 'rto_delivered' || status === 'failed' || status === 'cancelled') return 'red'
+  if (
+    status === 'out_for_delivery' ||
+    status === 'ready_pickup' ||
+    status === 'pickup_scheduled' ||
+    status === 'attempted_delivery'
+  ) {
+    return 'amber'
+  }
   if (status === 'in_transit' || status === 'dispatched') return 'blue'
   return 'purple'
 }
@@ -187,11 +226,17 @@ function OrderStatusCard({
   expanded,
   onToggle,
   onNoteSaved,
+  relatedClones = [],
+  parentOrder = null,
+  onOpenRelated,
 }: {
   order: OrderRow
   expanded: boolean
   onToggle: () => void
   onNoteSaved: (orderId: number, note: string) => void
+  relatedClones?: OrderRow[]
+  parentOrder?: OrderRow | null
+  onOpenRelated?: (orderId: number) => void
 }) {
   const router = useRouter()
   const [tracking, setTracking] = useState<any>(null)
@@ -211,6 +256,8 @@ function OrderStatusCard({
   const meta = order.shiprocket_meta || {}
   const shipmentDate = getShipmentDate(order)
   const delayDays = getDelayDays(order)
+  const isClone = isCloneOrderName(order.name)
+  const hasClones = relatedClones.length > 0
 
   useEffect(() => {
     setNoteDraft(order.note || '')
@@ -296,6 +343,16 @@ function OrderStatusCard({
                 {order.source === 'shiprocket' && (
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('purple')}`}>
                     Shiprocket
+                  </span>
+                )}
+                {hasClones && (
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('blue')}`}>
+                    {relatedClones.length} clone{relatedClones.length === 1 ? '' : 's'}
+                  </span>
+                )}
+                {isClone && (
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('amber')}`}>
+                    Clone{parentOrder ? ` of ${parentOrder.name}` : ''}
                   </span>
                 )}
               </p>
@@ -391,6 +448,15 @@ function OrderStatusCard({
           <p className="mt-2 ml-7 text-[11px] flex items-start gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
             <StickyNote className="w-3.5 h-3.5 mt-0.5 shrink-0 text-purple-500" />
             <span className="line-clamp-2">{order.note}</span>
+          </p>
+        )}
+        {hasClones && !expanded && (
+          <p className="mt-2 ml-7 text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+            Clone trail:{' '}
+            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+              {relatedClones.map((c) => c.name).join(', ')}
+            </span>
+            {' '}· expand for details
           </p>
         )}
       </button>
@@ -646,6 +712,95 @@ function OrderStatusCard({
             </div>
           </div>
 
+          {/* Clone order trail (parent) / parent link (clone) */}
+          {(hasClones || (isClone && parentOrder)) && (
+            <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
+              <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3" style={{ color: 'var(--foreground-muted)' }}>
+                {hasClones ? 'Clone Order Trail' : 'Original Order'}
+              </h3>
+              {isClone && parentOrder && (
+                <button
+                  type="button"
+                  onClick={() => onOpenRelated?.(parentOrder.id)}
+                  className="w-full text-left rounded-lg border p-3 mb-2 hover:bg-purple-500/[0.04] transition-colors"
+                  style={{ borderColor: 'var(--border)' }}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
+                        {parentOrder.name}
+                      </p>
+                      <p className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+                        Parent · {fulfillmentStageLabel(normalizeShipmentStatus(parentOrder))}
+                        {parentOrder.fulfillments?.[0]?.tracking_number
+                          ? ` · ${parentOrder.fulfillments[0].tracking_number}`
+                          : ''}
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 opacity-50" />
+                  </div>
+                </button>
+              )}
+              {hasClones && (
+                <ul className="space-y-2">
+                  <li className="rounded-lg border p-3 opacity-80" style={{ borderColor: 'var(--border)' }}>
+                    <p className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>
+                      Original
+                    </p>
+                    <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
+                      {order.name}
+                    </p>
+                    <p className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+                      {fulfillmentStageLabel(status)}
+                      {awb ? ` · ${awb}` : ''}
+                      {fulfillment?.tracking_company ? ` · ${fulfillment.tracking_company}` : ''}
+                    </p>
+                  </li>
+                  {relatedClones.map((clone, idx) => {
+                    const cStatus = normalizeShipmentStatus(clone)
+                    const cAwb = clone.fulfillments?.[0]?.tracking_number || ''
+                    const cCourier = clone.fulfillments?.[0]?.tracking_company || ''
+                    return (
+                      <li key={clone.id}>
+                        <button
+                          type="button"
+                          onClick={() => onOpenRelated?.(clone.id)}
+                          className="w-full text-left rounded-lg border p-3 hover:bg-blue-500/[0.05] transition-colors"
+                          style={{ borderColor: 'rgba(59, 130, 246, 0.35)' }}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase text-blue-600">
+                                Clone {relatedClones.length > 1 ? idx + 1 : ''}
+                              </p>
+                              <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
+                                {clone.name}
+                              </p>
+                              <p className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+                                Created {fmtWhen(clone.created_at)}
+                              </p>
+                              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone(statusTone(cStatus))}`}>
+                                  {fulfillmentStageLabel(cStatus)}
+                                </span>
+                                {(cCourier || cAwb) && (
+                                  <span className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+                                    {cCourier || 'Courier'}{cAwb ? ` · ${cAwb}` : ''}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <ChevronRight className="w-4 h-4 opacity-50 mt-1 shrink-0" />
+                          </div>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+
           {/* Fulfillment checklist */}
           <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
             <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3" style={{ color: 'var(--foreground-muted)' }}>
@@ -685,13 +840,14 @@ export default function OrderStatusPage() {
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20)
 
   const [search, setSearch] = useState('')
-  const [channel, setChannel] = useState<'shopify' | 'shiprocket' | 'all'>('shopify')
+  // Default "all" so CUSTOM / Shiprocket-only orders match Shiprocket dashboard counts
+  const [channel, setChannel] = useState<'shopify' | 'shiprocket' | 'all'>('all')
   const [courier, setCourier] = useState('all')
   const [paymentStatus, setPaymentStatus] = useState('all')
   const [fulfillmentStatus, setFulfillmentStatus] = useState('all')
   const [deliveryStatus, setDeliveryStatus] = useState('all')
-  const [startDate, setStartDate] = useState('')
-  const [endDate, setEndDate] = useState('')
+  const [startDate, setStartDate] = useState(() => getDefaultDateRange().start)
+  const [endDate, setEndDate] = useState(() => getDefaultDateRange().end)
 
   const loadOrders = useCallback(async (force = false) => {
     try {
@@ -699,7 +855,9 @@ export default function OrderStatusPage() {
       else setLoading(true)
       setError(null)
 
-      const url = force ? '/api/shopify/orders?all=true&refresh=true' : '/api/shopify/orders?all=true'
+      const url = force
+        ? '/api/shopify/orders?all=true&include_test=true&refresh=true'
+        : '/api/shopify/orders?all=true&include_test=true'
       const res = await fetch(url)
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Failed to load orders')
@@ -727,14 +885,15 @@ export default function OrderStatusPage() {
   }, [loadOrders])
 
   const clearFilters = () => {
+    const defaults = getDefaultDateRange()
     setSearch('')
-    setChannel('shopify')
+    setChannel('all')
     setCourier('all')
     setPaymentStatus('all')
     setFulfillmentStatus('all')
     setDeliveryStatus('all')
-    setStartDate('')
-    setEndDate('')
+    setStartDate(defaults.start)
+    setEndDate(defaults.end)
     setPage(1)
   }
 
@@ -749,14 +908,16 @@ export default function OrderStatusPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const hasStart = Boolean(startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate))
-    const hasEnd = Boolean(endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate))
 
     const list = orders.filter((o) => {
-      // Default Shopify channel matches Shopify Admin order count
+      // Match Shiprocket: hide test orders from ops views
+      if ((o as any).is_test_order) return false
+
       const isSrOnly = o.source === 'shiprocket'
       if (channel === 'shopify' && isSrOnly) return false
       if (channel === 'shiprocket' && !isSrOnly) return false
+
+      if (!isCreatedInDateRange(o, startDate, endDate)) return false
 
       if (q) {
         const hay = [
@@ -779,54 +940,50 @@ export default function OrderStatusPage() {
       if (courier !== 'all' && company !== courier) return false
       if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
       if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
-      if (deliveryStatus === 'delivered' && status !== 'delivered') return false
-      if (deliveryStatus === 'not_delivered' && status === 'delivered') return false
-      if (deliveryStatus === 'in_transit' && !['in_transit', 'out_for_delivery'].includes(status)) return false
-      if (deliveryStatus === 'rto' && status !== 'rto') return false
+      if (deliveryStatus === 'delivered' && !isShiprocketDeliveredStatus(o)) return false
+      if (deliveryStatus === 'not_delivered' && isShiprocketDeliveredStatus(o)) return false
+      if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(o)) return false
+      if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
+      if (deliveryStatus === 'rto' && !isActiveRtoStatus(o)) return false
+      if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
       if (deliveryStatus === 'delayed' && !isOrderDelayed(o)) return false
-      if (deliveryStatus === 'rto_alerts' && status !== 'rto' && buildAlerts(o).length === 0) return false
-
-      if (hasStart || hasEnd) {
-        const parsed = new Date(o.created_at)
-        let key = ''
-        if (!isNaN(parsed.getTime())) {
-          key = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`
-        } else if (/^\d{4}-\d{2}-\d{2}/.test(o.created_at || '')) {
-          key = o.created_at.slice(0, 10)
-        } else {
-          return true // don't drop orders with unparseable dates when filtering
-        }
-        if (hasStart && key < startDate) return false
-        if (hasEnd && key > endDate) return false
+      if (
+        deliveryStatus === 'rto_alerts' &&
+        !isActiveRtoStatus(o) &&
+        buildAlerts(o).length === 0
+      ) {
+        return false
       }
 
       return true
     })
 
-    // Most-delayed days first, then other delayed, then newest created
+    // ORDERS tab: newest placed first (normal feed).
+    // DELAYED FIRST tab: most-delayed days first, then newest.
     return list.sort((a, b) => {
-      const aDays = getDelayDays(a)
-      const bDays = getDelayDays(b)
-      const aDelayed = isOrderDelayed(a) ? 1 : 0
-      const bDelayed = isOrderDelayed(b) ? 1 : 0
-
-      // Delayed ahead of non-delayed
-      if (aDelayed !== bDelayed) return bDelayed - aDelayed
-      // Among delayed: highest delay days first
-      if (aDelayed && bDelayed && aDays !== bDays) return bDays - aDays
+      if (deliveryStatus === 'delayed') {
+        const aDays = getDelayDays(a)
+        const bDays = getDelayDays(b)
+        if (aDays !== bDays) return bDays - aDays
+      }
       return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
     })
   }, [orders, search, channel, courier, paymentStatus, fulfillmentStatus, deliveryStatus, startDate, endDate])
 
+  const defaultDates = useMemo(() => getDefaultDateRange(), [])
+  const isLast30Days =
+    Boolean(startDate) &&
+    Boolean(endDate) &&
+    startDate === defaultDates.start &&
+    endDate === defaultDates.end
   const filtersActive =
     search.trim() !== '' ||
-    channel !== 'shopify' ||
+    channel !== 'all' ||
     courier !== 'all' ||
     paymentStatus !== 'all' ||
     fulfillmentStatus !== 'all' ||
     deliveryStatus !== 'all' ||
-    Boolean(startDate) ||
-    Boolean(endDate)
+    !isLast30Days
 
   const channelBreakdown = useMemo(() => {
     const shopify = orders.filter((o) => o.source !== 'shiprocket').length
@@ -834,16 +991,78 @@ export default function OrderStatusPage() {
     return { shopify, shiprocket }
   }, [orders])
 
+  // Parent → clone trail (name convention `{parent}-C`), from full cache not just filtered list
+  const cloneRelations = useMemo(() => {
+    const byClean = new Map<string, OrderRow>()
+    const clonesByParent = new Map<string, OrderRow[]>()
+
+    orders.forEach((o) => {
+      if ((o as any).is_test_order) return
+      const clean = cleanOrderName(o.name)
+      if (!clean) return
+      byClean.set(clean, o)
+
+      const parentBase = getCloneParentBase(o.name)
+      if (!parentBase) return
+      const list = clonesByParent.get(parentBase) || []
+      list.push(o)
+      clonesByParent.set(parentBase, list)
+    })
+
+    clonesByParent.forEach((list, key) => {
+      list.sort(
+        (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime(),
+      )
+      clonesByParent.set(key, list)
+    })
+
+    return { byClean, clonesByParent }
+  }, [orders])
+
+  const openRelatedOrder = useCallback(
+    (orderId: number) => {
+      const target = orders.find((o) => o.id === orderId)
+      if (!target) {
+        // Not in cache — open full order page
+        window.location.href = `/orders/${orderId}`
+        return
+      }
+      // Jump to related order in this list if present; otherwise open detail page
+      const inFiltered = filtered.some((o) => o.id === orderId)
+      if (inFiltered) {
+        const idx = filtered.findIndex((o) => o.id === orderId)
+        const targetPage = Math.floor(idx / pageSize) + 1
+        setPage(targetPage)
+        setExpandedId(orderId)
+        if (typeof window !== 'undefined') {
+          window.setTimeout(() => {
+            document.getElementById(`order-card-${orderId}`)?.scrollIntoView({
+              behavior: 'smooth',
+              block: 'start',
+            })
+          }, 50)
+        }
+      } else {
+        window.location.href = `/orders/${orderId}`
+      }
+    },
+    [orders, filtered, pageSize],
+  )
+
   // Base list for summary cards (everything except the quick deliveryStatus card filter)
   const summaryBase = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const hasStart = Boolean(startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate))
-    const hasEnd = Boolean(endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate))
 
     return orders.filter((o) => {
+      if ((o as any).is_test_order) return false
+
       const isSrOnly = o.source === 'shiprocket'
       if (channel === 'shopify' && isSrOnly) return false
       if (channel === 'shiprocket' && !isSrOnly) return false
+
+      // Same IST created_at range Shiprocket uses for order date filters
+      if (!isCreatedInDateRange(o, startDate, endDate)) return false
+
       if (q) {
         const hay = [
           o.name,
@@ -863,32 +1082,21 @@ export default function OrderStatusPage() {
       if (courier !== 'all' && company !== courier) return false
       if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
       if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
-      if (hasStart || hasEnd) {
-        const parsed = new Date(o.created_at)
-        let key = ''
-        if (!isNaN(parsed.getTime())) {
-          key = `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`
-        } else if (/^\d{4}-\d{2}-\d{2}/.test(o.created_at || '')) {
-          key = o.created_at.slice(0, 10)
-        } else {
-          return true
-        }
-        if (hasStart && key < startDate) return false
-        if (hasEnd && key > endDate) return false
-      }
       return true
     })
   }, [orders, search, channel, courier, paymentStatus, fulfillmentStatus, startDate, endDate])
 
   const summary = useMemo(() => {
-    const counts = { total: summaryBase.length, delivered: 0, inTransit: 0, delayed: 0, rto: 0, alerts: 0 }
+    const counts = { total: 0, delivered: 0, inTransit: 0, delayed: 0, rto: 0 }
     summaryBase.forEach((o) => {
-      const s = normalizeShipmentStatus(o)
-      if (s === 'delivered') counts.delivered++
-      if (s === 'in_transit' || s === 'out_for_delivery') counts.inTransit++
-      if (isOrderDelayed(o)) counts.delayed++
-      if (s === 'rto') counts.rto++
-      counts.alerts += buildAlerts(o).length
+      const activeRto = isActiveRtoStatus(o)
+      counts.total++
+      if (isShiprocketDeliveredStatus(o)) counts.delivered++
+      if (isShiprocketInTransitStatus(o)) counts.inTransit++
+      // RTO Initiated (open only) — matches Shiprocket RTO tab status filter
+      if (activeRto) counts.rto++
+      // Delayed never includes RTO pipeline orders
+      if (!activeRto && !hasRtoInitiated(o) && isOrderDelayed(o)) counts.delayed++
     })
     return counts
   }, [summaryBase])
@@ -974,11 +1182,11 @@ export default function OrderStatusPage() {
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
             {([
               {
-                label: 'Matching Orders',
+                label: 'Orders',
                 value: summary.total,
                 tone: 'purple',
                 key: 'all',
-                hint: deliveryStatus === 'all' ? 'All matching orders' : 'Click to show all',
+                hint: deliveryStatus === 'all' ? 'All orders in range' : 'Click to show all',
               },
               {
                 label: 'Delayed First',
@@ -998,27 +1206,27 @@ export default function OrderStatusPage() {
                 hint:
                   deliveryStatus === 'delivered'
                     ? 'Showing delivered · click to clear'
-                    : 'Successfully delivered · click to view',
+                    : 'Matches Shiprocket Delivered tab',
               },
               {
-                label: 'In Transit / OFD',
+                label: 'In Transit',
                 value: summary.inTransit,
                 tone: 'blue',
                 key: 'in_transit',
                 hint:
                   deliveryStatus === 'in_transit'
-                    ? 'Showing in transit & OFD · click to clear'
-                    : 'In transit or out for delivery · click to view',
+                    ? 'Showing In Transit · click to clear'
+                    : 'Matches Shiprocket In Transit tab',
               },
               {
-                label: 'RTO + Alerts',
-                value: `${summary.rto} / ${summary.alerts}`,
+                label: 'RTO Initiated',
+                value: summary.rto,
                 tone: 'purple',
-                key: 'rto_alerts',
+                key: 'rto',
                 hint:
-                  deliveryStatus === 'rto_alerts'
-                    ? 'Showing RTO & alert orders · click to clear'
-                    : 'RTO returns + delay/failure alerts · click to view',
+                  deliveryStatus === 'rto'
+                    ? 'Showing open RTO · click to clear'
+                    : 'Matches Shiprocket RTO → RTO Initiated',
               },
             ] as const).map((card) => (
               <button
@@ -1087,8 +1295,8 @@ export default function OrderStatusPage() {
                 className="px-2.5 py-2 rounded-lg border text-xs"
                 style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
               >
-                <option value="shopify">Shopify only</option>
                 <option value="all">All channels</option>
+                <option value="shopify">Shopify only</option>
                 <option value="shiprocket">Shiprocket only</option>
               </select>
               <select value={courier} onChange={(e) => setCourier(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
@@ -1109,9 +1317,11 @@ export default function OrderStatusPage() {
                 <option value="pickup_scheduled">Ready for Pickup</option>
                 <option value="in_transit">In Transit</option>
                 <option value="out_for_delivery">Out for Delivery</option>
+                <option value="attempted_delivery">Undelivered / Attempted</option>
                 <option value="delivered">Delivered</option>
                 <option value="failed">Failed</option>
-                <option value="rto">RTO</option>
+                <option value="rto">RTO Initiated</option>
+                <option value="rto_delivered">RTO Delivered</option>
                 <option value="cancelled">Cancelled</option>
               </select>
               <select value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
@@ -1119,9 +1329,11 @@ export default function OrderStatusPage() {
                 <option value="delayed">Delayed Only</option>
                 <option value="delivered">Delivered</option>
                 <option value="not_delivered">Not Delivered</option>
-                <option value="in_transit">In Transit / OFD</option>
-                <option value="rto">RTO</option>
-                <option value="rto_alerts">RTO + Alerts</option>
+                <option value="in_transit">In Transit (Shiprocket)</option>
+                <option value="out_for_delivery">Out for Delivery</option>
+                <option value="rto">RTO Initiated</option>
+                <option value="rto_delivered">RTO Delivered</option>
+                <option value="rto_alerts">RTO Initiated + Alerts</option>
               </select>
               <label className="flex flex-col gap-0.5">
                 <span className="text-[9px] font-bold uppercase tracking-wider px-0.5" style={{ color: 'var(--foreground-muted)' }}>From</span>
@@ -1148,20 +1360,36 @@ export default function OrderStatusPage() {
                 />
               </label>
             </div>
-            {(startDate || endDate) && (
-              <p className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
-                Date filter active{startDate ? ` from ${startDate}` : ''}{endDate ? ` to ${endDate}` : ''} — clear dates to show all orders.
-              </p>
-            )}
-            {filtersActive && (
+            <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
-                onClick={clearFilters}
-                className="text-xs font-semibold text-purple-600 hover:underline"
+                onClick={() => {
+                  const defaults = getDefaultDateRange()
+                  setStartDate(defaults.start)
+                  setEndDate(defaults.end)
+                  setPage(1)
+                }}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+                  isLast30Days
+                    ? 'bg-blue-500/10 text-blue-600 border-blue-500/30'
+                    : 'hover:bg-blue-500/10 hover:text-blue-600 hover:border-blue-500/30'
+                }`}
+                style={isLast30Days ? undefined : { backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground-muted)' }}
+                title="Show orders from the last 30 days"
               >
-                Clear all filters
+                <CalendarDays className="w-3.5 h-3.5" />
+                {isLast30Days ? 'Last 30 days' : 'Set last 30 days'}
               </button>
-            )}
+              {filtersActive && (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="text-xs font-semibold text-purple-600 hover:underline"
+                >
+                  Clear all filters
+                </button>
+              )}
+            </div>
           </div>
 
           {error && (
@@ -1229,19 +1457,31 @@ export default function OrderStatusPage() {
                 </label>
               </div>
 
-              {pageOrders.map((order) => (
-                <OrderStatusCard
-                  key={order.id}
-                  order={order}
-                  expanded={expandedId === order.id}
-                  onToggle={() => setExpandedId((id) => (id === order.id ? null : order.id))}
-                  onNoteSaved={(orderId, note) => {
-                    setOrders((prev) =>
-                      prev.map((o) => (o.id === orderId ? { ...o, note: note || null } : o)),
-                    )
-                  }}
-                />
-              ))}
+              {pageOrders.map((order) => {
+                const clean = cleanOrderName(order.name)
+                const relatedClones = cloneRelations.clonesByParent.get(clean) || []
+                const parentBase = getCloneParentBase(order.name)
+                const parentOrder = parentBase
+                  ? cloneRelations.byClean.get(parentBase) || null
+                  : null
+                return (
+                  <div key={order.id} id={`order-card-${order.id}`}>
+                    <OrderStatusCard
+                      order={order}
+                      expanded={expandedId === order.id}
+                      onToggle={() => setExpandedId((id) => (id === order.id ? null : order.id))}
+                      relatedClones={relatedClones}
+                      parentOrder={parentOrder}
+                      onOpenRelated={openRelatedOrder}
+                      onNoteSaved={(orderId, note) => {
+                        setOrders((prev) =>
+                          prev.map((o) => (o.id === orderId ? { ...o, note: note || null } : o)),
+                        )
+                      }}
+                    />
+                  </div>
+                )
+              })}
 
               {totalPages > 1 && (
                 <div className="crm-card p-3 flex flex-col sm:flex-row items-center justify-between gap-3">

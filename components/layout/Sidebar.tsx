@@ -4,34 +4,32 @@ import { useState, useEffect } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import {
-  LayoutDashboard,
   Bell,
   ShoppingBag,
-  Ticket,
   PackagePlus,
-  MessageCircle,
   LogOut,
   TrendingUp,
   ShieldCheck,
   ChevronLeft,
   Menu,
   Route,
-  FileText,
   PackageSearch,
+  Headphones,
+  Plane,
+  Megaphone,
 } from 'lucide-react'
 
 const menuItems = [
-  { icon: LayoutDashboard, label: 'Dashboard', href: '/' },
-  { icon: TrendingUp,      label: 'Sales Analytics', href: '/sales-dashboard' },
-  { icon: ShoppingBag,     label: 'Orders', href: '/orders' },
-  { icon: PackageSearch,   label: 'Order Status', href: '/order-status' },
-  { icon: PackagePlus,     label: 'Create Order', href: '/shiprocket/create-order' },
-  { icon: FileText,        label: 'Reports', href: '/reports' },
-  { icon: MessageCircle,   label: 'WhatsApp', href: '/whatsapp' },
-  { icon: Route,           label: 'Customer Journeys', href: '/crm/customer-journeys' },
-  { icon: Ticket,          label: 'Support Tickets', href: '/tickets' },
-  { icon: Bell,            label: 'Advertisements', href: '/notifications' },
-  { icon: ShieldCheck,     label: 'Audit Logs', href: '/audit-logs' },
+  { icon: PackageSearch, label: 'Order Status', href: '/order-status' },
+  { icon: ShoppingBag,    label: 'Orders', href: '/orders' },
+  { icon: PackagePlus,   label: 'Create Order', href: '/shiprocket/create-order' },
+  { icon: Headphones,    label: 'Customer Service', href: '/customer-service' },
+  { icon: TrendingUp,    label: 'Sales Analytics', href: '/sales-dashboard' },
+  { icon: Route,         label: 'Customer Journey', href: '/crm/customer-journeys' },
+  { icon: Plane,         label: 'Air Express', href: '/air-express' },
+  { icon: Megaphone,     label: 'Meta Analytics', href: '/meta-analytics' },
+  { icon: Bell,          label: 'Advertisements', href: '/notifications' },
+  { icon: ShieldCheck,   label: 'Audit Logs', href: '/audit-logs' },
 ]
 
 export function Sidebar() {

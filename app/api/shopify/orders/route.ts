@@ -104,6 +104,7 @@ export async function GET(_req: NextRequest) {
     const startDate = searchParams.get('start_date') || undefined
     const endDate = searchParams.get('end_date') || undefined
     const fulfillmentStatus = searchParams.get('fulfillment') || undefined
+    const includeTest = searchParams.get('include_test') === 'true'
 
     const filters = {
       tab,
@@ -120,7 +121,8 @@ export async function GET(_req: NextRequest) {
       datePreset,
       startDate,
       endDate,
-      fulfillmentStatus
+      fulfillmentStatus,
+      includeTest,
     }
 
     // A. Check in-memory cache for instant paginated response
@@ -228,14 +230,31 @@ export async function GET(_req: NextRequest) {
 
           const srStatus = (srOrder.status || '').toLowerCase()
           let shipment_status: string | null = null
-          // Check RTO before "delivered" so "RTO DELIVERED" maps to rto, not delivered
+          // Check RTO before "delivered" so "RTO DELIVERED" is not counted as Delivered
           if (srStatus.includes('rto') || srStatus.includes('returned')) {
-            shipment_status = 'rto'
-          } else if (srStatus.includes('lost') || srStatus.includes('undelivered') || srStatus.includes('fail') || srStatus.includes('error')) {
+            // Shiprocket RTO Initiated = open only; Delivered/Acknowledged are closed
+            if (srStatus.includes('delivered') || srStatus.includes('acknowledged')) {
+              shipment_status = 'rto_delivered'
+            } else {
+              shipment_status = 'rto'
+            }
+          } else if (srStatus.includes('lost') || srStatus.includes('untraceable')) {
+            shipment_status = 'failure'
+          } else if (srStatus.includes('undelivered') || srStatus.includes('attempt')) {
+            // NDR stays on Shiprocket In Transit tab until RTO
+            shipment_status = 'attempted_delivery'
+          } else if (srStatus.includes('fail') || srStatus.includes('error')) {
             shipment_status = 'failure'
           } else if (srStatus === 'delivered' || srStatus.startsWith('delivered')) {
             shipment_status = 'delivered'
-          } else if (srStatus.includes('transit') || srStatus.includes('out for delivery')) {
+          } else if (srStatus.includes('out for delivery')) {
+            shipment_status = 'out_for_delivery'
+          } else if (
+            srStatus.includes('transit') ||
+            srStatus.includes('reached') ||
+            srStatus === 'shipped' ||
+            srStatus.includes('picked up')
+          ) {
             shipment_status = 'in_transit'
           } else if (srStatus.includes('pickup') || srStatus.includes('scheduled')) {
             shipment_status = 'pickup_scheduled'
@@ -502,10 +521,9 @@ export async function GET(_req: NextRequest) {
         // Proactively scan for RTO email alerts
         try {
           const { shootRtoEmailAlert } = require('@/src/services/emailService')
+          const { isActiveRtoStatus } = require('@/src/utils/orderTimeline')
           enrichedOrders.forEach((order) => {
-            const isRto = order.fulfillment_status === 'fulfilled' &&
-              ['failure', 'rto', 'returned'].includes((order.fulfillments?.[0]?.shipment_status || '').toLowerCase())
-            if (isRto) {
+            if (isActiveRtoStatus(order)) {
               shootRtoEmailAlert(order).catch((err: any) =>
                 console.error(`⚠️ Failed to shoot RTO alert email for order ${order.name || order.id}:`, err)
               )

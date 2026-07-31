@@ -1,5 +1,10 @@
 import { getCachedOrders, setCachedOrders, getCachedOrdersFiltered } from '@/src/services/ordersCache';
 import { getAllShiprocketOrders } from '@/src/services/shiprocketClient';
+import {
+  isActiveRtoStatus,
+  isShiprocketDeliveredStatus,
+  isShiprocketInTransitStatus,
+} from '@/src/utils/orderTimeline';
 
 const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN;
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01';
@@ -92,14 +97,29 @@ export async function syncOrders(): Promise<any[]> {
 
       const srStatus = (srOrder.status || '').toLowerCase();
       let shipment_status = null;
-      // RTO before delivered so "RTO DELIVERED" maps correctly
+      // RTO before delivered so "RTO DELIVERED" is not counted as Delivered
       if (srStatus.includes('rto') || srStatus.includes('returned')) {
-        shipment_status = 'rto';
-      } else if (srStatus.includes('lost') || srStatus.includes('undelivered') || srStatus.includes('fail') || srStatus.includes('error')) {
+        if (srStatus.includes('delivered') || srStatus.includes('acknowledged')) {
+          shipment_status = 'rto_delivered';
+        } else {
+          shipment_status = 'rto';
+        }
+      } else if (srStatus.includes('lost') || srStatus.includes('untraceable')) {
+        shipment_status = 'failure';
+      } else if (srStatus.includes('undelivered') || srStatus.includes('attempt')) {
+        shipment_status = 'attempted_delivery';
+      } else if (srStatus.includes('fail') || srStatus.includes('error')) {
         shipment_status = 'failure';
       } else if (srStatus === 'delivered' || srStatus.startsWith('delivered')) {
         shipment_status = 'delivered';
-      } else if (srStatus.includes('transit') || srStatus.includes('out for delivery')) {
+      } else if (srStatus.includes('out for delivery')) {
+        shipment_status = 'out_for_delivery';
+      } else if (
+        srStatus.includes('transit') ||
+        srStatus.includes('reached') ||
+        srStatus === 'shipped' ||
+        srStatus.includes('picked up')
+      ) {
         shipment_status = 'in_transit';
       } else if (srStatus.includes('pickup') || srStatus.includes('scheduled')) {
         shipment_status = 'pickup_scheduled';
@@ -346,29 +366,21 @@ export async function getReportData(startDateStr?: string, endDateStr?: string):
       return fDate >= start && fDate <= end;
     }).length;
     
-    // In Transit Orders: checked by fulfillment date & status
+    // In Transit / Delivered / RTO — Shiprocket tab parity
     const inTransitOrders = activeOrders.filter(o => {
-      if (o.fulfillment_status !== 'fulfilled') return false;
-      const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
-      if (!['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) return false;
+      if (!isShiprocketInTransitStatus(o)) return false;
       const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
       return fDate >= start && fDate <= end;
     }).length;
 
-    // Delivered Orders: checked by fulfillment date & status
     const deliveredOrders = activeOrders.filter(o => {
-      if (o.fulfillment_status !== 'fulfilled') return false;
-      const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
-      if (status !== 'delivered') return false;
+      if (!isShiprocketDeliveredStatus(o)) return false;
       const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
       return fDate >= start && fDate <= end;
     }).length;
 
-    // RTO Orders: checked by fulfillment date & status
     const rtoOrders = activeOrders.filter(o => {
-      if (o.fulfillment_status !== 'fulfilled') return false;
-      const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
-      if (!['failure', 'rto', 'returned'].includes(status)) return false;
+      if (!isActiveRtoStatus(o)) return false;
       const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
       return fDate >= start && fDate <= end;
     }).length;
@@ -419,17 +431,16 @@ export async function getReportData(startDateStr?: string, endDateStr?: string):
 
     // 2. Count fulfillment dates (shipped, transit, delivered, rto)
     if (o.fulfillment_status === 'fulfilled') {
-      const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
       const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
       const fDateKey = fDate.toISOString().split('T')[0];
 
       if (dailyCounts[fDateKey]) {
         dailyCounts[fDateKey].shipped++;
-        if (['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) {
+        if (isShiprocketInTransitStatus(o)) {
           dailyCounts[fDateKey].transit++;
-        } else if (status === 'delivered') {
+        } else if (isShiprocketDeliveredStatus(o)) {
           dailyCounts[fDateKey].delivered++;
-        } else if (['failure', 'rto', 'returned'].includes(status)) {
+        } else if (isActiveRtoStatus(o)) {
           dailyCounts[fDateKey].rto++;
         }
       }
@@ -462,25 +473,19 @@ export async function getReportData(startDateStr?: string, endDateStr?: string):
   }).length;
 
   const distInTransit = productionOrders.filter(o => {
-    if (isOrderCancelled(o) || o.fulfillment_status !== 'fulfilled') return false;
-    const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
-    if (!['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) return false;
+    if (isOrderCancelled(o) || !isShiprocketInTransitStatus(o)) return false;
     const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
     return fDate >= todayStart && fDate <= todayEnd;
   }).length;
 
   const distDelivered = productionOrders.filter(o => {
-    if (isOrderCancelled(o) || o.fulfillment_status !== 'fulfilled') return false;
-    const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
-    if (status !== 'delivered') return false;
+    if (isOrderCancelled(o) || !isShiprocketDeliveredStatus(o)) return false;
     const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
     return fDate >= todayStart && fDate <= todayEnd;
   }).length;
 
   const distRto = productionOrders.filter(o => {
-    if (isOrderCancelled(o) || o.fulfillment_status !== 'fulfilled') return false;
-    const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase();
-    if (!['failure', 'rto', 'returned'].includes(status)) return false;
+    if (isOrderCancelled(o) || !isActiveRtoStatus(o)) return false;
     const fDate = new Date(o.fulfillments?.[0]?.created_at || o.created_at);
     return fDate >= todayStart && fDate <= todayEnd;
   }).length;

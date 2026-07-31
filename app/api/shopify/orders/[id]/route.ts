@@ -58,9 +58,28 @@ export async function GET(
     const data = await res.json()
     const { lookupNote } = require('@/src/services/orderNotesStore')
     const crmNote = lookupNote(id)
+    const shopifyOrder = data.order || {}
+    // Merge Shiprocket enrichment from cache (AWB / shipment status) when live Shopify lacks it
+    const preferCacheFulfillment =
+      !!cached?.fulfillments?.[0]?.tracking_number &&
+      !shopifyOrder.fulfillments?.[0]?.tracking_number
+
     const order = {
-      ...data.order,
-      note: crmNote || data.order?.note || null,
+      ...shopifyOrder,
+      note: crmNote || shopifyOrder.note || null,
+      fulfillments: preferCacheFulfillment
+        ? cached.fulfillments
+        : shopifyOrder.fulfillments?.length
+          ? shopifyOrder.fulfillments
+          : cached?.fulfillments || shopifyOrder.fulfillments,
+      fulfillment_status:
+        preferCacheFulfillment
+          ? cached.fulfillment_status || shopifyOrder.fulfillment_status
+          : shopifyOrder.fulfillment_status || cached?.fulfillment_status || null,
+      shiprocket_order_id: cached?.shiprocket_order_id,
+      shiprocket_meta: cached?.shiprocket_meta,
+      payment_method: cached?.payment_method || shopifyOrder.payment_method,
+      source: cached?.source || 'shopify',
     }
     return NextResponse.json({ order }, { status: 200 })
   } catch (error: any) {

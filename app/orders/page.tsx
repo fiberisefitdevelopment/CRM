@@ -6,6 +6,12 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import { getPaymentLabel, isCodOrder } from '@/src/utils/orderPayment'
 import {
+  fulfillmentStageLabel,
+  isActiveRtoStatus,
+  normalizeShipmentStatus,
+  toIstDateKey,
+} from '@/src/utils/orderTimeline'
+import {
   Loader2,
   RefreshCw,
   Search,
@@ -197,11 +203,7 @@ function isOrderInExportRange(order: ShopifyOrder, fromId: string, toId: string)
 }
 
 function getOrderDateKey(order: ShopifyOrder): string {
-  const d = new Date(order.created_at)
-  const year = d.getFullYear()
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+  return toIstDateKey(order.created_at) || ''
 }
 
 function isOrderInExportDateRange(order: ShopifyOrder, fromDate: string, toDate: string): boolean {
@@ -330,12 +332,12 @@ export default function ShiprocketDashboardPage() {
   // ─── CATEGORIZED ADVANCED SHIPROCKET FILTERS ───
   
   // Category A: Date Boundaries & Presets
-  const [datePreset, setDatePreset] = useState<string>('all') // today, yesterday, 7days, 30days, custom
+  const [datePreset, setDatePreset] = useState<string>('30days') // today, yesterday, 7days, 30days, custom, all
   const [startDate, setStartDate] = useState<string>('')
   const [endDate, setEndDate] = useState<string>('')
 
   // Category B: Channel & Logistics Routing
-  const [filterChannel, setFilterChannel] = useState<string>('all') // shopify, amazon, woocommerce, manual, all
+  const [filterChannel, setFilterChannel] = useState<string>('all') // shopify, shiprocket, all
   const [filterCourier, setFilterCourier] = useState<string>('all') // delhivery, shadowfax, ekart, xpressbees, all
   const [filterPickupLocation, setFilterPickupLocation] = useState<string>('all') // primary, warehouse_b, all
 
@@ -1188,20 +1190,16 @@ export default function ShiprocketDashboardPage() {
     filterRtoRisk !== 'all',
     minPrice !== '',
     maxPrice !== '',
-    datePreset !== 'all',
-    startDate !== '',
-    endDate !== '',
-    filterFulfillmentStatus !== 'all'
+    datePreset !== '30days' && datePreset !== 'all',
+    datePreset === 'custom' || datePreset === 'all'
+      ? Boolean(startDate || endDate)
+      : false,
+    filterFulfillmentStatus !== 'all',
   ].filter(Boolean).length
 
   // All filtering is handled server-side by getCachedOrdersFiltered().
   // Client-side only needs to apply sort order (which is not sent to the API).
   const paginatedOrders = [...orders].sort((a, b) => {
-    if (currentTab === 'rto') {
-      const dateA = new Date(a.fulfillments?.[0]?.created_at || a.created_at).getTime()
-      const dateB = new Date(b.fulfillments?.[0]?.created_at || b.created_at).getTime()
-      return sortOrder === 'desc' ? dateB - dateA : dateA - dateB
-    }
     const dateA = new Date(a.created_at).getTime()
     const dateB = new Date(b.created_at).getTime()
     return sortOrder === 'desc' ? dateB - dateA : dateA - dateB
@@ -1396,10 +1394,8 @@ export default function ShiprocketDashboardPage() {
                         className="w-full px-2.5 py-1.5 bg-[#0e121a] border border-white/10 rounded-lg text-xs text-white focus:outline-none"
                       >
                         <option value="all">All Channels</option>
-                        <option value="shopify">Shopify Store</option>
-                        <option value="amazon">Amazon Central</option>
-                        <option value="woocommerce">WooCommerce Store</option>
-                        <option value="manual">Manual Booking</option>
+                        <option value="shopify">Shopify</option>
+                        <option value="shiprocket">Shiprocket only</option>
                       </select>
                     </div>
 
@@ -1555,7 +1551,7 @@ export default function ShiprocketDashboardPage() {
                     {activeFiltersCount > 0 && (
                       <button
                         onClick={() => {
-                          setDatePreset('all')
+                          setDatePreset('30days')
                           setStartDate('')
                           setEndDate('')
                           setFilterChannel('all')
@@ -1804,7 +1800,7 @@ export default function ShiprocketDashboardPage() {
                 <button
                   onClick={() => {
                     setSearchQuery('')
-                    setDatePreset('all')
+                    setDatePreset('30days')
                     setStartDate('')
                     setEndDate('')
                     setFilterChannel('all')
@@ -3465,41 +3461,35 @@ function getDeliveryStatusInfo(order: ShopifyOrder) {
   if (isOrderCancelled(order)) {
     return { label: 'Cancelled', variant: 'red' as const }
   }
-  if (!order.fulfillment_status) {
+
+  const status = normalizeShipmentStatus(order)
+  if (!order.fulfillment_status || status === 'unfulfilled') {
     return { label: 'Unfulfilled', variant: 'default' as const }
   }
-  
-  const fulfillments = order.fulfillments || []
-  if (fulfillments.length === 0) {
-    return { label: 'Fulfilled', variant: 'green' as const }
+
+  const label = fulfillmentStageLabel(status)
+
+  if (status === 'delivered') return { label, variant: 'green' as const }
+  if (status === 'rto' || isActiveRtoStatus(order)) return { label: 'RTO Initiated', variant: 'red' as const }
+  if (status === 'rto_delivered') return { label, variant: 'red' as const }
+  if (status === 'failed' || status === 'failure' || status === 'cancelled') {
+    return { label, variant: 'red' as const }
   }
-  
-  const latest = fulfillments[0]
-  if (!latest || !latest.shipment_status) {
-    return { label: 'Fulfilled', variant: 'green' as const }
+  if (
+    status === 'in_transit' ||
+    status === 'out_for_delivery' ||
+    status === 'attempted_delivery'
+  ) {
+    return { label, variant: 'yellow' as const }
   }
-  
-  const status = latest.shipment_status.toLowerCase()
-  switch (status) {
-    case 'delivered':
-      return { label: 'Delivered', variant: 'green' as const }
-    case 'in_transit':
-      return { label: 'In Transit', variant: 'yellow' as const }
-    case 'out_for_delivery':
-      return { label: 'Out for Delivery', variant: 'yellow' as const }
-    case 'failure':
-      return { label: 'Delivery Failed', variant: 'red' as const }
-    case 'rto':
-      return { label: 'RTO', variant: 'red' as const }
-    case 'attempted_delivery':
-      return { label: 'Attempted', variant: 'yellow' as const }
-    case 'confirmed':
-      return { label: 'Confirmed', variant: 'blue' as const }
-    case 'label_printed':
-    case 'label_purchased':
-      return { label: 'Label Printed', variant: 'blue' as const }
-    default:
-      const cap = latest.shipment_status.charAt(0).toUpperCase() + latest.shipment_status.slice(1)
-      return { label: cap, variant: 'default' as const }
+  if (
+    status === 'confirmed' ||
+    status === 'pickup_scheduled' ||
+    status === 'ready_pickup' ||
+    status === 'processing'
+  ) {
+    return { label, variant: 'blue' as const }
   }
+
+  return { label, variant: 'default' as const }
 }

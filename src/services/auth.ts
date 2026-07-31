@@ -124,6 +124,12 @@ export async function seedAdminUser(): Promise<void> {
     // Seed Employee
     await seedUserIfMissing('employee@fiberisefit.com', 'employee@1234', 'employee')
 
+    // Seed CEO
+    await seedUserIfMissing('ceo@fiberisefit.com', '12345', 'admin')
+
+    // Seed Priyanshu
+    await seedUserIfMissing('priyanshu@fiberisefit.com', '12345', 'admin')
+
     isSeeded = true
   } catch (error) {
     console.error('❌ Failed to seed default users:', error)

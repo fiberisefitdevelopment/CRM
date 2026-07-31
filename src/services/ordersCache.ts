@@ -4,6 +4,14 @@
 
 import fs from 'fs'
 import path from 'path'
+import {
+  isActiveRtoStatus,
+  isCreatedInDateRange,
+  isShiprocketDeliveredStatus,
+  isShiprocketInTransitStatus,
+  normalizeShipmentStatus,
+  toIstDateKey,
+} from '@/src/utils/orderTimeline'
 
 export let cachedOrders: any[] | null = null
 export let cacheExpiresAt = 0
@@ -126,6 +134,8 @@ export interface OrderFilters {
   endDate?: string
   fulfillmentStatus?: string
   is_test_order?: boolean
+  /** When true, keep test orders in results (Order Status / Shopify parity counts). */
+  includeTest?: boolean
 }
 
 export function getCachedOrdersCount(filters: OrderFilters = {}): number {
@@ -134,15 +144,11 @@ export function getCachedOrdersCount(filters: OrderFilters = {}): number {
 
 export function getCachedOrdersPaginated(page: number, perPage: number, filters: OrderFilters = {}): any[] {
   const filtered = getCachedOrdersFiltered(filters)
-  const tab = filters.tab || 'all'
-  // Ensure newest-first order based on relevant status date
+  // Newest order-created first — same as Order Status / Shiprocket list
   const sorted = [...filtered].sort((a, b) => {
     let dateStrA = a.created_at
     let dateStrB = b.created_at
-    if (tab === 'rto' || tab === 'delivered' || tab === 'in_transit') {
-      dateStrA = a.fulfillments?.[0]?.created_at || a.created_at
-      dateStrB = b.fulfillments?.[0]?.created_at || b.created_at
-    } else if (tab === 'cancelled') {
+    if (filters.tab === 'cancelled') {
       dateStrA = a.cancelled_at || a.created_at
       dateStrB = b.cancelled_at || b.created_at
     }
@@ -164,6 +170,53 @@ function isOrderCancelled(order: any): boolean {
     order.financial_status?.toLowerCase() === 'cancelled' ||
     order.financial_status?.toLowerCase() === 'refunded' ||
     order.fulfillments?.[0]?.shipment_status === 'cancelled'
+  )
+}
+
+/** Resolve date presets / bounds to inclusive IST YYYY-MM-DD keys (Shiprocket parity). */
+function resolveIstDateBounds(filters: {
+  datePreset?: string
+  startDate?: string
+  endDate?: string
+}): { start: string; end: string } {
+  let start = filters.startDate || ''
+  let end = filters.endDate || ''
+
+  if (filters.datePreset && filters.datePreset !== 'all' && filters.datePreset !== 'custom') {
+    const now = new Date()
+    const endKey = toIstDateKey(now.toISOString())
+    if (filters.datePreset === 'today') {
+      start = endKey
+      end = endKey
+    } else if (filters.datePreset === 'yesterday') {
+      const yKey = toIstDateKey(new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString())
+      start = yKey
+      end = yKey
+    } else if (filters.datePreset === '7days') {
+      start = toIstDateKey(new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString())
+      end = endKey
+    } else if (filters.datePreset === '30days') {
+      start = toIstDateKey(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString())
+      end = endKey
+    }
+  }
+
+  if (start && !/^\d{4}-\d{2}-\d{2}$/.test(start)) start = toIstDateKey(start)
+  if (end && !/^\d{4}-\d{2}-\d{2}$/.test(end)) end = toIstDateKey(end)
+
+  return { start, end }
+}
+
+/** Ready to Ship: fulfilled + not yet in transit / OFD / delivered / RTO / failed. */
+function isReadyToShipStatus(order: any): boolean {
+  if (isOrderCancelled(order)) return false
+  if (order?.fulfillment_status !== 'fulfilled') return false
+  if (isShiprocketInTransitStatus(order)) return false
+  if (isShiprocketDeliveredStatus(order)) return false
+  if (isActiveRtoStatus(order)) return false
+  const status = normalizeShipmentStatus(order)
+  return !['out_for_delivery', 'rto_delivered', 'failed', 'failure', 'cancelled', 'delivered', 'rto'].includes(
+    status,
   )
 }
 
@@ -202,68 +255,35 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
   const list = getCachedOrdersFiltered({ ...otherFilters, tab: 'all' })
   if (list.length === 0) return counts
 
-  let resolvedStart = startDate || ''
-  let resolvedEnd = endDate || ''
+  const { start: resolvedStart, end: resolvedEnd } = resolveIstDateBounds({
+    datePreset,
+    startDate,
+    endDate,
+  })
 
-  if (datePreset && datePreset !== 'all') {
-    const now = new Date()
-    if (datePreset === 'today') {
-      const start = new Date()
-      start.setHours(0, 0, 0, 0)
-      resolvedStart = start.toISOString()
-      resolvedEnd = now.toISOString()
-    } else if (datePreset === 'yesterday') {
-      const start = new Date()
-      start.setDate(now.getDate() - 1)
-      start.setHours(0, 0, 0, 0)
-      const end = new Date()
-      end.setDate(now.getDate() - 1)
-      end.setHours(23, 59, 59, 999)
-      resolvedStart = start.toISOString()
-      resolvedEnd = end.toISOString()
-    } else if (datePreset === '7days') {
-      const start = new Date()
-      start.setDate(now.getDate() - 7)
-      start.setHours(0, 0, 0, 0)
-      resolvedStart = start.toISOString()
-      resolvedEnd = now.toISOString()
-    } else if (datePreset === '30days') {
-      const start = new Date()
-      start.setDate(now.getDate() - 30)
-      start.setHours(0, 0, 0, 0)
-      resolvedStart = start.toISOString()
-      resolvedEnd = now.toISOString()
-    }
-  }
+  const isOrderDateInRange = (o: any) => isCreatedInDateRange(o, resolvedStart, resolvedEnd)
 
-  const startLimit = resolvedStart
-    ? (/^\d{4}-\d{2}-\d{2}$/.test(resolvedStart) ? new Date(`${resolvedStart}T00:00:00`) : new Date(resolvedStart))
-    : null
-  const endLimit = resolvedEnd
-    ? (/^\d{4}-\d{2}-\d{2}$/.test(resolvedEnd) ? new Date(`${resolvedEnd}T23:59:59.999`) : new Date(resolvedEnd))
-    : null
-
-  const checkDateInRange = (dateStr: string) => {
-    if (!dateStr) return false
-    const d = new Date(dateStr)
-    if (isNaN(d.getTime())) return false
-    if (startLimit && d < startLimit) return false
-    if (endLimit && d > endLimit) return false
+  const checkCancelDateInRange = (dateStr: string) => {
+    if (!resolvedStart && !resolvedEnd) return true
+    const key = toIstDateKey(dateStr)
+    if (!key) return true
+    if (resolvedStart && key < resolvedStart) return false
+    if (resolvedEnd && key > resolvedEnd) return false
     return true
   }
 
   const now = Date.now()
 
   for (const o of list) {
-    const isOrderDateInRange = checkDateInRange(o.created_at)
+    const inRange = isOrderDateInRange(o)
 
-    if (isOrderDateInRange) {
+    if (inRange) {
       counts.all++
     }
 
     if (isOrderCancelled(o)) {
       const cancelDate = o.cancelled_at || o.created_at
-      if (checkDateInRange(cancelDate)) {
+      if (checkCancelDateInRange(cancelDate)) {
         counts.cancelled++
       }
       continue
@@ -272,37 +292,23 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
     if (!o.fulfillment_status || o.fulfillment_status === 'unfulfilled') {
       const ageInMs = now - new Date(o.created_at).getTime()
       const ageInDays = ageInMs / (1000 * 60 * 60 * 24)
-      if (ageInDays <= 2) {
-        if (isOrderDateInRange) {
-          counts.new++
-        }
+      if (ageInDays <= 2 && inRange) {
+        counts.new++
       }
       continue
     }
 
-    if (o.fulfillment_status === 'fulfilled') {
-      const latest = o.fulfillments?.[0]
-      const status = (latest?.shipment_status || '').toLowerCase()
-
-      if (['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) {
-        if (isOrderDateInRange) {
-          counts.in_transit++
-        }
-      } else if (status === 'delivered') {
-        if (isOrderDateInRange) {
-          counts.delivered++
-        }
-      } else if (['failure', 'rto', 'returned'].includes(status)) {
-        if (isOrderDateInRange) {
-          counts.rto++
-        }
-      } else {
-        // pickup_scheduled, confirmed, label_printed, etc. → ready to ship
-        if (isOrderDateInRange) {
-          counts.ready_to_ship++
-        }
-      }
+    // Shiprocket tab parity (same helpers as Order Status) — no raw status denylist
+    if (isShiprocketInTransitStatus(o)) {
+      if (inRange) counts.in_transit++
+    } else if (isShiprocketDeliveredStatus(o)) {
+      if (inRange) counts.delivered++
+    } else if (isActiveRtoStatus(o)) {
+      if (inRange) counts.rto++
+    } else if (isReadyToShipStatus(o)) {
+      if (inRange) counts.ready_to_ship++
     }
+    // OFD / rto_delivered / failure sit outside these ops tabs (visible under All)
   }
 
   return counts
@@ -319,7 +325,7 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
   const tab = filters.tab || 'all'
   if (tab === 'test_orders') {
     list = list.filter(o => o.is_test_order === true)
-  } else {
+  } else if (!filters.includeTest) {
     list = list.filter(o => o.is_test_order !== true)
   }
 
@@ -341,27 +347,17 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
       }
 
       if (tab === 'ready_to_ship') {
-        if (o.fulfillment_status === 'fulfilled') {
-          const latest = o.fulfillments?.[0]
-          const status = (latest?.shipment_status || '').toLowerCase()
-          return !['in_transit', 'out_for_delivery', 'attempted_delivery', 'delivered', 'failure', 'rto', 'returned', 'cancelled'].includes(status)
-        }
-        return false
+        return isReadyToShipStatus(o)
       }
 
-      if (o.fulfillment_status === 'fulfilled') {
-        const latest = o.fulfillments?.[0]
-        const status = (latest?.shipment_status || '').toLowerCase()
-
-        if (tab === 'in_transit') {
-          return ['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)
-        }
-        if (tab === 'delivered') {
-          return status === 'delivered'
-        }
-        if (tab === 'rto') {
-          return ['failure', 'rto', 'returned'].includes(status)
-        }
+      if (tab === 'in_transit') {
+        return isShiprocketInTransitStatus(o)
+      }
+      if (tab === 'delivered') {
+        return isShiprocketDeliveredStatus(o)
+      }
+      if (tab === 'rto') {
+        return isActiveRtoStatus(o)
       }
 
       return false
@@ -378,12 +374,16 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
         ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.toLowerCase()
         : ''
       const customerEmail = o.customer?.email?.toLowerCase() || ''
+      const phone = String(o.customer?.phone || o.shipping_address?.phone || '').toLowerCase()
+      const awb = String(o.fulfillments?.[0]?.tracking_number || '').toLowerCase()
 
       return (
         orderName.includes(q) ||
         orderId.includes(q) ||
         customerName.includes(q) ||
-        customerEmail.includes(q)
+        customerEmail.includes(q) ||
+        phone.includes(q) ||
+        awb.includes(q)
       )
     })
   }
@@ -406,6 +406,16 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
       const matchesCod = filters.paymentType === 'cod' && isCod
       const matchesPrepaid = filters.paymentType === 'prepaid' && !isCod
       return matchesCod || matchesPrepaid
+    })
+  }
+
+  // 4b. Sales channel (Shopify vs Shiprocket-only) — mirrors Order Status
+  if (filters.channel && filters.channel !== 'all') {
+    list = list.filter((o) => {
+      const isSrOnly = o.source === 'shiprocket'
+      if (filters.channel === 'shiprocket') return isSrOnly
+      if (filters.channel === 'shopify') return !isSrOnly
+      return true
     })
   }
 
@@ -464,87 +474,38 @@ export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
     })
   }
 
-  // 10. Date boundaries & Presets
-  let resolvedStart = filters.startDate || ''
-  let resolvedEnd = filters.endDate || ''
-
-  if (filters.datePreset && filters.datePreset !== 'all') {
-    const now = new Date()
-    if (filters.datePreset === 'today') {
-      const start = new Date()
-      start.setHours(0, 0, 0, 0)
-      resolvedStart = start.toISOString()
-      resolvedEnd = now.toISOString()
-    } else if (filters.datePreset === 'yesterday') {
-      const start = new Date()
-      start.setDate(now.getDate() - 1)
-      start.setHours(0, 0, 0, 0)
-      const end = new Date()
-      end.setDate(now.getDate() - 1)
-      end.setHours(23, 59, 59, 999)
-      resolvedStart = start.toISOString()
-      resolvedEnd = end.toISOString()
-    } else if (filters.datePreset === '7days') {
-      const start = new Date()
-      start.setDate(now.getDate() - 7)
-      start.setHours(0, 0, 0, 0)
-      resolvedStart = start.toISOString()
-      resolvedEnd = now.toISOString()
-    } else if (filters.datePreset === '30days') {
-      const start = new Date()
-      start.setDate(now.getDate() - 30)
-      start.setHours(0, 0, 0, 0)
-      resolvedStart = start.toISOString()
-      resolvedEnd = now.toISOString()
-    }
-  }
+  // 10. Date boundaries & Presets (IST calendar days — same as Order Status / Shiprocket)
+  const { start: resolvedStart, end: resolvedEnd } = resolveIstDateBounds({
+    datePreset: filters.datePreset,
+    startDate: filters.startDate,
+    endDate: filters.endDate,
+  })
 
   if (resolvedStart || resolvedEnd) {
-    // Match Shiprocket UI: date range always filters by order created date,
-    // even on Delivered / RTO / In Transit tabs (not fulfillment/updated timestamps).
-    list = list.filter((o) => {
-      const relevantDateStr = o.created_at
-      const orderDate = new Date(relevantDateStr)
-      if (isNaN(orderDate.getTime())) return false
-
-      if (resolvedStart) {
-        // YYYY-MM-DD → local start-of-day; ISO strings keep their instant
-        const start = /^\d{4}-\d{2}-\d{2}$/.test(resolvedStart)
-          ? new Date(`${resolvedStart}T00:00:00`)
-          : new Date(resolvedStart)
-        if (orderDate < start) return false
-      }
-      if (resolvedEnd) {
-        // YYYY-MM-DD must be inclusive through end-of-day (UTC midnight would drop most of the day)
-        const end = /^\d{4}-\d{2}-\d{2}$/.test(resolvedEnd)
-          ? new Date(`${resolvedEnd}T23:59:59.999`)
-          : new Date(resolvedEnd)
-        if (orderDate > end) return false
-      }
-      return true
-    })
+    list = list.filter((o) => isCreatedInDateRange(o, resolvedStart, resolvedEnd))
   }
 
-  // 11. Fulfillment Status Sub-status
+  // 11. Fulfillment Status Sub-status (normalized Shiprocket-aware labels)
   if (filters.fulfillmentStatus && filters.fulfillmentStatus !== 'all') {
     const targetLabel = filters.fulfillmentStatus.toLowerCase()
     list = list.filter((o) => {
-      let label = 'unfulfilled'
-      if (isOrderCancelled(o)) {
-        label = 'cancelled'
-      } else if (o.fulfillment_status === 'fulfilled') {
-        const status = (o.fulfillments?.[0]?.shipment_status || '').toLowerCase()
-        if (status === 'delivered') label = 'delivered'
-        else if (status === 'in_transit') label = 'in transit'
-        else if (status === 'out_for_delivery') label = 'out for delivery'
-        else if (status === 'failure') label = 'delivery failed'
-        else if (status === 'rto') label = 'rto'
-        else if (status === 'attempted_delivery') label = 'attempted'
-        else if (status === 'confirmed') label = 'confirmed'
-        else if (['label_printed', 'label_purchased'].includes(status)) label = 'label printed'
-        else if (status) label = status
-        else label = 'fulfilled'
+      if (isOrderCancelled(o)) return targetLabel === 'cancelled'
+      const status = normalizeShipmentStatus(o)
+      const labelMap: Record<string, string> = {
+        delivered: 'delivered',
+        in_transit: 'in transit',
+        out_for_delivery: 'out for delivery',
+        failed: 'delivery failed',
+        failure: 'delivery failed',
+        rto: 'rto',
+        rto_delivered: 'rto',
+        attempted_delivery: 'attempted',
+        pickup_scheduled: 'confirmed',
+        ready_pickup: 'confirmed',
+        confirmed: 'confirmed',
+        unfulfilled: 'unfulfilled',
       }
+      const label = labelMap[status] || status.replace(/_/g, ' ')
       return label === targetLabel
     })
   }

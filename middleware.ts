@@ -44,7 +44,13 @@ export function middleware(req: NextRequest) {
   }
 
   // 3. For all protected routes, require a valid session cookie
+  const isApi = pathname.startsWith('/api/')
+
   if (!sessionCookie) {
+    // Media/API clients cannot follow an HTML login redirect
+    if (isApi) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
     const loginUrl = new URL('/login', req.url)
     return NextResponse.redirect(loginUrl)
   }
@@ -58,12 +64,20 @@ export function middleware(req: NextRequest) {
 
     // Token has correct structure; allow request
     const res = NextResponse.next()
-    // Add no-cache to all protected pages so browser doesn't cache them for back-button exploits
-    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
-    res.headers.set('Pragma', 'no-cache')
+    // Don't force no-store on media streams — breaks some browsers' audio buffering
+    if (!pathname.includes('/recording')) {
+      res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+      res.headers.set('Pragma', 'no-cache')
+    }
     return res
   } catch (error) {
     console.warn('Session verification failed in middleware, redirecting to login:', error)
+
+    if (isApi) {
+      const res = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      res.cookies.delete('fiberise_session')
+      return res
+    }
 
     const loginUrl = new URL('/login', req.url)
     const res = NextResponse.redirect(loginUrl)
@@ -83,6 +97,9 @@ export const config = {
     '/audit-logs/:path*',
     '/notifications/:path*',
     '/tickets/:path*',
+    '/customer-service/:path*',
+    '/air-express/:path*',
+    '/meta-analytics/:path*',
     '/products/:path*',
     '/user/:path*',
     '/crm/:path*',

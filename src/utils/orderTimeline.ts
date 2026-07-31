@@ -49,16 +49,133 @@ const ACTIVITY_TO_STEP: Record<string, TimelineStepKey> = {
   CANCELLED: 'cancelled',
 }
 
+/** Calendar date key in Asia/Kolkata (Shiprocket / India business day). */
+export function toIstDateKey(value?: string | null): string {
+  if (!value) return ''
+  const raw = String(value).trim()
+  if (!raw) return ''
+  const d = new Date(raw)
+  if (!isNaN(d.getTime())) {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d)
+  }
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10)
+  return ''
+}
+
+/** Order created_at within inclusive YYYY-MM-DD range (IST). Empty bounds = no filter. */
+export function isCreatedInDateRange(
+  order: any,
+  startDate?: string,
+  endDate?: string,
+): boolean {
+  const hasStart = Boolean(startDate && /^\d{4}-\d{2}-\d{2}$/.test(startDate))
+  const hasEnd = Boolean(endDate && /^\d{4}-\d{2}-\d{2}$/.test(endDate))
+  if (!hasStart && !hasEnd) return true
+  const key = toIstDateKey(order?.created_at)
+  if (!key) return true
+  if (hasStart && key < startDate!) return false
+  if (hasEnd && key > endDate!) return false
+  return true
+}
+
+/**
+ * True when order is in any RTO / failed-return state (including RTO Delivered).
+ * Used to keep these out of the Delayed list.
+ */
+export function hasRtoInitiated(order: any): boolean {
+  const status = normalizeShipmentStatus(order)
+  if (status === 'rto' || status === 'rto_delivered' || status === 'failed' || status === 'failure') {
+    return true
+  }
+
+  const shipStatus = String(order?.fulfillments?.[0]?.shipment_status || '').toLowerCase()
+  if (['failure', 'rto', 'returned'].includes(shipStatus)) return true
+
+  const meta = order?.shiprocket_meta || {}
+  const metaStatus = String(meta.status || meta.current_status || meta.shipment_status || '').toLowerCase()
+  return (
+    metaStatus.includes('rto') ||
+    metaStatus.includes('lost') ||
+    metaStatus.includes('untraceable') ||
+    metaStatus.includes('return to origin') ||
+    metaStatus.includes('returning to seller') ||
+    metaStatus.includes('returned to seller')
+  )
+}
+
+/**
+ * Shiprocket Orders → RTO tab + status filter "RTO Initiated".
+ * Open returns only (API codes 15 / 55 / 45 / 46):
+ *   RTO INITIATED | RTO IN TRANSIT | RTO OFD | RTO NDR
+ * Excludes RTO Delivered (16) / RTO Acknowledged (17).
+ * Does NOT include LOST / UNTRACEABLE / PICKUP ERROR (those are not RTO Initiated).
+ */
+export function isActiveRtoStatus(order: any): boolean {
+  const metaStatus = String(order?.shiprocket_meta?.status || '').toUpperCase().trim()
+  if (metaStatus.includes('RTO')) {
+    if (metaStatus.includes('DELIVERED') || metaStatus.includes('ACKNOWLEDG')) return false
+    return true
+  }
+
+  // Fallback when meta missing: only open RTO (not closed returns)
+  const shipStatus = String(order?.fulfillments?.[0]?.shipment_status || '').toLowerCase()
+  if (shipStatus === 'rto_delivered' || shipStatus === 'returned') return false
+  return shipStatus === 'rto'
+}
+
+/**
+ * Shiprocket Orders → In Transit tab.
+ * Includes en-route / reached hub / shipped / NDR undelivered.
+ * Excludes Out for Delivery and any RTO.
+ */
+export function isShiprocketInTransitStatus(order: any): boolean {
+  if (isActiveRtoStatus(order) || normalizeShipmentStatus(order) === 'rto_delivered') return false
+  const status = normalizeShipmentStatus(order)
+  return status === 'in_transit' || status === 'attempted_delivery'
+}
+
+/** Shiprocket Orders → Delivered tab. */
+export function isShiprocketDeliveredStatus(order: any): boolean {
+  return normalizeShipmentStatus(order) === 'delivered'
+}
+
 export function normalizeShipmentStatus(order: any): string {
   const metaStatus = String(order?.shiprocket_meta?.status || '').toLowerCase()
   const shipStatus = String(order?.fulfillments?.[0]?.shipment_status || '').toLowerCase()
-  if (metaStatus.includes('rto')) return 'rto'
+  // Match Shiprocket RTO filters:
+  // - "RTO Initiated" includes RTO Initiated / In Transit / OFD (active)
+  // - "RTO Delivered" / "RTO Acknowledged" are completed returns
+  if (metaStatus.includes('rto')) {
+    if (metaStatus.includes('delivered') || metaStatus.includes('acknowledged')) {
+      return 'rto_delivered'
+    }
+    return 'rto'
+  }
   if (metaStatus.includes('cancel')) return 'cancelled'
-  if (metaStatus.includes('lost') || metaStatus.includes('undelivered')) return 'failed'
+  if (metaStatus.includes('lost') || metaStatus.includes('untraceable')) return 'failed'
   if (metaStatus === 'delivered' || metaStatus.startsWith('delivered')) return 'delivered'
   if (metaStatus.includes('out for delivery')) return 'out_for_delivery'
-  if (metaStatus.includes('transit')) return 'in_transit'
+  // In Transit tab: picked up → hub scans → NDR (before RTO)
+  if (
+    metaStatus.includes('transit') ||
+    metaStatus.includes('reached') ||
+    metaStatus === 'shipped' ||
+    metaStatus.includes('picked up')
+  ) {
+    return 'in_transit'
+  }
+  if (metaStatus.includes('undelivered') || metaStatus.includes('attempt')) {
+    return 'attempted_delivery'
+  }
+  // Pickups tab: scheduled / out for pickup / pickup exception — not "picked up"
   if (metaStatus.includes('pickup')) return 'ready_pickup'
+  // Enriched shipment_status collapses all RTO stages to "rto" — without raw meta,
+  // treat as active so we don't under-count Shiprocket's RTO Initiated list.
   if (shipStatus) return shipStatus
   if (!order?.fulfillment_status) return 'unfulfilled'
   return 'processing'
@@ -101,16 +218,31 @@ export function buildAlerts(order: any): OrderAlert[] {
   if (String(order?.financial_status || '').toLowerCase() === 'refunded') {
     alerts.push({ type: 'refund', label: 'Refund Completed', tone: 'emerald' })
   }
+  if (status === 'attempted_delivery') {
+    alerts.push({ type: 'attempted', label: metaStatusAttemptLabel(meta) || 'Delivery Attempt Failed', tone: 'amber' })
+  }
   if (status === 'failed') {
     alerts.push({ type: 'failed', label: 'Delivery Attempt Failed', tone: 'red' })
   }
   return alerts
 }
 
-/** True when Shiprocket marked delay, or ETD has passed and order is still undelivered. */
+function metaStatusAttemptLabel(meta: any): string | null {
+  const raw = String(meta?.status || '').trim()
+  return raw ? raw.replace(/_/g, ' ') : null
+}
+
+/** True when Shiprocket marked delay, or ETD has past and order is still undelivered. */
 export function isOrderDelayed(order: any): boolean {
   const status = normalizeShipmentStatus(order)
-  if (['delivered', 'cancelled', 'rto'].includes(status)) return false
+  // RTO pipeline / cancelled / delivered never belong under Delayed
+  if (
+    ['delivered', 'cancelled', 'rto', 'rto_delivered', 'failed', 'failure'].includes(status)
+  ) {
+    return false
+  }
+  if (order?.cancelled_at) return false
+  if (hasRtoInitiated(order) || isActiveRtoStatus(order)) return false
 
   const meta = order?.shiprocket_meta || {}
   if (meta.delivery_delayed || meta.delay_reason) return true
@@ -200,11 +332,13 @@ export function buildTimeline(order: any, tracking?: any): TimelineStep[] {
   }
 
   const isCancelled = status === 'cancelled' || !!order?.cancelled_at
-  const isRto = status === 'rto'
+  const isRto = status === 'rto' || status === 'rto_delivered'
+  const isActiveRto = status === 'rto'
   const isFailed = status === 'failed'
+  const isAttempted = status === 'attempted_delivery'
   const isDelivered = status === 'delivered'
   const isOfd = status === 'out_for_delivery'
-  const isTransit = status === 'in_transit' || isOfd || isDelivered || isRto || isFailed
+  const isTransit = status === 'in_transit' || isOfd || isDelivered || isRto || isFailed || isAttempted
   const isPicked = isTransit || activities.includes('PICKED_UP') || !!meta.picked_up_date
   const isReadyPickup =
     isPicked ||
@@ -314,8 +448,8 @@ export function buildTimeline(order: any, tracking?: any): TimelineStep[] {
       label: 'Delivery Attempt Failed',
       description: 'Courier could not complete delivery',
       timestamp: findTrackTime('undelivered', 'failed', 'attempt'),
-      completed: isFailed,
-      current: isFailed,
+      completed: isFailed || isAttempted,
+      current: isFailed || isAttempted,
       tone: 'red',
     },
     {
@@ -324,7 +458,7 @@ export function buildTimeline(order: any, tracking?: any): TimelineStep[] {
       description: meta.rto_reason || 'Shipment returning / returned to warehouse',
       timestamp: findTrackTime('rto') || (isRto ? meta.delivered_date || order?.updated_at : null),
       completed: isRto,
-      current: isRto,
+      current: isActiveRto,
       tone: 'red',
     },
     {
@@ -358,7 +492,7 @@ export function buildTimeline(order: any, tracking?: any): TimelineStep[] {
 
   // Hide terminal-negative steps unless relevant
   return steps.filter((s) => {
-    if (s.key === 'failed') return isFailed || s.completed
+    if (s.key === 'failed') return isFailed || isAttempted || s.completed
     if (s.key === 'rto') return isRto || s.completed
     if (s.key === 'cancelled') return isCancelled || s.completed
     if (s.key === 'refunded') return s.completed
@@ -377,10 +511,12 @@ export function fulfillmentStageLabel(status: string): string {
     dispatched: 'Dispatched',
     in_transit: 'In Transit',
     out_for_delivery: 'Out for Delivery',
+    attempted_delivery: 'Undelivered / Attempted',
     delivered: 'Delivered',
     failed: 'Delivery Attempt Failed',
     failure: 'Delivery Attempt Failed',
-    rto: 'Returned to Origin (RTO)',
+    rto: 'RTO Initiated',
+    rto_delivered: 'RTO Delivered',
     cancelled: 'Cancelled',
     refunded: 'Refunded',
   }
