@@ -36,6 +36,7 @@ import {
   hasRtoInitiated,
   isActiveRtoStatus,
   isCreatedInDateRange,
+  isNotShippedStatus,
   isOrderDelayed,
   isShiprocketDeliveredStatus,
   isShiprocketInTransitStatus,
@@ -116,6 +117,25 @@ function fmtDay(value?: string | null) {
   return String(value)
 }
 
+function orderValue(order: OrderRow | any): number {
+  const n = parseFloat(String(order?.total_price ?? '').replace(/,/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+/** Compact INR for summary cards (e.g. ₹10.2L, ₹1.05Cr, ₹12,450). */
+function fmtInrCompact(amount: number): string {
+  const n = Number.isFinite(amount) ? amount : 0
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  if (abs >= 1_00_00_000) {
+    return `${sign}₹${(abs / 1_00_00_000).toLocaleString('en-IN', { maximumFractionDigits: 2, minimumFractionDigits: 0 })}Cr`
+  }
+  if (abs >= 1_00_000) {
+    return `${sign}₹${(abs / 1_00_000).toLocaleString('en-IN', { maximumFractionDigits: 2, minimumFractionDigits: 0 })}L`
+  }
+  return `${sign}₹${abs.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+}
+
 function customerName(o: OrderRow) {
   const c = o.customer
   const name = `${c?.first_name || ''} ${c?.last_name || ''}`.trim()
@@ -143,6 +163,30 @@ function getCloneParentBase(name?: string | null): string | null {
   const clean = cleanOrderName(name)
   if (!clean.endsWith('-c')) return null
   return clean.slice(0, -2)
+}
+
+/** Most recent clone in a trail (list should already be created_at ascending). */
+function getLatestClone(clones: OrderRow[]): OrderRow | null {
+  if (!clones.length) return null
+  return clones[clones.length - 1]
+}
+
+/**
+ * When a clone exists, ops status (delayed / delivered / in transit) follows the clone.
+ * Original order stays the list row; clone is the live shipment.
+ */
+function getOperationalOrder(order: OrderRow, relatedClones: OrderRow[] = []): OrderRow {
+  return getLatestClone(relatedClones) || order
+}
+
+/** Cancelled / voided order (Shopify or Shiprocket). */
+function isCancelledOrder(order: OrderRow | any): boolean {
+  if (!order) return false
+  if (order.cancelled_at) return true
+  const financial = String(order.financial_status || '').toLowerCase()
+  if (financial === 'voided' || financial === 'cancelled') return true
+  const status = normalizeShipmentStatus(order)
+  return status === 'cancelled'
 }
 
 function badgeTone(tone: string) {
@@ -252,25 +296,51 @@ function OrderStatusCard({
   const status = normalizeShipmentStatus(order)
   const delayed = isOrderDelayed(order)
   const alerts = buildAlerts(order)
-  const timeline = useMemo(() => buildTimeline(order, tracking), [order, tracking])
   const meta = order.shiprocket_meta || {}
   const shipmentDate = getShipmentDate(order)
   const delayDays = getDelayDays(order)
   const isClone = isCloneOrderName(order.name)
   const hasClones = relatedClones.length > 0
+  const operational = getOperationalOrder(order, relatedClones)
+  const usingClone = hasClones && operational.id !== order.id
+  const opFulfillment = operational.fulfillments?.[0]
+  const opAwb = opFulfillment?.tracking_number || ''
+  const opStatus = normalizeShipmentStatus(operational)
+  const opDelayed = isOrderDelayed(operational)
+  const opMeta = operational.shiprocket_meta || {}
+  const opShipmentDate = getShipmentDate(operational)
+  const opDelayDays = getDelayDays(operational)
+  // Card “live” view follows clone when present
+  const liveStatus = usingClone ? opStatus : status
+  const liveDelayed = usingClone ? opDelayed : delayed
+  const liveAwb = usingClone ? opAwb : awb
+  const liveFulfillment = usingClone ? opFulfillment : fulfillment
+  const liveMeta = usingClone ? opMeta : meta
+  const liveShipmentDate = usingClone ? opShipmentDate : shipmentDate
+  const liveDelayDays = usingClone ? opDelayDays : delayDays
+  const liveAlerts = usingClone ? buildAlerts(operational) : alerts
+  const timeline = useMemo(
+    () => buildTimeline(usingClone ? operational : order, tracking),
+    [order, operational, usingClone, tracking],
+  )
 
   useEffect(() => {
     setNoteDraft(order.note || '')
   }, [order.note])
 
   useEffect(() => {
-    if (!expanded || !awb || tracking) return
+    setTracking(null)
+    setTrackError(null)
+  }, [order.id, liveAwb])
+
+  useEffect(() => {
+    if (!expanded || !liveAwb || tracking) return
     let cancelled = false
     ;(async () => {
       try {
         setTrackLoading(true)
         setTrackError(null)
-        const res = await fetch(`/api/order-status/track?awb=${encodeURIComponent(awb)}`)
+        const res = await fetch(`/api/order-status/track?awb=${encodeURIComponent(liveAwb)}`)
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || 'Failed to load tracking')
         if (!cancelled) setTracking(data)
@@ -283,7 +353,7 @@ function OrderStatusCard({
     return () => {
       cancelled = true
     }
-  }, [expanded, awb, tracking])
+  }, [expanded, liveAwb, tracking])
 
   const saveNote = async () => {
     try {
@@ -318,8 +388,16 @@ function OrderStatusCard({
 
   return (
     <div
-      className={`crm-card overflow-hidden border ${delayed ? 'ring-1 ring-red-500/40' : ''}`}
-      style={{ borderColor: delayed ? 'rgba(239, 68, 68, 0.5)' : 'var(--border)' }}
+      className={`crm-card overflow-hidden border ${
+        liveDelayed ? 'ring-1 ring-red-500/40' : hasClones || isClone ? 'ring-1 ring-emerald-500/35' : ''
+      }`}
+      style={{
+        borderColor: liveDelayed
+          ? 'rgba(239, 68, 68, 0.5)'
+          : hasClones || isClone
+            ? 'rgba(16, 185, 129, 0.45)'
+            : 'var(--border)',
+      }}
     >
       <div className="relative">
         <button
@@ -333,11 +411,16 @@ function OrderStatusCard({
           </div>
           <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <div>
-              <p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-2" style={{ color: 'var(--foreground-muted)' }}>
+              <p className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 flex-wrap" style={{ color: 'var(--foreground-muted)' }}>
                 Order
-                {delayed && (
+                {liveDelayed && (
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('red')}`}>
                     Delayed
+                  </span>
+                )}
+                {isCancelledOrder(usingClone ? operational : order) && (
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('amber')}`}>
+                    Cancelled
                   </span>
                 )}
                 {order.source === 'shiprocket' && (
@@ -346,12 +429,12 @@ function OrderStatusCard({
                   </span>
                 )}
                 {hasClones && (
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('blue')}`}>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('emerald')}`}>
                     {relatedClones.length} clone{relatedClones.length === 1 ? '' : 's'}
                   </span>
                 )}
                 {isClone && (
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('amber')}`}>
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('emerald')}`}>
                     Clone{parentOrder ? ` of ${parentOrder.name}` : ''}
                   </span>
                 )}
@@ -362,6 +445,11 @@ function OrderStatusCard({
               <p className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
                 ID {order.id} · {fmtWhen(order.created_at)}
               </p>
+              {usingClone && (
+                <p className="text-[11px] mt-0.5 font-semibold text-emerald-600">
+                  Active: {operational.name}
+                </p>
+              )}
             </div>
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--foreground-muted)' }}>
@@ -393,14 +481,14 @@ function OrderStatusCard({
             </div>
             <div>
               <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--foreground-muted)' }}>
-                Fulfillment
+                Fulfillment{usingClone ? ' (clone)' : ''}
               </p>
-              <span className={`inline-flex text-[10px] font-bold px-2 py-0.5 rounded border mt-0.5 ${badgeTone(statusTone(status))}`}>
-                {fulfillmentStageLabel(status)}
+              <span className={`inline-flex text-[10px] font-bold px-2 py-0.5 rounded border mt-0.5 ${badgeTone(statusTone(liveStatus))}`}>
+                {fulfillmentStageLabel(liveStatus)}
               </span>
               <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--foreground-muted)' }}>
-                {fulfillment?.tracking_company || 'No courier yet'}
-                {awb ? ` · ${awb}` : ''}
+                {liveFulfillment?.tracking_company || 'No courier yet'}
+                {liveAwb ? ` · ${liveAwb}` : ''}
               </p>
             </div>
           </div>
@@ -414,28 +502,28 @@ function OrderStatusCard({
           <span className="inline-flex items-center gap-1.5">
             <Truck className="w-3.5 h-3.5 opacity-70" />
             <span className="font-semibold" style={{ color: 'var(--foreground)' }}>Shipped</span>
-            {fmtDay(shipmentDate)}
+            {fmtDay(liveShipmentDate)}
           </span>
-          {meta.etd_date && (
+          {liveMeta.etd_date && (
             <span className="inline-flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 opacity-70" />
               <span className="font-semibold" style={{ color: 'var(--foreground)' }}>ETD</span>
-              {fmtDay(meta.etd_date)}
+              {fmtDay(liveMeta.etd_date)}
             </span>
           )}
-          {delayed && (
+          {liveDelayed && (
             <span className={`inline-flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('red')}`}>
               <AlertCircle className="w-3 h-3" />
-              {delayDays > 0
-                ? `Delayed by ${delayDays} day${delayDays === 1 ? '' : 's'}`
+              {liveDelayDays > 0
+                ? `Delayed by ${liveDelayDays} day${liveDelayDays === 1 ? '' : 's'}`
                 : 'Delayed (ETD today / flagged)'}
             </span>
           )}
         </div>
 
-        {alerts.length > 0 && (
+        {liveAlerts.length > 0 && (
           <div className="mt-2 ml-7 flex flex-wrap gap-1.5">
-            {alerts
+            {liveAlerts
               .filter((a) => a.type !== 'delayed') // delay days shown above
               .map((a) => (
               <span key={a.type + a.label} className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone(a.tone)}`}>
@@ -451,9 +539,9 @@ function OrderStatusCard({
           </p>
         )}
         {hasClones && !expanded && (
-          <p className="mt-2 ml-7 text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+          <p className="mt-2 ml-7 text-[11px] text-emerald-600 font-medium">
             Clone trail:{' '}
-            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+            <span className="font-semibold">
               {relatedClones.map((c) => c.name).join(', ')}
             </span>
             {' '}· expand for details
@@ -578,12 +666,12 @@ function OrderStatusCard({
                 </h3>
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                   {[
-                    ['Courier Partner', fulfillment?.tracking_company || '—'],
-                    ['Tracking Number', awb || '—'],
-                    ['Warehouse', meta.pickup_location || '—'],
-                    ['Shipping Method', meta.shipping_method || '—'],
-                    ['Estimated Delivery', fmtWhen(meta.etd_date || tracking?.tracking_data?.etd)],
-                    ['Actual Delivery', fmtWhen(meta.delivered_date || fulfillment?.delivery_date)],
+                    ['Courier Partner', liveFulfillment?.tracking_company || '—'],
+                    ['Tracking Number', liveAwb || '—'],
+                    ['Warehouse', liveMeta.pickup_location || '—'],
+                    ['Shipping Method', liveMeta.shipping_method || '—'],
+                    ['Estimated Delivery', fmtWhen(liveMeta.etd_date || tracking?.tracking_data?.etd)],
+                    ['Actual Delivery', fmtWhen(liveMeta.delivered_date || liveFulfillment?.delivery_date)],
                   ].map(([k, v]) => (
                     <div key={k as string}>
                       <dt className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>{k}</dt>
@@ -591,9 +679,9 @@ function OrderStatusCard({
                     </div>
                   ))}
                 </dl>
-                {(fulfillment?.tracking_url || tracking?.tracking_data?.track_url) && (
+                {(liveFulfillment?.tracking_url || tracking?.tracking_data?.track_url) && (
                   <a
-                    href={fulfillment?.tracking_url || tracking?.tracking_data?.track_url}
+                    href={liveFulfillment?.tracking_url || tracking?.tracking_data?.track_url}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-purple-600 hover:underline"
@@ -609,12 +697,12 @@ function OrderStatusCard({
                 </h3>
                 <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                   {[
-                    ['Current Status', fulfillmentStageLabel(status)],
-                    ['Delivered', status === 'delivered' ? 'Yes' : 'No'],
-                    ['Dispatched', fulfillment?.tracking_number || meta.picked_up_date ? 'Yes' : 'No'],
+                    ['Current Status', fulfillmentStageLabel(liveStatus)],
+                    ['Delivered', liveStatus === 'delivered' ? 'Yes' : 'No'],
+                    ['Dispatched', liveAwb || liveMeta.picked_up_date ? 'Yes' : 'No'],
                     ['Recipient', trackInfo?.consignee_name || customerName(order)],
                     ['Delivery Proof', trackInfo?.pod || trackInfo?.pod_status || '—'],
-                    ['Delivery Notes', fulfillment?.shipment_status_reason || meta.delay_reason || '—'],
+                    ['Delivery Notes', liveFulfillment?.shipment_status_reason || liveMeta.delay_reason || '—'],
                   ].map(([k, v]) => (
                     <div key={k as string}>
                       <dt className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>{k}</dt>
@@ -639,7 +727,7 @@ function OrderStatusCard({
                 </div>
                 <div>
                   <p className="text-[10px] uppercase font-bold" style={{ color: 'var(--foreground-muted)' }}>Successful</p>
-                  <p className="font-extrabold text-emerald-600">{status === 'delivered' ? 1 : 0}</p>
+                  <p className="font-extrabold text-emerald-600">{liveStatus === 'delivered' ? 1 : 0}</p>
                 </div>
                 <div>
                   <p className="text-[10px] uppercase font-bold" style={{ color: 'var(--foreground-muted)' }}>Failed</p>
@@ -664,7 +752,7 @@ function OrderStatusCard({
               <h3 className="text-xs font-extrabold uppercase tracking-wider mb-2" style={{ color: 'var(--foreground-muted)' }}>
                 Customer Call History
               </h3>
-              {meta.has_calls ? (
+              {liveMeta.has_calls ? (
                 <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
                   Delivery partner call activity flagged on this shipment. Detailed call logs are not exposed by the courier list API.
                 </p>
@@ -695,8 +783,8 @@ function OrderStatusCard({
               {trackError && (
                 <p className="text-xs text-amber-600 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> {trackError}</p>
               )}
-              {!awb && <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>No AWB assigned yet.</p>}
-              {awb && !trackLoading && trackActs.length === 0 && !trackError && (
+              {!liveAwb && <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>No AWB assigned yet.</p>}
+              {liveAwb && !trackLoading && trackActs.length === 0 && !trackError && (
                 <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>No scan events yet.</p>
               )}
               {trackActs.length > 0 && (
@@ -765,13 +853,14 @@ function OrderStatusCard({
                         <button
                           type="button"
                           onClick={() => onOpenRelated?.(clone.id)}
-                          className="w-full text-left rounded-lg border p-3 hover:bg-blue-500/[0.05] transition-colors"
-                          style={{ borderColor: 'rgba(59, 130, 246, 0.35)' }}
+                          className="w-full text-left rounded-lg border p-3 hover:bg-emerald-500/[0.06] transition-colors"
+                          style={{ borderColor: 'rgba(16, 185, 129, 0.4)' }}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="text-[10px] font-bold uppercase text-blue-600">
+                              <p className="text-[10px] font-bold uppercase text-emerald-600">
                                 Clone {relatedClones.length > 1 ? idx + 1 : ''}
+                                {idx === relatedClones.length - 1 ? ' · active' : ''}
                               </p>
                               <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
                                 {clone.name}
@@ -906,91 +995,6 @@ export default function OrderStatusPage() {
     return Array.from(set).sort()
   }, [orders])
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-
-    const list = orders.filter((o) => {
-      // Match Shiprocket: hide test orders from ops views
-      if ((o as any).is_test_order) return false
-
-      const isSrOnly = o.source === 'shiprocket'
-      if (channel === 'shopify' && isSrOnly) return false
-      if (channel === 'shiprocket' && !isSrOnly) return false
-
-      if (!isCreatedInDateRange(o, startDate, endDate)) return false
-
-      if (q) {
-        const hay = [
-          o.name,
-          String(o.id),
-          customerName(o),
-          customerPhone(o),
-          o.fulfillments?.[0]?.tracking_number || '',
-          o.customer?.email || '',
-        ]
-          .join(' ')
-          .toLowerCase()
-        if (!hay.includes(q)) return false
-      }
-
-      const status = normalizeShipmentStatus(o)
-      const pay = paymentLabel(o)
-      const company = o.fulfillments?.[0]?.tracking_company || ''
-
-      if (courier !== 'all' && company !== courier) return false
-      if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
-      if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
-      if (deliveryStatus === 'delivered' && !isShiprocketDeliveredStatus(o)) return false
-      if (deliveryStatus === 'not_delivered' && isShiprocketDeliveredStatus(o)) return false
-      if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(o)) return false
-      if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
-      if (deliveryStatus === 'rto' && !isActiveRtoStatus(o)) return false
-      if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
-      if (deliveryStatus === 'delayed' && !isOrderDelayed(o)) return false
-      if (
-        deliveryStatus === 'rto_alerts' &&
-        !isActiveRtoStatus(o) &&
-        buildAlerts(o).length === 0
-      ) {
-        return false
-      }
-
-      return true
-    })
-
-    // ORDERS tab: newest placed first (normal feed).
-    // DELAYED FIRST tab: most-delayed days first, then newest.
-    return list.sort((a, b) => {
-      if (deliveryStatus === 'delayed') {
-        const aDays = getDelayDays(a)
-        const bDays = getDelayDays(b)
-        if (aDays !== bDays) return bDays - aDays
-      }
-      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
-    })
-  }, [orders, search, channel, courier, paymentStatus, fulfillmentStatus, deliveryStatus, startDate, endDate])
-
-  const defaultDates = useMemo(() => getDefaultDateRange(), [])
-  const isLast30Days =
-    Boolean(startDate) &&
-    Boolean(endDate) &&
-    startDate === defaultDates.start &&
-    endDate === defaultDates.end
-  const filtersActive =
-    search.trim() !== '' ||
-    channel !== 'all' ||
-    courier !== 'all' ||
-    paymentStatus !== 'all' ||
-    fulfillmentStatus !== 'all' ||
-    deliveryStatus !== 'all' ||
-    !isLast30Days
-
-  const channelBreakdown = useMemo(() => {
-    const shopify = orders.filter((o) => o.source !== 'shiprocket').length
-    const shiprocket = orders.filter((o) => o.source === 'shiprocket').length
-    return { shopify, shiprocket }
-  }, [orders])
-
   // Parent → clone trail (name convention `{parent}-C`), from full cache not just filtered list
   const cloneRelations = useMemo(() => {
     const byClean = new Map<string, OrderRow>()
@@ -1019,34 +1023,154 @@ export default function OrderStatusPage() {
     return { byClean, clonesByParent }
   }, [orders])
 
+  const getRelatedClones = useCallback(
+    (o: OrderRow) => cloneRelations.clonesByParent.get(cleanOrderName(o.name)) || [],
+    [cloneRelations],
+  )
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase()
+
+    const list = orders.filter((o) => {
+      // Match Shiprocket: hide test orders from ops views
+      if ((o as any).is_test_order) return false
+
+      // Clones with a known parent only appear on the parent's trail
+      const parentBase = getCloneParentBase(o.name)
+      if (parentBase && cloneRelations.byClean.has(parentBase)) return false
+
+      const isSrOnly = o.source === 'shiprocket'
+      if (channel === 'shopify' && isSrOnly) return false
+      if (channel === 'shiprocket' && !isSrOnly) return false
+
+      // Date filter stays on the original (parent) order created_at
+      if (!isCreatedInDateRange(o, startDate, endDate)) return false
+
+      const relatedClones = getRelatedClones(o)
+      const live = getOperationalOrder(o, relatedClones)
+
+      if (q) {
+        const hay = `${o.name || ''} ${o.id}`.toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+
+      const status = normalizeShipmentStatus(live)
+      const pay = paymentLabel(o)
+      const company =
+        live.fulfillments?.[0]?.tracking_company ||
+        o.fulfillments?.[0]?.tracking_company ||
+        ''
+
+      if (courier !== 'all' && company !== courier) return false
+      if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
+      if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
+      // Ops cards / delivery filters follow the active clone when present
+      if (deliveryStatus === 'delivered' && !isShiprocketDeliveredStatus(live)) return false
+      if (deliveryStatus === 'not_delivered' && isShiprocketDeliveredStatus(live)) return false
+      if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(live)) return false
+      if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
+      if (deliveryStatus === 'rto' && !isActiveRtoStatus(live)) return false
+      if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
+      if (deliveryStatus === 'cancelled' && !isCancelledOrder(live)) return false
+      if (deliveryStatus === 'not_shipped' && (isCancelledOrder(live) || !isNotShippedStatus(live))) return false
+      if (deliveryStatus === 'delayed' && (isCancelledOrder(live) || !isOrderDelayed(live))) return false
+      if (
+        deliveryStatus === 'rto_alerts' &&
+        !isActiveRtoStatus(live) &&
+        buildAlerts(live).length === 0
+      ) {
+        return false
+      }
+
+      // Other quick filters exclude cancelled — they live under Cancelled
+      if (
+        deliveryStatus !== 'all' &&
+        deliveryStatus !== 'cancelled' &&
+        isCancelledOrder(live)
+      ) {
+        return false
+      }
+
+      return true
+    })
+
+    return list.sort((a, b) => {
+      if (deliveryStatus === 'delayed') {
+        const aDays = getDelayDays(getOperationalOrder(a, getRelatedClones(a)))
+        const bDays = getDelayDays(getOperationalOrder(b, getRelatedClones(b)))
+        if (aDays !== bDays) return bDays - aDays
+      }
+      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+    })
+  }, [
+    orders,
+    search,
+    channel,
+    courier,
+    paymentStatus,
+    fulfillmentStatus,
+    deliveryStatus,
+    startDate,
+    endDate,
+    cloneRelations,
+    getRelatedClones,
+  ])
+
+  const defaultDates = useMemo(() => getDefaultDateRange(), [])
+  const isLast30Days =
+    Boolean(startDate) &&
+    Boolean(endDate) &&
+    startDate === defaultDates.start &&
+    endDate === defaultDates.end
+  const filtersActive =
+    search.trim() !== '' ||
+    channel !== 'all' ||
+    courier !== 'all' ||
+    paymentStatus !== 'all' ||
+    fulfillmentStatus !== 'all' ||
+    deliveryStatus !== 'all' ||
+    !isLast30Days
+
+  const channelBreakdown = useMemo(() => {
+    const shopify = orders.filter((o) => o.source !== 'shiprocket').length
+    const shiprocket = orders.filter((o) => o.source === 'shiprocket').length
+    return { shopify, shiprocket }
+  }, [orders])
+
   const openRelatedOrder = useCallback(
     (orderId: number) => {
       const target = orders.find((o) => o.id === orderId)
       if (!target) {
-        // Not in cache — open full order page
         window.location.href = `/orders/${orderId}`
         return
       }
-      // Jump to related order in this list if present; otherwise open detail page
-      const inFiltered = filtered.some((o) => o.id === orderId)
+
+      // Clone rows are folded into the parent card — open the parent instead
+      const parentBase = getCloneParentBase(target.name)
+      const focusId =
+        parentBase && cloneRelations.byClean.has(parentBase)
+          ? cloneRelations.byClean.get(parentBase)!.id
+          : orderId
+
+      const inFiltered = filtered.some((o) => o.id === focusId)
       if (inFiltered) {
-        const idx = filtered.findIndex((o) => o.id === orderId)
+        const idx = filtered.findIndex((o) => o.id === focusId)
         const targetPage = Math.floor(idx / pageSize) + 1
         setPage(targetPage)
-        setExpandedId(orderId)
+        setExpandedId(focusId)
         if (typeof window !== 'undefined') {
           window.setTimeout(() => {
-            document.getElementById(`order-card-${orderId}`)?.scrollIntoView({
+            document.getElementById(`order-card-${focusId}`)?.scrollIntoView({
               behavior: 'smooth',
               block: 'start',
             })
           }, 50)
         }
       } else {
-        window.location.href = `/orders/${orderId}`
+        window.location.href = `/orders/${focusId}`
       }
     },
-    [orders, filtered, pageSize],
+    [orders, filtered, pageSize, cloneRelations],
   )
 
   // Base list for summary cards (everything except the quick deliveryStatus card filter)
@@ -1056,50 +1180,100 @@ export default function OrderStatusPage() {
     return orders.filter((o) => {
       if ((o as any).is_test_order) return false
 
+      const parentBase = getCloneParentBase(o.name)
+      if (parentBase && cloneRelations.byClean.has(parentBase)) return false
+
       const isSrOnly = o.source === 'shiprocket'
       if (channel === 'shopify' && isSrOnly) return false
       if (channel === 'shiprocket' && !isSrOnly) return false
 
-      // Same IST created_at range Shiprocket uses for order date filters
       if (!isCreatedInDateRange(o, startDate, endDate)) return false
 
+      const relatedClones = getRelatedClones(o)
+
       if (q) {
-        const hay = [
-          o.name,
-          String(o.id),
-          customerName(o),
-          customerPhone(o),
-          o.fulfillments?.[0]?.tracking_number || '',
-          o.customer?.email || '',
-        ]
-          .join(' ')
-          .toLowerCase()
+        const hay = `${o.name || ''} ${o.id}`.toLowerCase()
         if (!hay.includes(q)) return false
       }
-      const status = normalizeShipmentStatus(o)
+      const live = getOperationalOrder(o, relatedClones)
+      const status = normalizeShipmentStatus(live)
       const pay = paymentLabel(o)
-      const company = o.fulfillments?.[0]?.tracking_company || ''
+      const company =
+        live.fulfillments?.[0]?.tracking_company ||
+        o.fulfillments?.[0]?.tracking_company ||
+        ''
       if (courier !== 'all' && company !== courier) return false
       if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
       if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
       return true
     })
-  }, [orders, search, channel, courier, paymentStatus, fulfillmentStatus, startDate, endDate])
+  }, [
+    orders,
+    search,
+    channel,
+    courier,
+    paymentStatus,
+    fulfillmentStatus,
+    startDate,
+    endDate,
+    cloneRelations,
+    getRelatedClones,
+  ])
 
   const summary = useMemo(() => {
-    const counts = { total: 0, delivered: 0, inTransit: 0, delayed: 0, rto: 0 }
+    const counts = {
+      total: 0,
+      delivered: 0,
+      inTransit: 0,
+      delayed: 0,
+      rto: 0,
+      cancelled: 0,
+      notShipped: 0,
+    }
+    const values = {
+      total: 0,
+      delivered: 0,
+      inTransit: 0,
+      delayed: 0,
+      rto: 0,
+      cancelled: 0,
+      notShipped: 0,
+    }
     summaryBase.forEach((o) => {
-      const activeRto = isActiveRtoStatus(o)
+      const live = getOperationalOrder(o, getRelatedClones(o))
+      const price = orderValue(o)
+      const cancelled = isCancelledOrder(live)
+      const activeRto = !cancelled && isActiveRtoStatus(live)
       counts.total++
-      if (isShiprocketDeliveredStatus(o)) counts.delivered++
-      if (isShiprocketInTransitStatus(o)) counts.inTransit++
-      // RTO Initiated (open only) — matches Shiprocket RTO tab status filter
-      if (activeRto) counts.rto++
-      // Delayed never includes RTO pipeline orders
-      if (!activeRto && !hasRtoInitiated(o) && isOrderDelayed(o)) counts.delayed++
+      values.total += price
+      if (cancelled) {
+        counts.cancelled++
+        values.cancelled += price
+        return
+      }
+      if (isNotShippedStatus(live)) {
+        counts.notShipped++
+        values.notShipped += price
+      }
+      if (isShiprocketDeliveredStatus(live)) {
+        counts.delivered++
+        values.delivered += price
+      }
+      if (isShiprocketInTransitStatus(live)) {
+        counts.inTransit++
+        values.inTransit += price
+      }
+      if (activeRto) {
+        counts.rto++
+        values.rto += price
+      }
+      if (!activeRto && !hasRtoInitiated(live) && isOrderDelayed(live)) {
+        counts.delayed++
+        values.delayed += price
+      }
     })
-    return counts
-  }, [summaryBase])
+    return { ...counts, values }
+  }, [summaryBase, getRelatedClones])
 
   const toggleQuickFilter = (key: string) => {
     setDeliveryStatus((s) => (s === key ? 'all' : key))
@@ -1114,6 +1288,8 @@ export default function OrderStatusPage() {
       emerald: active ? 'ring-2 ring-emerald-500/50' : 'hover:ring-2 hover:ring-emerald-500/40',
       blue: active ? 'ring-2 ring-blue-500/50' : 'hover:ring-2 hover:ring-blue-500/40',
       purple: active ? 'ring-2 ring-purple-500/50' : 'hover:ring-2 hover:ring-purple-500/40',
+      amber: active ? 'ring-2 ring-amber-500/50' : 'hover:ring-2 hover:ring-amber-500/40',
+      slate: active ? 'ring-2 ring-slate-500/50' : 'hover:ring-2 hover:ring-slate-500/40',
     }
     return map[tone] || map.purple
   }
@@ -1179,54 +1355,56 @@ export default function OrderStatusPage() {
           </div>
 
           {/* Summary — click a card to filter the list */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-5">
             {([
               {
                 label: 'Orders',
                 value: summary.total,
+                amount: summary.values.total,
                 tone: 'purple',
                 key: 'all',
-                hint: deliveryStatus === 'all' ? 'All orders in range' : 'Click to show all',
+              },
+              {
+                label: 'Not Shipped',
+                value: summary.notShipped,
+                amount: summary.values.notShipped,
+                tone: 'slate',
+                key: 'not_shipped',
               },
               {
                 label: 'Delayed First',
                 value: summary.delayed,
+                amount: summary.values.delayed,
                 tone: 'red',
                 key: 'delayed',
-                hint:
-                  deliveryStatus === 'delayed'
-                    ? 'Showing delayed only · click to clear'
-                    : 'Past ETD / flagged · click to filter',
               },
               {
                 label: 'Delivered',
                 value: summary.delivered,
+                amount: summary.values.delivered,
                 tone: 'emerald',
                 key: 'delivered',
-                hint:
-                  deliveryStatus === 'delivered'
-                    ? 'Showing delivered · click to clear'
-                    : 'Matches Shiprocket Delivered tab',
               },
               {
                 label: 'In Transit',
                 value: summary.inTransit,
+                amount: summary.values.inTransit,
                 tone: 'blue',
                 key: 'in_transit',
-                hint:
-                  deliveryStatus === 'in_transit'
-                    ? 'Showing In Transit · click to clear'
-                    : 'Matches Shiprocket In Transit tab',
               },
               {
                 label: 'RTO Initiated',
                 value: summary.rto,
+                amount: summary.values.rto,
                 tone: 'purple',
                 key: 'rto',
-                hint:
-                  deliveryStatus === 'rto'
-                    ? 'Showing open RTO · click to clear'
-                    : 'Matches Shiprocket RTO → RTO Initiated',
+              },
+              {
+                label: 'Cancelled',
+                value: summary.cancelled,
+                amount: summary.values.cancelled,
+                tone: 'amber',
+                key: 'cancelled',
               },
             ] as const).map((card) => (
               <button
@@ -1234,6 +1412,7 @@ export default function OrderStatusPage() {
                 type="button"
                 onClick={() => toggleQuickFilter(card.key)}
                 className={`crm-card p-4 text-left transition-all cursor-pointer ${ringFor(card.key, card.tone)}`}
+                title={`₹${card.amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`}
               >
                 <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--foreground-muted)' }}>
                   {card.label}
@@ -1246,23 +1425,31 @@ export default function OrderStatusPage() {
                         ? 'text-blue-600'
                         : card.tone === 'red'
                           ? 'text-red-600'
-                          : 'text-purple-600'
+                          : card.tone === 'amber'
+                            ? 'text-amber-600'
+                            : card.tone === 'slate'
+                              ? 'text-slate-700 dark:text-slate-300'
+                              : 'text-purple-600'
                   }`}
                 >
                   {card.value}
                 </p>
                 <p
-                  className={`text-[10px] mt-1 font-medium ${
+                  className={`text-[11px] mt-1 font-semibold tabular-nums ${
                     card.tone === 'emerald'
                       ? 'text-emerald-600'
                       : card.tone === 'blue'
                         ? 'text-blue-600'
                         : card.tone === 'red'
                           ? 'text-red-600'
-                          : 'text-purple-600'
+                          : card.tone === 'amber'
+                            ? 'text-amber-600'
+                            : card.tone === 'slate'
+                              ? 'text-slate-600 dark:text-slate-400'
+                              : 'text-purple-600'
                   }`}
                 >
-                  {card.hint}
+                  {fmtInrCompact(card.amount)}
                 </p>
               </button>
             ))}
@@ -1282,7 +1469,7 @@ export default function OrderStatusPage() {
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search order ID, tracking #, customer name, phone…"
+                placeholder="Search order name or order ID…"
                 autoComplete="off"
                 className="w-full pl-10 pr-3 py-2.5 rounded-xl border text-sm focus:outline-none focus:border-purple-500/50"
                 style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
@@ -1326,6 +1513,7 @@ export default function OrderStatusPage() {
               </select>
               <select value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
                 <option value="all">All Delivery Status</option>
+                <option value="not_shipped">Not Shipped</option>
                 <option value="delayed">Delayed Only</option>
                 <option value="delivered">Delivered</option>
                 <option value="not_delivered">Not Delivered</option>
@@ -1333,6 +1521,7 @@ export default function OrderStatusPage() {
                 <option value="out_for_delivery">Out for Delivery</option>
                 <option value="rto">RTO Initiated</option>
                 <option value="rto_delivered">RTO Delivered</option>
+                <option value="cancelled">Cancelled</option>
                 <option value="rto_alerts">RTO Initiated + Alerts</option>
               </select>
               <label className="flex flex-col gap-0.5">

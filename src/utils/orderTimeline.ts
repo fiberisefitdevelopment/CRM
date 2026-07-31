@@ -181,6 +181,40 @@ export function normalizeShipmentStatus(order: any): string {
   return 'processing'
 }
 
+/**
+ * Not yet handed to courier / left warehouse:
+ * unfulfilled, processing, ready for pickup, confirmed, label printed, etc.
+ * Excludes in-transit, OFD, delivered, RTO, failed, cancelled.
+ */
+export function isNotShippedStatus(order: any): boolean {
+  if (order?.cancelled_at) return false
+  const financial = String(order?.financial_status || '').toLowerCase()
+  if (financial === 'voided' || financial === 'cancelled') return false
+
+  if (isActiveRtoStatus(order) || isShiprocketDeliveredStatus(order) || isShiprocketInTransitStatus(order)) {
+    return false
+  }
+
+  const status = normalizeShipmentStatus(order)
+  if (
+    [
+      'out_for_delivery',
+      'attempted_delivery',
+      'rto_delivered',
+      'failed',
+      'failure',
+      'delivered',
+      'rto',
+      'in_transit',
+      'cancelled',
+    ].includes(status)
+  ) {
+    return false
+  }
+
+  return true
+}
+
 export function paymentLabel(order: any): 'Paid' | 'Pending' | 'Failed' | 'Refunded' {
   const fs = String(order?.financial_status || '').toLowerCase()
   if (fs === 'refunded' || fs === 'voided') return 'Refunded'
@@ -245,15 +279,21 @@ export function isOrderDelayed(order: any): boolean {
   if (hasRtoInitiated(order) || isActiveRtoStatus(order)) return false
 
   const meta = order?.shiprocket_meta || {}
-  if (meta.delivery_delayed || meta.delay_reason) return true
-
-  const etdRaw = meta.etd_date
-  if (!etdRaw) return false
-  const etd = parseFlexibleDate(etdRaw)
-  if (!etd) return false
-  const etdDay = startOfDay(etd)
+  const etd = parseFlexibleDate(meta.etd_date)
+  const etdDay = etd ? startOfDay(etd) : null
   const todayDay = startOfDay(new Date())
-  return etdDay.getTime() < todayDay.getTime()
+  const etdPassed = Boolean(etdDay && etdDay.getTime() < todayDay.getTime())
+  const etdIsToday = Boolean(etdDay && etdDay.getTime() === todayDay.getTime())
+
+  // Soft Shiprocket flags (delivery_delayed / delay_reason) often stick while a
+  // replacement clone is still on track. Only treat as Delayed when ETD is due
+  // or past (or there is no ETD to judge against).
+  if (meta.delivery_delayed || meta.delay_reason) {
+    if (!etdDay || etdPassed || etdIsToday) return true
+    return false
+  }
+
+  return etdPassed
 }
 
 function startOfDay(d: Date): Date {
