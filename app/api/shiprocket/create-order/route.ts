@@ -19,17 +19,14 @@ export async function POST(req: NextRequest) {
     // Extract session for audit attribution
     let auditEmail = 'unknown'
     let auditRole = 'unknown'
-    let auditSessionId = ''
+    let auditUserId = 'unknown'
     try {
-      const { decryptSession } = require('@/src/services/auth')
-      const sessionCookie = req.cookies.get('fiberise_session')?.value
-      if (sessionCookie) {
-        const session = decryptSession(sessionCookie)
-        if (session) {
-          auditEmail = session.email || 'unknown'
-          auditRole = session.role || 'unknown'
-          auditSessionId = session.sessionId || ''
-        }
+      const { optionalAuth } = require('@/src/services/auth')
+      const session = await optionalAuth(req)
+      if (session) {
+        auditEmail = session.email || 'unknown'
+        auditRole = session.role || 'unknown'
+        auditUserId = session.id || 'unknown'
       }
     } catch {}
 
@@ -137,10 +134,9 @@ export async function POST(req: NextRequest) {
     try {
       const { logAction } = require('@/src/services/auditLogService')
       logAction({
-        userId: auditEmail,
+        userId: auditUserId,
         userEmail: auditEmail,
         userRole: auditRole,
-        sessionId: auditSessionId,
         actionType: 'ORDER_CREATE',
         description: `Created/cloned order ${body.order_id} via Shiprocket (₹${body.sub_total || 0})`,
         module: 'orders',

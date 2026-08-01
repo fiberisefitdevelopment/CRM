@@ -11,15 +11,15 @@ import {
   updateJourneyStatus,
   getCustomerById,
 } from '@/src/services/firestore.service';
-import { decryptSession } from '@/src/services/auth';
+import { optionalAuth } from '@/src/services/auth';
 import { logAction } from '@/src/services/auditLogService';
 
-function getSessionInfo(req: NextRequest) {
-  const sessionCookie = req.cookies.get('fiberise_session')?.value;
-  const session = sessionCookie ? decryptSession(sessionCookie) : null;
+async function getSessionInfo(req: NextRequest) {
+  const session = await optionalAuth(req);
   return {
     email: session?.email || 'system@fiberisefit.com',
-    userId: session?.email || 'system',
+    userId: session?.id || session?.email || 'system',
+    role: session?.role || 'unknown',
   };
 }
 
@@ -79,7 +79,7 @@ export async function PATCH(req: NextRequest) {
     await updateJourneyStatus(journeyId, status);
 
     // Trace action
-    const { userId, email } = getSessionInfo(req);
+    const { userId, email } = await getSessionInfo(req);
     logAction({
       userId,
       userEmail: email,

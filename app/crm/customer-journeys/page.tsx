@@ -1,5 +1,6 @@
 'use client';
 
+import { apiFetch } from '@/lib/auth';
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/layout/Sidebar';
@@ -83,8 +84,8 @@ export default function CustomerJourneysPage() {
       });
 
       const [resJourneys, resAnalytics] = await Promise.all([
-        fetch(`/api/crm/customer-journeys?${queryParams.toString()}`),
-        fetch(`/api/crm/customer-journeys/analytics`),
+        apiFetch(`/api/crm/customer-journeys?${queryParams.toString()}`),
+        apiFetch(`/api/crm/customer-journeys/analytics`),
       ]);
 
       if (resJourneys.ok) {
@@ -117,7 +118,7 @@ export default function CustomerJourneysPage() {
   const handleAction = async (journeyId: string, action: 'retry' | 'trigger', stageParam?: string) => {
     setActionLoading(`${journeyId}-${action}-${stageParam || ''}`);
     try {
-      const res = await fetch(`/api/crm/customer-journeys/${encodeURIComponent(journeyId)}`, {
+      const res = await apiFetch(`/api/crm/customer-journeys/${encodeURIComponent(journeyId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, stage: stageParam }),

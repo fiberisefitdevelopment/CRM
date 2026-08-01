@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -422,7 +423,7 @@ export default function ShiprocketDashboardPage() {
       setActiveDropdownOrderId(null)
       triggerNotification('success', `Cloning order ${order.name} to Shiprocket panel...`)
       
-      const res = await fetch('/api/shiprocket/create-order', {
+      const res = await apiFetch('/api/shiprocket/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -584,7 +585,7 @@ export default function ShiprocketDashboardPage() {
       if (isInitial) setLoading(true)
       else setPageLoading(true)
 
-      const res = await fetch(`/api/shopify/orders?${cacheKey}`, {
+      const res = await apiFetch(`/api/shopify/orders?${cacheKey}`, {
         signal: controller.signal
       })
       const data = await res.json()
@@ -842,7 +843,7 @@ export default function ShiprocketDashboardPage() {
 
     try {
       setTogglingTestOrderId(order.id)
-      const res = await fetch(`/api/shopify/orders/${order.id}`, {
+      const res = await apiFetch(`/api/shopify/orders/${order.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_test_order: isTest })
@@ -883,7 +884,7 @@ export default function ShiprocketDashboardPage() {
 
     try {
       setDeletingOrderId(orderId)
-      const res = await fetch(`/api/shopify/orders/${orderId}`, {
+      const res = await apiFetch(`/api/shopify/orders/${orderId}`, {
         method: 'DELETE',
       })
       const data = await res.json()
@@ -923,7 +924,7 @@ export default function ShiprocketDashboardPage() {
 
     try {
       setBulkDeleting(true)
-      const res = await fetch('/api/shopify/orders', {
+      const res = await apiFetch('/api/shopify/orders', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: selectedIds }),
@@ -971,7 +972,7 @@ export default function ShiprocketDashboardPage() {
       setBulkTestToggling(true)
       const results = await Promise.allSettled(
         selectedIds.map(async (id) => {
-          const res = await fetch(`/api/shopify/orders/${id}`, {
+          const res = await apiFetch(`/api/shopify/orders/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ is_test_order: isTest }),
@@ -1099,7 +1100,7 @@ export default function ShiprocketDashboardPage() {
       }
       if (filterFulfillmentStatus !== 'all') queryParams.set('fulfillment', filterFulfillmentStatus)
 
-      const res = await fetch(`/api/shopify/orders?${queryParams.toString()}`)
+      const res = await apiFetch(`/api/shopify/orders?${queryParams.toString()}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to export orders')
 

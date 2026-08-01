@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import {
   Bell,
@@ -19,11 +19,8 @@ import {
   Megaphone,
   ListTodo,
 } from 'lucide-react'
-import {
-  homePathForRole,
-  isCareExecutiveRole,
-  isPathAllowedForRole,
-} from '@/src/utils/accessControl'
+import { isCareExecutiveRole } from '@/src/utils/accessControl'
+import { useAuth } from '@/lib/auth'
 
 const menuItems = [
   { icon: PackageSearch, label: 'Order Status', href: '/order-status' },
@@ -41,20 +38,18 @@ const menuItems = [
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
-  const [user, setUser] = useState<{ email: string; role: string; ipAddress?: string } | null>(null)
   const pathname = usePathname()
-  const router = useRouter()
+  const { user, logout } = useAuth()
 
   const handleLogout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' })
-      router.replace('/login')
+      await logout(false)
     } catch (error) {
       console.error('Logout failed:', error)
     }
   }
 
-  // 1. Initialise sidebar state from localStorage
+  // Initialise sidebar state from localStorage
   useEffect(() => {
     const isCollapsed = localStorage.getItem('sidebar_collapsed') === 'true'
     setCollapsed(isCollapsed)
@@ -64,39 +59,6 @@ export function Sidebar() {
       document.documentElement.removeAttribute('data-sidebar-collapsed')
     }
   }, [])
-
-  // 2. Fetch and monitor auth session state
-  useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const res = await fetch('/api/auth/me', { cache: 'no-store' })
-        const data = await res.json().catch(() => ({}))
-
-        if (!res.ok || !data.authenticated) {
-          if (data.error && data.error.includes('Another login was detected')) {
-            router.replace('/login?reason=concurrent_login')
-          } else {
-            router.replace('/login')
-          }
-        } else {
-          setUser(data.user)
-          // Care executives: only Care Tasks — bounce off every other page
-          if (
-            isCareExecutiveRole(data.user?.role) &&
-            !isPathAllowedForRole(data.user?.role, pathname)
-          ) {
-            router.replace(homePathForRole(data.user?.role))
-          }
-        }
-      } catch (err) {
-        console.error('Failed to run auth check:', err)
-      }
-    }
-
-    checkAuth()
-    const interval = setInterval(checkAuth, 10000)
-    return () => clearInterval(interval)
-  }, [router, pathname])
 
   const handleToggle = () => {
     const nextCollapsed = !collapsed
@@ -301,6 +263,15 @@ export function Sidebar() {
           <LogOut className="w-[18px] h-[18px] flex-shrink-0" />
           {!collapsed && <span className="text-sm font-medium">Sign Out</span>}
         </button>
+        {!collapsed && (
+          <button
+            type="button"
+            onClick={() => logout(true)}
+            className="w-full mt-1 px-3 py-1.5 text-[10px] text-muted hover:text-red-500 transition-colors text-left"
+          >
+            Sign out all devices
+          </button>
+        )}
       </div>
     </aside>
   )

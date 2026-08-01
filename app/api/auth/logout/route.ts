@@ -1,58 +1,98 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { decryptSession } from '@/src/services/auth'
+import {
+  revokeRefreshToken,
+  revokeAllRefreshTokens,
+  optionalAuth,
+  findValidRefreshRecord,
+} from '@/src/services/auth'
 import { logAction } from '@/src/services/auditLogService'
 
-export async function POST(_req: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    const sessionCookie = _req.cookies.get('fiberise_session')?.value
-    let session = null
-    if (sessionCookie) {
-      session = decryptSession(sessionCookie)
-    }
+    const body = await req.json().catch(() => ({}))
+    const refreshToken = body?.refreshToken ? String(body.refreshToken) : ''
+    const allDevices = Boolean(body?.allDevices)
 
-    if (session) {
-      // Fire-and-forget audit log
+    const session = await optionalAuth(req)
+    let userId = session?.id
+    let userEmail = session?.email || ''
+    let userName = session?.name || ''
+    let userRole = session?.role || 'user'
+
+    if (allDevices) {
+      if (!userId && refreshToken) {
+        const record = await findValidRefreshRecord(refreshToken)
+        if (record) userId = record.userId
+      }
+      if (!userId) {
+        return NextResponse.json(
+          { error: 'Authentication required to logout from all devices.' },
+          { status: 401 },
+        )
+      }
+
+      const count = await revokeAllRefreshTokens(userId)
       logAction({
-        userId: session.email,
-        userEmail: session.email,
-        userName: session.email?.split('@')[0] || '',
-        userRole: session.role || 'user',
-        sessionId: session.sessionId || '',
-        actionType: 'USER_LOGOUT',
-        description: `${session.email} logged out`,
+        userId,
+        userEmail,
+        userName,
+        userRole,
+        actionType: 'LOGOUT_ALL_DEVICES',
+        description: `${userEmail || userId} logged out from all devices (${count} sessions)`,
         module: 'auth',
         status: 'success',
-        details: { role: session.role || 'user' },
-        req: _req,
+        details: { revokedCount: count },
+        req,
+      })
+      return NextResponse.json({ success: true, revokedCount: count }, { status: 200 })
+    }
+
+    if (!refreshToken) {
+      return NextResponse.json(
+        { error: 'refreshToken is required unless allDevices is true.' },
+        { status: 400 },
+      )
+    }
+
+    const result = await revokeRefreshToken(refreshToken)
+    if (result.userId) userId = result.userId
+
+    logAction({
+      userId: userId || 'unknown',
+      userEmail,
+      userName,
+      userRole,
+      actionType: 'USER_LOGOUT',
+      description: `${userEmail || 'user'} logged out`,
+      module: 'auth',
+      status: 'success',
+      details: { tokenId: result.tokenId, revoked: result.revoked },
+      req,
+    })
+
+    if (result.revoked) {
+      logAction({
+        userId: userId || 'unknown',
+        userEmail,
+        userName,
+        userRole,
+        actionType: 'TOKEN_REVOKED',
+        description: `Refresh token revoked for ${userEmail || userId}`,
+        module: 'auth',
+        status: 'success',
+        details: { tokenId: result.tokenId },
+        req,
       })
     }
 
-    const res = NextResponse.json({ success: true }, { status: 200 })
-
-    const protocol = _req.headers.get('x-forwarded-proto') || _req.nextUrl.protocol
-    const isHttps = protocol.includes('https')
-
-    res.cookies.set('fiberise_session', '', {
-      httpOnly: true,
-      secure: isHttps,
-      sameSite: 'lax',
-      path: '/',
-      expires: new Date(0), // Instantly expire the cookie
-    })
-
-    return res
+    return NextResponse.json({ success: true }, { status: 200 })
   } catch (error: any) {
     console.error('Logout error:', error)
     return NextResponse.json(
-      { error: error.message || 'Failed to logout session.' },
+      { error: error.message || 'Failed to logout.' },
       { status: 500 },
     )
   }
-}
-
-export async function GET(req: NextRequest) {
-  // Support GET redirect or plain GET logouts
-  return POST(req)
 }

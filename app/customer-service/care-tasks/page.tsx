@@ -35,6 +35,7 @@ import {
   type ExecutivePerformance,
 } from '@/lib/careTasksApi'
 import { isAdminRole, isCareExecutiveRole } from '@/src/utils/accessControl'
+import { useAuth } from '@/lib/auth'
 import {
   CARE_TASK_KIND_TABS,
   getCareTaskKind,
@@ -189,7 +190,8 @@ function pushLocalNotif(title: string, body: string, type: 'order' | 'system' | 
 }
 
 export default function CareTasksPage() {
-  const [role, setRole] = useState<string | null>(null)
+  const { user } = useAuth()
+  const role = user?.role || null
   const [tasks, setTasks] = useState<CareTask[]>([])
   const [summary, setSummary] = useState<CareTaskSummary | null>(null)
   const [performance, setPerformance] = useState<ExecutivePerformance[]>([])
@@ -223,15 +225,6 @@ export default function CareTasksPage() {
 
   const isAdmin = isAdminRole(role)
   const isExec = isCareExecutiveRole(role)
-
-  useEffect(() => {
-    fetch('/api/auth/me', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d) => {
-        if (d.authenticated) setRole(d.user?.role || null)
-      })
-      .catch(() => {})
-  }, [])
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedSearch(search.trim()), 300)

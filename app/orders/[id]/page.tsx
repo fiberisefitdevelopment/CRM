@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -214,7 +215,7 @@ export default function OrderDetailPage() {
     const load = async () => {
       try {
         setLoading(true)
-        const res = await fetch(`/api/shopify/orders/${orderId}`)
+        const res = await apiFetch(`/api/shopify/orders/${orderId}`)
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || 'Failed to fetch order')
         setOrder(data.order)
@@ -228,7 +229,7 @@ export default function OrderDetailPage() {
   }, [orderId])
 
   const fetchPrintUrl = async (type: 'label' | 'manifest' | 'invoice', orderName: string) => {
-    const res = await fetch(`/api/shiprocket/${type}`, {
+    const res = await apiFetch(`/api/shiprocket/${type}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderNames: [orderName] }),

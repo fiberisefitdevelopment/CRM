@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import {
@@ -254,7 +255,7 @@ export default function AuditLogsPage() {
       if (startDate) params.set('start_date', startDate)
       if (endDate) params.set('end_date', endDate)
 
-      const res = await fetch(`/api/audit-logs?${params.toString()}`, { signal: controller.signal })
+      const res = await apiFetch(`/api/audit-logs?${params.toString()}`, { signal: controller.signal })
       const data = await res.json()
 
       if (data.success && data.logs) {

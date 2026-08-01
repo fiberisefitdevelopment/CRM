@@ -45,22 +45,6 @@ function getDb() {
   return admin.firestore(app);
 }
 
-// ─── Helper: Extract session from encrypted cookie ───────────────────────────
-
-function extractSessionFromRequest(req?: NextRequest | Request): { email?: string; role?: string; sessionId?: string } {
-  if (!req) return {}
-  try {
-    const cookieHeader = req.headers.get('cookie') || ''
-    const match = cookieHeader.match(/fiberise_session=([^;]+)/)
-    if (!match) return {}
-    // We can't decrypt here without importing crypto (circular risk),
-    // so we just note the session cookie exists. The caller passes session data.
-    return {}
-  } catch {
-    return {}
-  }
-}
-
 function formatToIPv4(ip: string): string {
   if (!ip || ip === 'N/A') return 'N/A'
   let cleanIp = ip.trim()

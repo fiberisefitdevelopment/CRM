@@ -1,0 +1,116 @@
+export const dynamic = 'force-dynamic'
+
+import { NextRequest, NextResponse } from 'next/server'
+import admin from 'firebase-admin'
+import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
+import {
+  rotateRefreshToken,
+  findValidRefreshRecord,
+  checkAuthRateLimit,
+  recordAuthFailure,
+  clearAuthFailures,
+  getClientIp,
+  type AuthUser,
+  type DeviceMeta,
+} from '@/src/services/auth'
+import { logAction } from '@/src/services/auditLogService'
+
+async function loadUserById(userId: string): Promise<AuthUser | null> {
+  const db = admin.firestore(getFirebaseAdmin())
+  const snap = await db.collection('users').doc(userId).get()
+  if (!snap.exists) return null
+  const data = snap.data()!
+  if (data.active === false) return null
+  const email = String(data.email || '')
+    .toLowerCase()
+    .trim()
+  return {
+    id: snap.id,
+    email,
+    name: String(data.name || email.split('@')[0] || ''),
+    role: String(data.role || 'user'),
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json().catch(() => null)
+    const refreshToken = body?.refreshToken ? String(body.refreshToken) : ''
+    if (!refreshToken) {
+      return NextResponse.json({ error: 'refreshToken is required.' }, { status: 400 })
+    }
+
+    const ip = getClientIp(req)
+    const rate = checkAuthRateLimit(ip, 'refresh')
+    if (!rate.allowed) {
+      return NextResponse.json(
+        {
+          error: 'Too many refresh attempts. Please try again later.',
+          retryAfterSec: rate.retryAfterSec,
+        },
+        { status: 429 },
+      )
+    }
+
+    const existing = await findValidRefreshRecord(refreshToken)
+    if (!existing) {
+      recordAuthFailure(ip, 'refresh')
+      return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })
+    }
+
+    const user = await loadUserById(existing.userId)
+    if (!user) {
+      recordAuthFailure(ip, 'refresh')
+      return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })
+    }
+
+    const device: DeviceMeta = {
+      deviceId: body.deviceId ? String(body.deviceId) : existing.deviceId,
+      deviceName: body.deviceName ? String(body.deviceName) : existing.deviceName,
+      platform: body.platform ? String(body.platform) : existing.platform,
+    }
+
+    const tokens = await rotateRefreshToken(refreshToken, user, { req, device })
+    if (!tokens) {
+      recordAuthFailure(ip, 'refresh')
+      return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })
+    }
+
+    clearAuthFailures(ip, 'refresh')
+
+    logAction({
+      userId: user.id,
+      userEmail: user.email,
+      userName: user.name,
+      userRole: user.role,
+      actionType: 'TOKEN_REFRESH',
+      description: `${user.email} refreshed access token`,
+      module: 'auth',
+      status: 'success',
+      details: { deviceId: device.deviceId, platform: device.platform },
+      req,
+    })
+
+    return NextResponse.json(
+      {
+        success: true,
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresIn: tokens.expiresIn,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      },
+      { status: 200 },
+    )
+  } catch (error: any) {
+    console.error('Refresh error:', error)
+    return NextResponse.json(
+      { error: error.message || 'Failed to refresh token.' },
+      { status: 500 },
+    )
+  }
+}

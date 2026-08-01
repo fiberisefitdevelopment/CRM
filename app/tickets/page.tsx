@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
@@ -131,7 +132,7 @@ export default function TicketsPage() {
       if (updates.status) {
         data = await updateTicketStatus(id, updates.status)
       } else {
-        const res = await fetch('/api/support/tickets', {
+        const res = await apiFetch('/api/support/tickets', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ id, ...updates }),

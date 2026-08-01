@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
@@ -265,7 +266,7 @@ function ZoneAnalyticsSection() {
   const [tooltip, setTooltip] = useState<{ x: number; y: number; zone: any } | null>(null)
 
   useEffect(() => {
-    fetch('/api/shopify/zone-analytics')
+    apiFetch('/api/shopify/zone-analytics')
       .then(r => r.json())
       .then(d => { setZones(d.zones || []); setLoading(false) })
       .catch(() => setLoading(false))
@@ -523,7 +524,7 @@ function PincodeSection() {
       const params = new URLSearchParams()
       if (tags.length) params.set('pincodes', tags.join(','))
       if (stateFilter) params.set('state', stateFilter)
-      const res = await fetch(`/api/shopify/pincode-analytics?${params}`)
+      const res = await apiFetch(`/api/shopify/pincode-analytics?${params}`)
       const d = await res.json()
       setResults(d)
     } catch { }

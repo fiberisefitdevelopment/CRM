@@ -650,17 +650,14 @@ export async function DELETE(req: NextRequest) {
     // Extract session for audit attribution
     let auditEmail = 'unknown'
     let auditRole = 'unknown'
-    let auditSessionId = ''
+    let auditUserId = 'unknown'
     try {
-      const { decryptSession } = require('@/src/services/auth')
-      const sessionCookie = req.cookies.get('fiberise_session')?.value
-      if (sessionCookie) {
-        const session = decryptSession(sessionCookie)
-        if (session) {
-          auditEmail = session.email || 'unknown'
-          auditRole = session.role || 'unknown'
-          auditSessionId = session.sessionId || ''
-        }
+      const { optionalAuth } = require('@/src/services/auth')
+      const session = await optionalAuth(req)
+      if (session) {
+        auditEmail = session.email || 'unknown'
+        auditRole = session.role || 'unknown'
+        auditUserId = session.id || 'unknown'
       }
     } catch { }
 
@@ -720,10 +717,9 @@ export async function DELETE(req: NextRequest) {
         return cached?.name || `#${id}`
       })
       logAction({
-        userId: auditEmail,
+        userId: auditUserId,
         userEmail: auditEmail,
         userRole: auditRole,
-        sessionId: auditSessionId,
         actionType,
         description: `Cancelled ${ids.length} order(s): ${orderNames.join(', ')}`,
         module: 'orders',

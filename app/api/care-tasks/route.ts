@@ -10,7 +10,7 @@ import {
 
 export async function GET(req: NextRequest) {
   try {
-    const session = requireSession(req)
+    const session = await requireSession(req)
     if (!canAccessCareTasksApi(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }

@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
@@ -334,7 +335,7 @@ function OrderStatusCard({
       try {
         setTrackLoading(true)
         setTrackError(null)
-        const res = await fetch(`/api/order-status/track?awb=${encodeURIComponent(liveAwb)}`)
+        const res = await apiFetch(`/api/order-status/track?awb=${encodeURIComponent(liveAwb)}`)
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || 'Failed to load tracking')
         if (!cancelled) setTracking(data)
@@ -353,7 +354,7 @@ function OrderStatusCard({
     try {
       setNoteSaving(true)
       setNoteError(null)
-      const res = await fetch(`/api/shopify/orders/${order.id}`, {
+      const res = await apiFetch(`/api/shopify/orders/${order.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ note: noteDraft }),
@@ -1009,7 +1010,7 @@ export default function OrderStatusPage() {
         if (startDate) params.set('start_date', startDate)
         if (endDate) params.set('end_date', endDate)
 
-        const res = await fetch(`/api/shopify/orders?${params.toString()}`)
+        const res = await apiFetch(`/api/shopify/orders?${params.toString()}`)
         const data = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(data.error || 'Failed to load orders')
 

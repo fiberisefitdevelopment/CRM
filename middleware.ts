@@ -1,89 +1,97 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { jwtVerify } from 'jose'
 
-export function middleware(req: NextRequest) {
+function getAccessSecret(): Uint8Array {
+  const secret =
+    process.env.JWT_ACCESS_SECRET ||
+    process.env.JWT_SECRET ||
+    (process.env.NODE_ENV !== 'production'
+      ? 'dev-jwt_access_secret-fiberise-fallback'
+      : '')
+  if (!secret) {
+    throw new Error('JWT_ACCESS_SECRET is required in production')
+  }
+  return new TextEncoder().encode(secret)
+}
+
+function extractBearer(req: NextRequest): string | null {
+  const header = req.headers.get('authorization') || ''
+  return header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || null
+}
+
+async function isValidAccessToken(token: string): Promise<boolean> {
+  if (!token || (token.includes(':') && !token.startsWith('eyJ'))) return false
+  try {
+    const { payload } = await jwtVerify(token, getAccessSecret(), {
+      algorithms: ['HS256'],
+    })
+    const id = String(payload.sub || '')
+    const email = String(payload.email || '')
+    const role = String(payload.role || '')
+    if (!id || !email || !role) return false
+    const expiresAt =
+      typeof payload.expiresAt === 'number'
+        ? payload.expiresAt
+        : typeof payload.exp === 'number'
+          ? payload.exp * 1000
+          : 0
+    return Boolean(expiresAt && Date.now() <= expiresAt)
+  } catch {
+    return false
+  }
+}
+
+const PUBLIC_API_PREFIXES = [
+  '/api/auth/login',
+  '/api/auth/refresh',
+  '/api/auth/logout',
+  '/api/webhooks/',
+  '/api/cron/',
+]
+
+function isPublicApi(pathname: string): boolean {
+  return PUBLIC_API_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(prefix),
+  )
+}
+
+export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl
 
-  // 1. Skip checks for public assets, auth APIs, webhooks, and cron jobs
   if (
     pathname.startsWith('/_next/') ||
     pathname.startsWith('/static/') ||
-    pathname.startsWith('/api/auth/login') ||
-    pathname.startsWith('/api/auth/logout') ||
-    pathname.startsWith('/api/webhooks/') ||
-    pathname.startsWith('/api/cron/') ||
     pathname === '/favicon.ico'
   ) {
     return NextResponse.next()
   }
 
-  const sessionCookie = req.cookies.get('fiberise_session')?.value
-
-  // 2. If visiting /login while already authenticated → redirect to dashboard
-  if (pathname === '/login') {
-    if (sessionCookie) {
-      try {
-        const parts = sessionCookie.split(':')
-        if (parts.length === 2 && parts[0].length === 32) {
-          // Valid session structure — redirect authenticated user away from login
-          const dashboardUrl = new URL('/orders', req.url)
-          const res = NextResponse.redirect(dashboardUrl)
-          // Prevent browser from caching this redirect
-          res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
-          res.headers.set('Pragma', 'no-cache')
-          return res
-        }
-      } catch {
-        // Invalid token — let them see login
-      }
-    }
-    // No session — allow access to /login, but add no-cache headers
+  // Page routes: client AuthProvider handles redirects (no auth cookies)
+  if (!pathname.startsWith('/api/')) {
     const res = NextResponse.next()
-    res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
-    res.headers.set('Pragma', 'no-cache')
-    return res
-  }
-
-  // 3. For all protected routes, require a valid session cookie
-  const isApi = pathname.startsWith('/api/')
-
-  if (!sessionCookie) {
-    // Media/API clients cannot follow an HTML login redirect
-    if (isApi) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-    const loginUrl = new URL('/login', req.url)
-    return NextResponse.redirect(loginUrl)
-  }
-
-  try {
-    // Validate session cookie structure: AES-256 CBC format is "ivHex:encryptedHex"
-    const parts = sessionCookie.split(':')
-    if (parts.length !== 2 || parts[0].length !== 32) {
-      throw new Error('Invalid token structure')
-    }
-
-    // Token has correct structure; allow request
-    const res = NextResponse.next()
-    // Don't force no-store on media streams — breaks some browsers' audio buffering
-    if (!pathname.includes('/recording')) {
+    if (pathname === '/login') {
+      res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+      res.headers.set('Pragma', 'no-cache')
+    } else if (!pathname.includes('/recording')) {
       res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, private')
       res.headers.set('Pragma', 'no-cache')
     }
     return res
-  } catch (error) {
-    console.warn('Session verification failed in middleware, redirecting to login:', error)
-
-    if (isApi) {
-      const res = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      res.cookies.delete('fiberise_session')
-      return res
-    }
-
-    const loginUrl = new URL('/login', req.url)
-    const res = NextResponse.redirect(loginUrl)
-    res.cookies.delete('fiberise_session')
-    return res
   }
+
+  if (isPublicApi(pathname)) {
+    return NextResponse.next()
+  }
+
+  // Logout / me / register require a valid access token (or handle auth themselves)
+  const token = extractBearer(req)
+  const valid = token ? await isValidAccessToken(token) : false
+
+  if (!valid) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  return NextResponse.next()
 }
 
 export const config = {

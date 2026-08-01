@@ -7,7 +7,7 @@ import { canAccessCareTasksApi, requireSession } from '@/src/services/careTasks/
 
 export async function POST(req: NextRequest) {
   try {
-    const session = requireSession(req)
+    const session = await requireSession(req)
     if (!canAccessCareTasksApi(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }

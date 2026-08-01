@@ -1,5 +1,6 @@
 'use client';
 
+import { apiFetch } from '@/lib/auth';
 import { useState, useEffect, useCallback, use } from 'react';
 import Link from 'next/link';
 import { Sidebar } from '@/components/layout/Sidebar';
@@ -68,7 +69,7 @@ export default function JourneyDetailsPage({ params }: { params: Promise<{ id: s
 
   const fetchJourneyDetails = useCallback(async () => {
     try {
-      const res = await fetch(`/api/crm/customer-journeys/${encodeURIComponent(journeyId)}`);
+      const res = await apiFetch(`/api/crm/customer-journeys/${encodeURIComponent(journeyId)}`);
       if (res.ok) {
         const data = await res.json();
         setJourney(data.journey);
@@ -88,7 +89,7 @@ export default function JourneyDetailsPage({ params }: { params: Promise<{ id: s
   const handleAction = async (action: 'retry' | 'trigger', stageParam?: string) => {
     setActionLoading(`${action}-${stageParam || ''}`);
     try {
-      const res = await fetch(`/api/crm/customer-journeys/${encodeURIComponent(journeyId)}`, {
+      const res = await apiFetch(`/api/crm/customer-journeys/${encodeURIComponent(journeyId)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, stage: stageParam }),

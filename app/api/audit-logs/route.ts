@@ -1,35 +1,12 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
-import { decryptSession } from '@/src/services/auth';
+import { requireRole, authErrorResponse } from '@/src/services/auth';
 import { getActionLogsPaginated } from '@/src/services/auditLogService';
 
 export async function GET(req: NextRequest) {
   try {
-    // 1. Authenticate — only admins/super_admins can view audit logs
-    const sessionCookie = req.cookies.get('fiberise_session')?.value;
-    if (!sessionCookie) {
-      return NextResponse.json(
-        { error: 'Unauthorized: No active session found.' },
-        { status: 401 }
-      );
-    }
-
-    const session = decryptSession(sessionCookie);
-    if (!session) {
-      return NextResponse.json(
-        { error: 'Unauthorized: Session is invalid or expired.' },
-        { status: 401 }
-      );
-    }
-
-    // Role check — restrict to admin and super_admin
-    if (!['admin', 'super_admin'].includes(session.role)) {
-      return NextResponse.json(
-        { error: 'Forbidden: Insufficient permissions to view audit logs.' },
-        { status: 403 }
-      );
-    }
+    await requireRole(req, 'admin', 'super_admin');
 
     // 2. Parse query parameters
     const { searchParams } = new URL(req.url);
@@ -71,6 +48,9 @@ export async function GET(req: NextRequest) {
       },
     }, { status: 200 });
   } catch (error: any) {
+    if (error?.status === 401 || error?.status === 403) {
+      return authErrorResponse(error);
+    }
     console.error('❌ Error fetching audit logs:', error);
     return NextResponse.json(
       { error: error.message || 'Failed to fetch audit logs' },

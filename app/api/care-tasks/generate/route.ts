@@ -82,7 +82,7 @@ async function refreshRecentOrdersIntoCache(limit = 50): Promise<{
 export async function POST(req: NextRequest) {
   try {
     await seedAdminUser()
-    const session = requireSession(req)
+    const session = await requireSession(req)
     if (!canAccessCareTasksApi(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }

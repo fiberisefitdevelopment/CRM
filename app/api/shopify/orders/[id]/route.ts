@@ -173,17 +173,14 @@ export async function PATCH(
     // Extract session for audit attribution
     let auditEmail = 'unknown'
     let auditRole = 'unknown'
-    let auditSessionId = ''
+    let auditUserId = 'unknown'
     try {
-      const { decryptSession } = require('@/src/services/auth')
-      const sessionCookie = req.cookies.get('fiberise_session')?.value
-      if (sessionCookie) {
-        const session = decryptSession(sessionCookie)
-        if (session) {
-          auditEmail = session.email || 'unknown'
-          auditRole = session.role || 'unknown'
-          auditSessionId = session.sessionId || ''
-        }
+      const { optionalAuth } = require('@/src/services/auth')
+      const session = await optionalAuth(req)
+      if (session) {
+        auditEmail = session.email || 'unknown'
+        auditRole = session.role || 'unknown'
+        auditUserId = session.id || 'unknown'
       }
     } catch {}
 
@@ -214,10 +211,9 @@ export async function PATCH(
     try {
       const { logAction } = require('@/src/services/auditLogService')
       logAction({
-        userId: auditEmail,
+        userId: auditUserId,
         userEmail: auditEmail,
         userRole: auditRole,
-        sessionId: auditSessionId,
         actionType: isTest ? 'TEST_ORDER_MARK' : 'TEST_ORDER_UNMARK',
         description: isTest 
           ? `Marked order ${orderName} as Test Order` 

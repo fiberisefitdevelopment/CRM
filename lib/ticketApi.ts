@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/auth'
 export type TicketStatus = 'open' | 'in_progress' | 'closed'
 
 export interface SupportTicket {
@@ -30,7 +31,7 @@ export async function listTickets(status?: TicketStatus, limit = 100): Promise<S
     params.set('status', status)
   }
 
-  const response = await fetch(`/api/support/tickets?${params.toString()}`)
+  const response = await apiFetch(`/api/support/tickets?${params.toString()}`)
   const data = await parseJson(response)
   if (!response.ok) {
     throw new Error(data.error || 'Failed to fetch tickets')
@@ -40,7 +41,7 @@ export async function listTickets(status?: TicketStatus, limit = 100): Promise<S
 }
 
 export async function getComments(ticketId: string): Promise<TicketComment[]> {
-  const response = await fetch(`/api/support/tickets/${ticketId}/comments`)
+  const response = await apiFetch(`/api/support/tickets/${ticketId}/comments`)
   const data = await parseJson(response)
   if (!response.ok) {
     throw new Error(data.error || 'Failed to fetch comments')
@@ -53,7 +54,7 @@ export async function replyToTicket(
   ticketId: string,
   payload: { message: string; authorName: string; authorType: 'agent' },
 ) {
-  const response = await fetch(`/api/support/tickets/${ticketId}/comments`, {
+  const response = await apiFetch(`/api/support/tickets/${ticketId}/comments`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -67,7 +68,7 @@ export async function replyToTicket(
 }
 
 export async function updateTicketStatus(id: string, status: TicketStatus) {
-  const response = await fetch('/api/support/tickets', {
+  const response = await apiFetch('/api/support/tickets', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, status }),

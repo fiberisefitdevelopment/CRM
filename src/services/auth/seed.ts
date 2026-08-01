@@ -36,7 +36,7 @@ export async function seedAdminUser(): Promise<void> {
           salt,
           passwordHash,
           role,
-          activeSessionId: '',
+          active: true,
           createdAt: admin.firestore.FieldValue.serverTimestamp(),
           ...extras,
         })

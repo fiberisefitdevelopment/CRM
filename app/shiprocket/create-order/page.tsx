@@ -1,5 +1,6 @@
 'use client'
 
+import { apiFetch } from '@/lib/auth'
 import { useMemo, useState } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
@@ -133,7 +134,7 @@ export default function ShiprocketCreateOrderPage() {
         weight: Number(form.weight),
       }
 
-      const res = await fetch('/api/shiprocket/create-order', {
+      const res = await apiFetch('/api/shiprocket/create-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),

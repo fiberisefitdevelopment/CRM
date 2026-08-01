@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Heart, Bell, Menu, X, Check, Trash2, ShoppingBag, Sparkles, BellRing, Sun, Moon, Package, Settings2 } from 'lucide-react'
+import { useAuth, apiFetch } from '@/lib/auth'
+import { isCareExecutiveRole, isAdminRole } from '@/src/utils/accessControl'
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -63,6 +65,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 }
 
 export function TopBar() {
+  const { user } = useAuth()
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [activeToast, setActiveToast] = useState<AppNotification | null>(null)
@@ -156,14 +159,11 @@ export function TopBar() {
 
   // ── 3. Silent Shopify Live Polling Listener ───────────────────────────────
   useEffect(() => {
+    if (!user || isCareExecutiveRole(user.role)) return
+
     const checkNewOrders = async (isFirstRun: boolean) => {
       try {
-        // Care executives should not pull the full orders feed
-        const me = await fetch('/api/auth/me', { cache: 'no-store' }).then((r) => r.json()).catch(() => null)
-        const role = me?.user?.role
-        if (role === 'care_executive' || role === 'support') return
-
-        const res = await fetch('/api/shopify/orders')
+        const res = await apiFetch('/api/shopify/orders')
         if (!res.ok) return
 
         const data = await res.json()
@@ -237,14 +237,23 @@ export function TopBar() {
       }
     }
 
+    let interval: ReturnType<typeof setInterval> | undefined
     checkNewOrders(true).then(() => {
-      const interval = setInterval(() => checkNewOrders(false), 15000)
-      return () => clearInterval(interval)
+      interval = setInterval(() => checkNewOrders(false), 15000)
     })
-  }, [])
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [user])
 
   // ── 3b. Care-task due / overdue notifications ─────────────────────────────
   useEffect(() => {
+    if (!user) return
+    const role = user.role
+    const isCare =
+      isCareExecutiveRole(role) || isAdminRole(role)
+    if (!isCare) return
+
     const seenKey = 'fiberise_care_notif_seen'
     const loadSeen = (): Set<string> => {
       try {
@@ -260,16 +269,9 @@ export function TopBar() {
 
     const pollCare = async () => {
       try {
-        const me = await fetch('/api/auth/me', { cache: 'no-store' }).then((r) => r.json())
-        if (!me?.authenticated) return
-        const role = me.user?.role
-        const isCare =
-          role === 'care_executive' || role === 'support' || role === 'admin' || role === 'super_admin'
-        if (!isCare) return
-
         const [todayRes, overdueRes] = await Promise.all([
-          fetch('/api/care-tasks?status=today&limit=50', { cache: 'no-store' }),
-          fetch('/api/care-tasks?status=overdue&limit=50', { cache: 'no-store' }),
+          apiFetch('/api/care-tasks?status=today&limit=50', { cache: 'no-store' }),
+          apiFetch('/api/care-tasks?status=overdue&limit=50', { cache: 'no-store' }),
         ])
         if (!todayRes.ok || !overdueRes.ok) return
         const todayData = await todayRes.json()
@@ -334,7 +336,7 @@ export function TopBar() {
     pollCare()
     const interval = setInterval(pollCare, 60000)
     return () => clearInterval(interval)
-  }, [])
+  }, [user])
 
   // ── 3c. External localStorage notification updates (care page escalations) ─
   useEffect(() => {

@@ -6,7 +6,7 @@ import { canViewAllCareTasks, requireSession } from '@/src/services/careTasks/se
 
 export async function GET(req: NextRequest) {
   try {
-    const session = requireSession(req)
+    const session = await requireSession(req)
     if (!canViewAllCareTasks(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }

@@ -1,3 +1,4 @@
+import { apiFetch } from '@/lib/auth'
 export interface CallData {
   answered: boolean
   callId: string
@@ -138,7 +139,7 @@ export async function fetchCalls(query: CallFiltersQuery): Promise<CallsListResp
 
   let response: Response
   try {
-    response = await fetch(`/api/customer-service/calls?${params.toString()}`, {
+    response = await apiFetch(`/api/customer-service/calls?${params.toString()}`, {
       cache: 'no-store',
     })
   } catch {
@@ -153,7 +154,7 @@ export async function fetchDashboard(from: string, to: string) {
   const params = buildParams({ from, to, includeSummary: true, page: 1, pageSize: 20, sortBy: 'startTime', sortDir: 'desc' })
   let response: Response
   try {
-    response = await fetch(`/api/customer-service/dashboard?${params.toString()}`, {
+    response = await apiFetch(`/api/customer-service/dashboard?${params.toString()}`, {
       cache: 'no-store',
     })
   } catch {
@@ -167,7 +168,7 @@ export async function fetchAnalytics(from: string, to: string) {
   const params = buildParams({ from, to })
   let response: Response
   try {
-    response = await fetch(`/api/customer-service/analytics?${params.toString()}`, {
+    response = await apiFetch(`/api/customer-service/analytics?${params.toString()}`, {
       cache: 'no-store',
     })
   } catch {
@@ -189,7 +190,7 @@ export async function fetchIntegrationLogs(query: {
   const params = buildParams(query as any)
   let response: Response
   try {
-    response = await fetch(`/api/customer-service/integration?${params.toString()}`, {
+    response = await apiFetch(`/api/customer-service/integration?${params.toString()}`, {
       cache: 'no-store',
     })
   } catch {
@@ -229,7 +230,7 @@ export function getPlayableRecordingSrc(call: { callId: string; recUrl?: string 
 export async function resolveRecordingUrl(callId: string): Promise<string> {
   let response: Response
   try {
-    response = await fetch(getRecordingStreamUrl(callId, 'url'), { cache: 'no-store' })
+    response = await apiFetch(getRecordingStreamUrl(callId, 'url'), { cache: 'no-store' })
   } catch {
     throw new CustomerServiceClientError('Network failure. Check your connection.', 0)
   }
@@ -261,7 +262,7 @@ export async function downloadCallsCsv(query: {
 
   let response: Response
   try {
-    response = await fetch(`/api/customer-service/calls/csv?${params.toString()}`, {
+    response = await apiFetch(`/api/customer-service/calls/csv?${params.toString()}`, {
       cache: 'no-store',
     })
   } catch {

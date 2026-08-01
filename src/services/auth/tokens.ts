@@ -1,48 +1,64 @@
+import crypto from 'crypto'
 import { SignJWT, jwtVerify } from 'jose'
 import type { AuthUser } from './types'
+import { ACCESS_TOKEN_TTL_SEC, REFRESH_TOKEN_TTL_SEC } from './types'
 
-function getSecretKey(): Uint8Array {
+function requireSecret(envName: string, fallbackEnv?: string): Uint8Array {
   const secret =
-    process.env.JWT_SECRET ||
-    process.env.SESSION_SECRET ||
-    'fiberise-dashboard-default-super-secret-key-32-chars'
+    process.env[envName] ||
+    (fallbackEnv ? process.env[fallbackEnv] : undefined) ||
+    (process.env.NODE_ENV !== 'production'
+      ? `dev-${envName.toLowerCase()}-fiberise-fallback`
+      : undefined)
+
+  if (!secret) {
+    throw new Error(`${envName} is required in production`)
+  }
   return new TextEncoder().encode(secret)
 }
 
-/** Sign an access JWT (HS256). */
-export async function signAccessToken(user: AuthUser): Promise<string> {
-  const expiresAt = Number(user.expiresAt) || Date.now() + 24 * 60 * 60 * 1000
-  const ttlSec = Math.max(1, Math.floor((expiresAt - Date.now()) / 1000))
+function getAccessSecret(): Uint8Array {
+  return requireSecret('JWT_ACCESS_SECRET', 'JWT_SECRET')
+}
 
+function getRefreshSecret(): Uint8Array {
+  return requireSecret('JWT_REFRESH_SECRET', 'JWT_SECRET')
+}
+
+export function hashToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+export async function signAccessToken(user: AuthUser): Promise<string> {
+  const expiresAt = Date.now() + ACCESS_TOKEN_TTL_SEC * 1000
   return new SignJWT({
     email: user.email,
     role: user.role,
-    sessionId: user.sessionId,
+    name: user.name || '',
     expiresAt,
   })
     .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
-    .setSubject(user.email)
+    .setSubject(user.id)
     .setIssuedAt()
-    .setExpirationTime(`${ttlSec}s`)
-    .sign(getSecretKey())
+    .setExpirationTime(`${ACCESS_TOKEN_TTL_SEC}s`)
+    .sign(getAccessSecret())
 }
 
-/** Verify access JWT; returns null if invalid or expired. */
 export async function verifyAccessToken(token: string): Promise<AuthUser | null> {
   if (!token || typeof token !== 'string') return null
-  // Legacy AES cookie format — reject
   if (token.includes(':') && !token.startsWith('eyJ')) return null
 
   try {
-    const { payload } = await jwtVerify(token, getSecretKey(), {
+    const { payload } = await jwtVerify(token, getAccessSecret(), {
       algorithms: ['HS256'],
     })
 
-    const email = String(payload.email || payload.sub || '')
+    const id = String(payload.sub || '').trim()
+    const email = String(payload.email || '')
       .toLowerCase()
       .trim()
     const role = String(payload.role || '')
-    if (!email || !role) return null
+    if (!id || !email || !role) return null
 
     const expiresAt =
       typeof payload.expiresAt === 'number'
@@ -54,9 +70,10 @@ export async function verifyAccessToken(token: string): Promise<AuthUser | null>
     if (!expiresAt || Date.now() > expiresAt) return null
 
     return {
+      id,
       email,
+      name: String(payload.name || email.split('@')[0] || ''),
       role,
-      sessionId: payload.sessionId ? String(payload.sessionId) : undefined,
       expiresAt,
     }
   } catch {
@@ -64,11 +81,47 @@ export async function verifyAccessToken(token: string): Promise<AuthUser | null>
   }
 }
 
-/** Sync-looking wrappers — most route code is async-friendly via getAuthFromRequest. */
-export async function encryptSession(data: AuthUser): Promise<string> {
-  return signAccessToken(data)
+export async function signRefreshToken(params: {
+  userId: string
+  email: string
+  jti: string
+}): Promise<string> {
+  return new SignJWT({
+    email: params.email,
+    typ: 'refresh',
+  })
+    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+    .setSubject(params.userId)
+    .setJti(params.jti)
+    .setIssuedAt()
+    .setExpirationTime(`${REFRESH_TOKEN_TTL_SEC}s`)
+    .sign(getRefreshSecret())
 }
 
-export async function decryptSession(token: string): Promise<AuthUser | null> {
-  return verifyAccessToken(token)
+export async function verifyRefreshToken(
+  token: string,
+): Promise<{ userId: string; email: string; jti: string; exp: number } | null> {
+  if (!token || typeof token !== 'string') return null
+  if (token.includes(':') && !token.startsWith('eyJ')) return null
+
+  try {
+    const { payload } = await jwtVerify(token, getRefreshSecret(), {
+      algorithms: ['HS256'],
+    })
+
+    if (payload.typ !== 'refresh') return null
+
+    const userId = String(payload.sub || '').trim()
+    const email = String(payload.email || '')
+      .toLowerCase()
+      .trim()
+    const jti = String(payload.jti || '').trim()
+    const exp = typeof payload.exp === 'number' ? payload.exp * 1000 : 0
+
+    if (!userId || !email || !jti || !exp || Date.now() > exp) return null
+
+    return { userId, email, jti, exp }
+  } catch {
+    return null
+  }
 }
