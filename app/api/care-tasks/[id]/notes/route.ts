@@ -19,14 +19,14 @@ function getDb() {
 
 export async function POST(
   req: NextRequest,
-  ctx: { params: Promise<{ id: string }> | { id: string } },
+  ctx: { params: Promise<{ id: string }> },
 ) {
   try {
     const session = await requireSession(req)
     if (!canAccessCareTasksApi(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
-    const params = await Promise.resolve(ctx.params)
+    const params = await ctx.params
     const task = await getCareTaskById(params.id)
     if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 

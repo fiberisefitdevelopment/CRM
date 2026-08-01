@@ -28,14 +28,14 @@ function assertCanAccessTask(session: { email: string; role: string }) {
 
 export async function GET(
   req: NextRequest,
-  ctx: { params: Promise<{ id: string }> | { id: string } },
+  ctx: { params: Promise<{ id: string }> },
 ) {
   try {
     const session = await requireSession(req)
     if (!canAccessCareTasksApi(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
-    const params = await Promise.resolve(ctx.params)
+    const params = await ctx.params
     const task = await getCareTaskById(params.id)
     if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     assertCanAccessTask(session)
@@ -48,14 +48,14 @@ export async function GET(
 
 export async function PATCH(
   req: NextRequest,
-  ctx: { params: Promise<{ id: string }> | { id: string } },
+  ctx: { params: Promise<{ id: string }> },
 ) {
   try {
     const session = await requireSession(req)
     if (!canAccessCareTasksApi(session.role)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
-    const params = await Promise.resolve(ctx.params)
+    const params = await ctx.params
     const task = await getCareTaskById(params.id)
     if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
     assertCanAccessTask(session)
