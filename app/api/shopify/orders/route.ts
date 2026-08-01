@@ -22,6 +22,7 @@ import {
   getCachedOrdersCount,
   getCachedOrdersPaginated,
   getCachedOrdersFiltered,
+  getOrderStatusPaginated,
   computeTabCounts
 } from '@/src/services/ordersCache'
 
@@ -105,6 +106,9 @@ export async function GET(_req: NextRequest) {
     const endDate = searchParams.get('end_date') || undefined
     const fulfillmentStatus = searchParams.get('fulfillment') || undefined
     const includeTest = searchParams.get('include_test') === 'true'
+    const orderStatusView = searchParams.get('view') === 'order_status'
+    const deliveryStatus = searchParams.get('delivery') || 'all'
+    const paymentStatusUi = searchParams.get('payment_status') || undefined
 
     const filters = {
       tab,
@@ -135,12 +139,42 @@ export async function GET(_req: NextRequest) {
     // Helper: build a paginated JSON response from current cache
     function serveCachedResponse(isOffline = false) {
       const { applyNotesToOrders } = require('@/src/services/orderNotesStore')
+      const { applyCareTagsToOrders } = require('@/src/services/careOrderTagStore')
+      const decorate = (list: any[]) => applyCareTagsToOrders(applyNotesToOrders(list))
+
+      if (orderStatusView && !returnAll) {
+        const result = getOrderStatusPaginated(page, perPage, {
+          ...filters,
+          deliveryStatus: deliveryStatus as any,
+          fulfillmentStatusUi: fulfillmentStatus,
+          paymentStatusUi: paymentStatusUi || paymentType,
+        })
+        return NextResponse.json(
+          {
+            orders: decorate(result.orders),
+            pagination: {
+              page: result.page,
+              per_page: result.perPage,
+              total: result.total,
+              total_pages: result.totalPages,
+            },
+            summary: result.summary,
+            couriers: result.couriers,
+            channelBreakdown: result.channelBreakdown,
+            tabCounts: computeTabCounts(filters),
+            isOffline,
+            syncing: false,
+          },
+          { status: 200 },
+        )
+      }
+
       const total = getCachedOrdersCount(filters)
       const tabCounts = computeTabCounts(filters)
 
       if (returnAll) {
         // Analytics mode: return ALL matching orders, no pagination
-        const allOrders = applyNotesToOrders(getCachedOrdersFiltered(filters))
+        const allOrders = decorate(getCachedOrdersFiltered(filters))
         return NextResponse.json(
           {
             orders: allOrders,
@@ -154,7 +188,7 @@ export async function GET(_req: NextRequest) {
       }
 
       const totalPages = Math.ceil(total / perPage) || 1
-      const paginatedSlice = applyNotesToOrders(getCachedOrdersPaginated(page, perPage, filters))
+      const paginatedSlice = decorate(getCachedOrdersPaginated(page, perPage, filters))
 
       return NextResponse.json(
         {
@@ -516,6 +550,16 @@ export async function GET(_req: NextRequest) {
           )
         } catch (e) {
           console.error('⚠️ Failed to load post-delivery journey trigger:', e)
+        }
+
+        // COD care-task generation (confirmation + delivered follow-ups)
+        try {
+          const { processOrdersForCareTasks } = require('@/src/services/careTasks/generator')
+          processOrdersForCareTasks(enrichedOrders).catch((err: any) =>
+            console.error('⚠️ Failed to process care tasks:', err)
+          )
+        } catch (e) {
+          console.error('⚠️ Failed to load care task generator:', e)
         }
 
         // Proactively scan for RTO email alerts

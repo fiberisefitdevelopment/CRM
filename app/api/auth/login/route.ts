@@ -91,7 +91,8 @@ export async function POST(req: NextRequest) {
       expiresAt,
     }
 
-    const encryptedToken = encryptSession(tokenPayload)
+    // JWT session token (same cookie name / login response as before)
+    const sessionToken = encryptSession(tokenPayload)
 
     // 5. Build response and assign HTTP-only cookie
     const res = NextResponse.json(
@@ -105,7 +106,7 @@ export async function POST(req: NextRequest) {
     const protocol = req.headers.get('x-forwarded-proto') || req.nextUrl.protocol
     const isHttps = protocol.includes('https')
 
-    res.cookies.set('fiberise_session', encryptedToken, {
+    res.cookies.set('fiberise_session', sessionToken, {
       httpOnly: true,
       secure: isHttps,
       sameSite: 'lax',

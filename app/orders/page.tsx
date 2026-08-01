@@ -44,6 +44,8 @@ import {
   Trash2,
   MoreHorizontal
 } from 'lucide-react'
+import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
+import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -97,6 +99,7 @@ interface ShopifyOrder {
   total_price: string
   currency: string
   cancelled_at?: string | null
+  care_tag?: CareOrderTagEntry | null
   customer?: {
     first_name?: string
     last_name?: string
@@ -298,8 +301,9 @@ export default function ShiprocketDashboardPage() {
   const [manifestSubtab, setManifestSubtab] = useState<'pickup_ids' | 'manifests'>('pickup_ids')
 
   // Pagination State (server-side)
+  const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
   const [currentPage, setCurrentPage] = useState<number>(1)
-  const ORDERS_PER_PAGE = 20
+  const [ordersPerPage, setOrdersPerPage] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20)
   const [totalOrders, setTotalOrders] = useState<number>(0)
   const [totalPages, setTotalPages] = useState<number>(1)
   const [serverTabCounts, setServerTabCounts] = useState<Record<string, number>>({
@@ -540,7 +544,7 @@ export default function ShiprocketDashboardPage() {
     // Build url search params containing page, size, tab, and advanced filters
     const queryParams = new URLSearchParams({
       page: String(page),
-      per_page: String(ORDERS_PER_PAGE),
+      per_page: String(ordersPerPage),
       tab: currentTab,
     })
 
@@ -638,7 +642,7 @@ export default function ShiprocketDashboardPage() {
       }
     }
   }, [
-    ORDERS_PER_PAGE,
+    ordersPerPage,
     currentTab,
     debouncedSearchQuery,
     financialFilter,
@@ -671,7 +675,7 @@ export default function ShiprocketDashboardPage() {
     fetchOrdersPage(currentPage)
   }, [currentPage, fetchOrdersPage])
 
-  // Reset currentPage to 1 when filters, tab, or debounced search change
+  // Reset currentPage to 1 when filters, tab, page size, or debounced search change
   useEffect(() => {
     setCurrentPage(1)
   }, [
@@ -691,6 +695,7 @@ export default function ShiprocketDashboardPage() {
     endDate,
     filterFulfillmentStatus,
     sortOrder,
+    ordersPerPage,
   ])
 
   // Component unmount cleanup
@@ -1206,8 +1211,8 @@ export default function ShiprocketDashboardPage() {
   })
 
   // Server-driven pagination metadata
-  const startIndex = (currentPage - 1) * ORDERS_PER_PAGE
-  const endIndex = startIndex + ORDERS_PER_PAGE
+  const startIndex = (currentPage - 1) * ordersPerPage
+  const endIndex = startIndex + ordersPerPage
 
   return (
     <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
@@ -2011,12 +2016,15 @@ export default function ShiprocketDashboardPage() {
                                 {/* Order details */}
                                 <td className="px-6 py-4">
                                   <div className="flex flex-col font-medium">
-                                    <span
-                                      onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
-                                    >
-                                      {order.name}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
+                                        className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
+                                      >
+                                        {order.name}
+                                      </span>
+                                      <CareOrderTagBadge tag={order.care_tag} />
+                                    </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString('en-US', {
                                         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -2153,12 +2161,15 @@ export default function ShiprocketDashboardPage() {
                                 {/* Order details */}
                                 <td className="px-6 py-4">
                                   <div className="flex flex-col font-medium">
-                                    <span
-                                      onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
-                                    >
-                                      {order.name}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
+                                        className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
+                                      >
+                                        {order.name}
+                                      </span>
+                                      <CareOrderTagBadge tag={order.care_tag} />
+                                    </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString()}
                                     </span>
@@ -2261,12 +2272,15 @@ export default function ShiprocketDashboardPage() {
                                 {/* Order details */}
                                 <td className="px-6 py-4">
                                   <div className="flex flex-col font-medium">
-                                    <span
-                                      onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
-                                    >
-                                      {order.name}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
+                                        className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
+                                      >
+                                        {order.name}
+                                      </span>
+                                      <CareOrderTagBadge tag={order.care_tag} />
+                                    </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString()}
                                     </span>
@@ -2351,12 +2365,15 @@ export default function ShiprocketDashboardPage() {
                                 {/* Order details */}
                                 <td className="px-6 py-4">
                                   <div className="flex flex-col font-medium">
-                                    <span
-                                      onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
-                                    >
-                                      {order.name}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
+                                        className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
+                                      >
+                                        {order.name}
+                                      </span>
+                                      <CareOrderTagBadge tag={order.care_tag} />
+                                    </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString()}
                                     </span>
@@ -2437,12 +2454,15 @@ export default function ShiprocketDashboardPage() {
                                 {/* Order details */}
                                 <td className="px-6 py-4">
                                   <div className="flex flex-col font-medium">
-                                    <span
-                                      onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
-                                    >
-                                      {order.name}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
+                                        className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
+                                      >
+                                        {order.name}
+                                      </span>
+                                      <CareOrderTagBadge tag={order.care_tag} />
+                                    </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(activeShipment?.created_at || order.created_at).toLocaleString('en-US', {
                                         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -2564,12 +2584,15 @@ export default function ShiprocketDashboardPage() {
                                 {/* Order details */}
                                 <td className="px-6 py-4">
                                   <div className="flex flex-col font-medium">
-                                    <span
-                                      onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
-                                    >
-                                      {order.name}
-                                    </span>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span
+                                        onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
+                                        className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer text-sm"
+                                      >
+                                        {order.name}
+                                      </span>
+                                      <CareOrderTagBadge tag={order.care_tag} />
+                                    </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString('en-US', {
                                         day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
@@ -2635,9 +2658,10 @@ export default function ShiprocketDashboardPage() {
                                   <div className="flex flex-col font-medium">
                                     <span
                                       onClick={(e) => { e.stopPropagation(); setActiveDetailOrder(order); }}
-                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer flex items-center gap-1.5"
+                                      className="font-bold text-purple-300 hover:text-purple-200 cursor-pointer flex items-center gap-1.5 flex-wrap"
                                     >
                                       {order.name}
+                                      <CareOrderTagBadge tag={order.care_tag} />
                                       {(order as any).is_test_order && <Badge label="TEST" variant="red" />}
                                     </span>
                                     <span className="text-xs text-white/50 font-normal">ID: {order.id}</span>
@@ -2687,74 +2711,97 @@ export default function ShiprocketDashboardPage() {
               </div>
               
               {/* Pagination Controls */}
-              {totalPages > 1 && (
+              {totalOrders > 0 && (
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6 pt-4 border-t border-white/10 px-2 select-none">
-                  <p className="text-xs text-white/50 font-normal">
-                    Showing <span className="font-bold text-white">{startIndex + 1}</span> to <span className="font-bold text-white">{Math.min(endIndex, totalOrders)}</span> of <span className="font-bold text-white">{totalOrders}</span> orders
-                  </p>
-                  
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setCurrentPage(1)}
-                      disabled={currentPage === 1}
-                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                    >
-                      First
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-                      disabled={currentPage === 1}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                    >
-                      Prev
-                    </button>
-                    
-                    {/* Page Numbers */}
-                    {Array.from({ length: totalPages }).map((_, i) => {
-                      const pageNum = i + 1
-                      // Display a window of pages around current page
-                      if (pageNum === 1 || pageNum === totalPages || Math.abs(pageNum - currentPage) <= 1) {
-                        return (
-                          <button
-                            key={pageNum}
-                            type="button"
-                            onClick={() => setCurrentPage(pageNum)}
-                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                              currentPage === pageNum
-                                ? 'bg-purple-600 border border-purple-500 text-white shadow-lg shadow-purple-500/20'
-                                : 'border border-white/10 bg-white/5 text-white/80 hover:bg-white/10 hover:text-white'
-                            }`}
-                          >
-                            {pageNum}
-                          </button>
-                        )
-                      }
-                      // Render ellipsis
-                      if (pageNum === 2 || pageNum === totalPages - 1) {
-                        return <span key={pageNum} className="text-white/40 text-xs px-1 select-none">...</span>
-                      }
-                      return null
-                    })}
-                    
-                    <button
-                      type="button"
-                      onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
-                      disabled={currentPage === totalPages}
-                      className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                    >
-                      Next
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCurrentPage(totalPages)}
-                      disabled={currentPage === totalPages}
-                      className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                    >
-                      Last
-                    </button>
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                    <p className="text-xs text-white/50 font-normal">
+                      Showing <span className="font-bold text-white">{totalOrders === 0 ? 0 : startIndex + 1}</span> to{' '}
+                      <span className="font-bold text-white">{Math.min(endIndex, totalOrders)}</span> of{' '}
+                      <span className="font-bold text-white">{totalOrders}</span> orders
+                    </p>
+                    <label className="inline-flex items-center gap-2 text-xs text-white/50">
+                      <span>Per page</span>
+                      <select
+                        value={ordersPerPage}
+                        onChange={(e) =>
+                          setOrdersPerPage(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])
+                        }
+                        className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80"
+                      >
+                        {PAGE_SIZE_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   </div>
+
+                  {totalPages > 1 && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage(1)}
+                        disabled={currentPage === 1}
+                        className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
+                      >
+                        First
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+                        disabled={currentPage === 1}
+                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
+                      >
+                        Prev
+                      </button>
+
+                      {Array.from({ length: totalPages }).map((_, i) => {
+                        const pageNum = i + 1
+                        if (pageNum === 1 || pageNum === totalPages || Math.abs(pageNum - currentPage) <= 1) {
+                          return (
+                            <button
+                              key={pageNum}
+                              type="button"
+                              onClick={() => setCurrentPage(pageNum)}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                                currentPage === pageNum
+                                  ? 'bg-purple-600 border border-purple-500 text-white shadow-lg shadow-purple-500/20'
+                                  : 'border border-white/10 bg-white/5 text-white/80 hover:bg-white/10 hover:text-white'
+                              }`}
+                            >
+                              {pageNum}
+                            </button>
+                          )
+                        }
+                        if (pageNum === 2 || pageNum === totalPages - 1) {
+                          return (
+                            <span key={pageNum} className="text-white/40 text-xs px-1 select-none">
+                              ...
+                            </span>
+                          )
+                        }
+                        return null
+                      })}
+
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
+                        disabled={currentPage === totalPages}
+                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
+                      >
+                        Next
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentPage(totalPages)}
+                        disabled={currentPage === totalPages}
+                        className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
+                      >
+                        Last
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </>

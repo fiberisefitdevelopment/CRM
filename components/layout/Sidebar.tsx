@@ -17,7 +17,13 @@ import {
   Headphones,
   Plane,
   Megaphone,
+  ListTodo,
 } from 'lucide-react'
+import {
+  homePathForRole,
+  isCareExecutiveRole,
+  isPathAllowedForRole,
+} from '@/src/utils/accessControl'
 
 const menuItems = [
   { icon: PackageSearch, label: 'Order Status', href: '/order-status' },
@@ -29,6 +35,7 @@ const menuItems = [
   { icon: Plane,         label: 'Air Express', href: '/air-express' },
   { icon: Megaphone,     label: 'Meta Analytics', href: '/meta-analytics' },
   { icon: Bell,          label: 'Advertisements', href: '/notifications' },
+  { icon: ListTodo,      label: 'Tasks', href: '/customer-service/care-tasks' },
   { icon: ShieldCheck,   label: 'Audit Logs', href: '/audit-logs' },
 ]
 
@@ -73,6 +80,13 @@ export function Sidebar() {
           }
         } else {
           setUser(data.user)
+          // Care executives: only Care Tasks — bounce off every other page
+          if (
+            isCareExecutiveRole(data.user?.role) &&
+            !isPathAllowedForRole(data.user?.role, pathname)
+          ) {
+            router.replace(homePathForRole(data.user?.role))
+          }
         }
       } catch (err) {
         console.error('Failed to run auth check:', err)
@@ -82,7 +96,7 @@ export function Sidebar() {
     checkAuth()
     const interval = setInterval(checkAuth, 10000)
     return () => clearInterval(interval)
-  }, [router])
+  }, [router, pathname])
 
   const handleToggle = () => {
     const nextCollapsed = !collapsed
@@ -96,6 +110,13 @@ export function Sidebar() {
   }
 
   const visibleMenuItems = menuItems.filter((item) => {
+    if (isCareExecutiveRole(user?.role)) {
+      return item.label === 'Tasks'
+    }
+    if (item.label === 'Tasks') {
+      // Care Tasks lives under Customer Service for admins
+      return false
+    }
     if (item.label === 'Audit Logs') {
       return user?.role === 'admin' || user?.role === 'super_admin'
     }

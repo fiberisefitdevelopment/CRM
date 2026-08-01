@@ -5,13 +5,24 @@
 import fs from 'fs'
 import path from 'path'
 import {
+  buildAlerts,
+  getDelayDays,
+  hasRtoInitiated,
   isActiveRtoStatus,
   isCreatedInDateRange,
+  isNotShippedStatus,
+  isOrderDelayed,
   isShiprocketDeliveredStatus,
   isShiprocketInTransitStatus,
   normalizeShipmentStatus,
+  paymentLabel,
   toIstDateKey,
 } from '@/src/utils/orderTimeline'
+import {
+  cleanOrderName,
+  getCloneParentBase,
+  getOperationalOrder,
+} from '@/src/utils/cloneOrders'
 
 export let cachedOrders: any[] | null = null
 export let cacheExpiresAt = 0
@@ -547,6 +558,277 @@ export function updateOrderNoteInCache(id: string | number, note: string) {
   cachedOrders = cachedOrders.map((o) =>
     String(o.id) === String(id) ? { ...o, note: note || null } : o,
   )
+}
+
+export type OrderStatusDeliveryFilter =
+  | 'all'
+  | 'delivered'
+  | 'not_delivered'
+  | 'in_transit'
+  | 'out_for_delivery'
+  | 'rto'
+  | 'rto_delivered'
+  | 'cancelled'
+  | 'not_shipped'
+  | 'delayed'
+  | 'rto_alerts'
+
+export interface OrderStatusListFilters extends OrderFilters {
+  deliveryStatus?: OrderStatusDeliveryFilter
+  fulfillmentStatusUi?: string
+  paymentStatusUi?: string
+}
+
+function orderPrice(order: any): number {
+  const n = parseFloat(String(order?.total_price ?? '').replace(/,/g, ''))
+  return Number.isFinite(n) ? n : 0
+}
+
+/**
+ * Order Status list: fold clones under parents, filter by ops status on the
+ * live (clone) shipment, then paginate. Only the requested page is returned.
+ */
+export function getOrderStatusPaginated(
+  page: number,
+  perPage: number,
+  filters: OrderStatusListFilters = {},
+): {
+  orders: any[]
+  total: number
+  page: number
+  perPage: number
+  totalPages: number
+  couriers: string[]
+  summary: {
+    total: number
+    delivered: number
+    inTransit: number
+    delayed: number
+    rto: number
+    cancelled: number
+    notShipped: number
+    values: {
+      total: number
+      delivered: number
+      inTransit: number
+      delayed: number
+      rto: number
+      cancelled: number
+      notShipped: number
+    }
+  }
+  channelBreakdown: { shopify: number; shiprocket: number }
+} {
+  // Date / channel / search only here — payment, courier, fulfillment, and
+  // delivery cards use operational (clone-aware) matching below.
+  const raw = getCachedOrdersFiltered({
+    tab: 'all',
+    includeTest: true,
+    search: filters.search,
+    channel: filters.channel,
+    startDate: filters.startDate,
+    endDate: filters.endDate,
+    datePreset: filters.datePreset,
+  })
+  const byClean = new Map<string, any>()
+  const clonesByParent = new Map<string, any[]>()
+
+  for (const o of raw) {
+    const clean = cleanOrderName(o.name)
+    if (!clean) continue
+    byClean.set(clean, o)
+    const parentBase = getCloneParentBase(o.name)
+    if (!parentBase) continue
+    const list = clonesByParent.get(parentBase) || []
+    list.push(o)
+    clonesByParent.set(parentBase, list)
+  }
+
+  clonesByParent.forEach((list, key) => {
+    list.sort(
+      (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime(),
+    )
+    clonesByParent.set(key, list)
+  })
+
+  // Parents only — clones with a known parent are folded into the parent card
+  let parents = raw.filter((o) => {
+    const parentBase = getCloneParentBase(o.name)
+    return !(parentBase && byClean.has(parentBase))
+  })
+
+  const deliveryStatus = filters.deliveryStatus || 'all'
+  const paymentStatus = filters.paymentStatusUi || 'all'
+  const fulfillmentStatus = filters.fulfillmentStatusUi || 'all'
+
+  const matchesRow = (o: any) => {
+    const relatedClones = clonesByParent.get(cleanOrderName(o.name)) || []
+    const live = getOperationalOrder(o, relatedClones)
+    const status = normalizeShipmentStatus(live)
+    const pay = paymentLabel(o)
+    const company =
+      live.fulfillments?.[0]?.tracking_company ||
+      o.fulfillments?.[0]?.tracking_company ||
+      ''
+
+    if (filters.courier && filters.courier !== 'all' && company !== filters.courier) return false
+    if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
+    if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
+
+    if (deliveryStatus === 'delivered' && !isShiprocketDeliveredStatus(live)) return false
+    if (deliveryStatus === 'not_delivered' && isShiprocketDeliveredStatus(live)) return false
+    if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(live)) return false
+    if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
+    if (deliveryStatus === 'rto' && !isActiveRtoStatus(live)) return false
+    if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
+    if (deliveryStatus === 'cancelled' && !isOrderCancelled(live)) return false
+    if (deliveryStatus === 'not_shipped' && (isOrderCancelled(live) || !isNotShippedStatus(live)))
+      return false
+    if (deliveryStatus === 'delayed' && (isOrderCancelled(live) || !isOrderDelayed(live)))
+      return false
+    if (
+      deliveryStatus === 'rto_alerts' &&
+      !isActiveRtoStatus(live) &&
+      buildAlerts(live).length === 0
+    ) {
+      return false
+    }
+    if (
+      deliveryStatus !== 'all' &&
+      deliveryStatus !== 'cancelled' &&
+      isOrderCancelled(live)
+    ) {
+      return false
+    }
+    return true
+  }
+
+  // Summary uses the same base filters but ignores the quick deliveryStatus card
+  const summaryBase = parents.filter((o) => {
+    const relatedClones = clonesByParent.get(cleanOrderName(o.name)) || []
+    const live = getOperationalOrder(o, relatedClones)
+    const status = normalizeShipmentStatus(live)
+    const pay = paymentLabel(o)
+    const company =
+      live.fulfillments?.[0]?.tracking_company ||
+      o.fulfillments?.[0]?.tracking_company ||
+      ''
+    if (filters.courier && filters.courier !== 'all' && company !== filters.courier) return false
+    if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
+    if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
+    return true
+  })
+
+  const summary = {
+    total: 0,
+    delivered: 0,
+    inTransit: 0,
+    delayed: 0,
+    rto: 0,
+    cancelled: 0,
+    notShipped: 0,
+    values: {
+      total: 0,
+      delivered: 0,
+      inTransit: 0,
+      delayed: 0,
+      rto: 0,
+      cancelled: 0,
+      notShipped: 0,
+    },
+  }
+
+  for (const o of summaryBase) {
+    const relatedClones = clonesByParent.get(cleanOrderName(o.name)) || []
+    const live = getOperationalOrder(o, relatedClones)
+    const price = orderPrice(o)
+    const cancelled = isOrderCancelled(live)
+    const activeRto = !cancelled && isActiveRtoStatus(live)
+    summary.total++
+    summary.values.total += price
+    if (cancelled) {
+      summary.cancelled++
+      summary.values.cancelled += price
+      continue
+    }
+    if (isNotShippedStatus(live)) {
+      summary.notShipped++
+      summary.values.notShipped += price
+    }
+    if (isShiprocketDeliveredStatus(live)) {
+      summary.delivered++
+      summary.values.delivered += price
+    }
+    if (isShiprocketInTransitStatus(live)) {
+      summary.inTransit++
+      summary.values.inTransit += price
+    }
+    if (activeRto) {
+      summary.rto++
+      summary.values.rto += price
+    }
+    if (!activeRto && !hasRtoInitiated(live) && isOrderDelayed(live)) {
+      summary.delayed++
+      summary.values.delayed += price
+    }
+  }
+
+  let filtered = parents.filter(matchesRow)
+  filtered = filtered.sort((a, b) => {
+    if (deliveryStatus === 'delayed') {
+      const aDays = getDelayDays(
+        getOperationalOrder(a, clonesByParent.get(cleanOrderName(a.name)) || []),
+      )
+      const bDays = getDelayDays(
+        getOperationalOrder(b, clonesByParent.get(cleanOrderName(b.name)) || []),
+      )
+      if (aDays !== bDays) return bDays - aDays
+    }
+    return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+  })
+
+  const courierSet = new Set<string>()
+  for (const o of summaryBase) {
+    const relatedClones = clonesByParent.get(cleanOrderName(o.name)) || []
+    const live = getOperationalOrder(o, relatedClones)
+    const c =
+      live.fulfillments?.[0]?.tracking_company || o.fulfillments?.[0]?.tracking_company
+    if (c) courierSet.add(c)
+  }
+
+  const total = filtered.length
+  const totalPages = Math.max(1, Math.ceil(total / perPage) || 1)
+  const safePage = Math.min(Math.max(1, page), totalPages)
+  const start = (safePage - 1) * perPage
+  const pageOrders = filtered.slice(start, start + perPage).map((o) => {
+    const clean = cleanOrderName(o.name)
+    const relatedClones = clonesByParent.get(clean) || []
+    const parentBase = getCloneParentBase(o.name)
+    const parent = parentBase ? byClean.get(parentBase) || null : null
+    return {
+      ...o,
+      _related_clones: relatedClones,
+      _parent: parent,
+    }
+  })
+
+  let shopify = 0
+  let shiprocket = 0
+  for (const o of summaryBase) {
+    if (o.source === 'shiprocket') shiprocket++
+    else shopify++
+  }
+
+  return {
+    orders: pageOrders,
+    total,
+    page: safePage,
+    perPage,
+    totalPages,
+    couriers: Array.from(courierSet).sort(),
+    summary,
+    channelBreakdown: { shopify, shiprocket },
+  }
 }
 
 

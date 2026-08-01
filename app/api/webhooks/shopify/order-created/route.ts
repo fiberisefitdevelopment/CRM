@@ -142,6 +142,22 @@ export async function POST(req: NextRequest) {
 
     console.log(`✅ Webhook processed: Journey ${result.journeyId} created`);
 
+    // Display-only tag on Orders / Order Status when AiSensy confirmation is sent
+    if (result.confirmationSent) {
+      try {
+        const { storeCareOrderTag } = require('@/src/services/careOrderTagStore')
+        storeCareOrderTag({
+          orderId: orderData.id,
+          orderName: orderData.name,
+          kind: 'aisensy_confirmed',
+          byEmail: 'aisensy',
+          byName: 'AiSensy',
+        })
+      } catch (e) {
+        console.warn('Failed to store AiSensy care tag:', e)
+      }
+    }
+
     // Return 200 quickly (Shopify requires fast response)
     return NextResponse.json(
       {

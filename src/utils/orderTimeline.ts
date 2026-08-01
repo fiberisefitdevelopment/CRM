@@ -54,8 +54,10 @@ export function toIstDateKey(value?: string | null): string {
   if (!value) return ''
   const raw = String(value).trim()
   if (!raw) return ''
-  const d = new Date(raw)
-  if (!isNaN(d.getTime())) {
+  // Prefer parseFlexibleDate so DD-MM-YYYY Shiprocket dates are not
+  // misread as MM-DD-YYYY in Chrome (Safari often rejects those strings).
+  const d = parseFlexibleDate(raw)
+  if (d) {
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Kolkata',
       year: 'numeric',
@@ -306,22 +308,43 @@ export function parseFlexibleDate(value?: string | null): Date | null {
   const raw = String(value).trim()
   if (!raw) return null
 
-  const iso = new Date(raw)
-  if (!isNaN(iso.getTime())) return iso
-
-  // DD-MM-YYYY HH:mm:ss or DD-MM-YYYY
-  const m = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/)
-  if (m) {
-    const d = new Date(
-      Number(m[3]),
-      Number(m[2]) - 1,
-      Number(m[1]),
-      Number(m[4] || 0),
-      Number(m[5] || 0),
-      Number(m[6] || 0),
-    )
-    if (!isNaN(d.getTime())) return d
+  // Shiprocket uses DD-MM-YYYY (and DD/MM/YYYY). Parse that FIRST.
+  // Chrome accepts "02-08-2026" as MM-DD-YYYY (8 Feb) while Safari often rejects it
+  // and falls through — which made Delayed / ETD look like rubbish only in Chrome.
+  const dmy = raw.match(
+    /^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?/,
+  )
+  if (dmy) {
+    const day = Number(dmy[1])
+    const month = Number(dmy[2])
+    const year = Number(dmy[3])
+    // Prefer DD-MM-YYYY when day > 12, or always for hyphenated Shiprocket dates
+    // (Shiprocket list API uses DD-MM-YYYY). Only treat as MM-DD if day<=12 AND
+    // month>12 (invalid as DD-MM), which is rare for SR.
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const d = new Date(
+        year,
+        month - 1,
+        day,
+        Number(dmy[4] || 0),
+        Number(dmy[5] || 0),
+        Number(dmy[6] || 0),
+      )
+      if (!isNaN(d.getTime()) && d.getFullYear() === year && d.getMonth() === month - 1 && d.getDate() === day) {
+        return d
+      }
+    }
   }
+
+  // ISO / RFC / unambiguous native parse (e.g. 2026-07-31T11:46:00Z)
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw) || raw.includes('T') || raw.endsWith('Z')) {
+    const iso = new Date(raw)
+    if (!isNaN(iso.getTime())) return iso
+  }
+
+  const native = new Date(raw)
+  if (!isNaN(native.getTime())) return native
+
   return null
 }
 

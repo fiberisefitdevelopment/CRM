@@ -41,10 +41,13 @@ import {
   isShiprocketDeliveredStatus,
   isShiprocketInTransitStatus,
   normalizeShipmentStatus,
+  parseFlexibleDate,
   paymentLabel,
   toIstDateKey,
   type TimelineStep,
 } from '@/src/utils/orderTimeline'
+import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
+import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
 
 /** Default Order Status window: last 30 calendar days in IST (inclusive). */
 function getDefaultDateRange(): { start: string; end: string } {
@@ -63,6 +66,7 @@ interface OrderRow {
   fulfillment_status: string | null
   total_price: string
   cancelled_at?: string | null
+  care_tag?: CareOrderTagEntry | null
   customer?: { first_name?: string; last_name?: string; email?: string; phone?: string } | null
   shipping_address?: {
     first_name?: string
@@ -89,8 +93,8 @@ interface OrderRow {
 
 function fmtWhen(value?: string | null) {
   if (!value) return '—'
-  const d = new Date(value)
-  if (isNaN(d.getTime())) return String(value)
+  const d = parseFlexibleDate(value)
+  if (!d) return String(value)
   return d.toLocaleString('en-IN', {
     day: '2-digit',
     month: 'short',
@@ -102,19 +106,9 @@ function fmtWhen(value?: string | null) {
 
 function fmtDay(value?: string | null) {
   if (!value) return '—'
-  const d = new Date(value)
-  if (!isNaN(d.getTime())) {
-    return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-  }
-  // Fallback for DD-MM-YYYY…
-  const m = String(value).match(/^(\d{1,2})-(\d{1,2})-(\d{4})/)
-  if (m) {
-    const parsed = new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]))
-    if (!isNaN(parsed.getTime())) {
-      return parsed.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    }
-  }
-  return String(value)
+  const d = parseFlexibleDate(value)
+  if (!d) return String(value)
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
 function orderValue(order: OrderRow | any): number {
@@ -438,6 +432,7 @@ function OrderStatusCard({
                     Clone{parentOrder ? ` of ${parentOrder.name}` : ''}
                   </span>
                 )}
+                <CareOrderTagBadge tag={(order as OrderRow).care_tag} />
               </p>
               <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
                 {order.name}
@@ -918,8 +913,32 @@ function OrderStatusCard({
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 
+type OrderStatusSummary = {
+  total: number
+  delivered: number
+  inTransit: number
+  delayed: number
+  rto: number
+  cancelled: number
+  notShipped: number
+  values: {
+    total: number
+    delivered: number
+    inTransit: number
+    delayed: number
+    rto: number
+    cancelled: number
+    notShipped: number
+  }
+}
+
+type OrderStatusRow = OrderRow & {
+  _related_clones?: OrderRow[]
+  _parent?: OrderRow | null
+}
+
 export default function OrderStatusPage() {
-  const [orders, setOrders] = useState<OrderRow[]>([])
+  const [orders, setOrders] = useState<OrderStatusRow[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -927,8 +946,31 @@ export default function OrderStatusPage() {
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20)
+  const [total, setTotal] = useState(0)
+  const [totalPages, setTotalPages] = useState(1)
+  const [couriers, setCouriers] = useState<string[]>([])
+  const [channelBreakdown, setChannelBreakdown] = useState({ shopify: 0, shiprocket: 0 })
+  const [summary, setSummary] = useState<OrderStatusSummary>({
+    total: 0,
+    delivered: 0,
+    inTransit: 0,
+    delayed: 0,
+    rto: 0,
+    cancelled: 0,
+    notShipped: 0,
+    values: {
+      total: 0,
+      delivered: 0,
+      inTransit: 0,
+      delayed: 0,
+      rto: 0,
+      cancelled: 0,
+      notShipped: 0,
+    },
+  })
 
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   // Default "all" so CUSTOM / Shiprocket-only orders match Shiprocket dashboard counts
   const [channel, setChannel] = useState<'shopify' | 'shiprocket' | 'all'>('all')
   const [courier, setCourier] = useState('all')
@@ -938,36 +980,76 @@ export default function OrderStatusPage() {
   const [startDate, setStartDate] = useState(() => getDefaultDateRange().start)
   const [endDate, setEndDate] = useState(() => getDefaultDateRange().end)
 
-  const loadOrders = useCallback(async (force = false) => {
-    try {
-      if (force) setRefreshing(true)
-      else setLoading(true)
-      setError(null)
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    return () => window.clearTimeout(t)
+  }, [search])
 
-      const url = force
-        ? '/api/shopify/orders?all=true&include_test=true&refresh=true'
-        : '/api/shopify/orders?all=true&include_test=true'
-      const res = await fetch(url)
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || 'Failed to load orders')
+  const loadOrders = useCallback(
+    async (force = false) => {
+      try {
+        if (force) setRefreshing(true)
+        else setLoading(true)
+        setError(null)
+        setOrders([])
 
-      // Cold start: keep polling until cache is seeded (Shopify usually lands in a few seconds)
-      if (data.syncing && (!data.orders || data.orders.length === 0)) {
-        setLoading(true)
-        setTimeout(() => loadOrders(false), 1500)
-        return
+        const params = new URLSearchParams({
+          view: 'order_status',
+          page: String(page),
+          per_page: String(pageSize),
+          include_test: 'true',
+        })
+        if (force) params.set('refresh', 'true')
+        if (debouncedSearch) params.set('search', debouncedSearch)
+        if (channel !== 'all') params.set('channel', channel)
+        if (courier !== 'all') params.set('courier', courier)
+        if (paymentStatus !== 'all') params.set('payment_status', paymentStatus)
+        if (fulfillmentStatus !== 'all') params.set('fulfillment', fulfillmentStatus)
+        if (deliveryStatus !== 'all') params.set('delivery', deliveryStatus)
+        if (startDate) params.set('start_date', startDate)
+        if (endDate) params.set('end_date', endDate)
+
+        const res = await fetch(`/api/shopify/orders?${params.toString()}`)
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.error || 'Failed to load orders')
+
+        // Cold start: keep polling until cache is seeded
+        if (data.syncing && (!data.orders || data.orders.length === 0)) {
+          setLoading(true)
+          setTimeout(() => loadOrders(false), 1500)
+          return
+        }
+
+        setOrders(Array.isArray(data.orders) ? data.orders : [])
+        const pag = data.pagination || {}
+        setTotal(Number(pag.total || 0))
+        setTotalPages(Math.max(1, Number(pag.total_pages || 1)))
+        if (pag.page && Number(pag.page) !== page) setPage(Number(pag.page))
+        if (data.summary) setSummary(data.summary)
+        if (Array.isArray(data.couriers)) setCouriers(data.couriers)
+        if (data.channelBreakdown) setChannelBreakdown(data.channelBreakdown)
+        setLastSynced(new Date())
+        setLoading(false)
+        setRefreshing(false)
+      } catch (err: any) {
+        setError(err.message || 'Failed to load order status')
+        setLoading(false)
+        setRefreshing(false)
       }
-
-      setOrders(Array.isArray(data.orders) ? data.orders : [])
-      setLastSynced(new Date())
-      setLoading(false)
-      setRefreshing(false)
-    } catch (err: any) {
-      setError(err.message || 'Failed to load order status')
-      setLoading(false)
-      setRefreshing(false)
-    }
-  }, [])
+    },
+    [
+      page,
+      pageSize,
+      debouncedSearch,
+      channel,
+      courier,
+      paymentStatus,
+      fulfillmentStatus,
+      deliveryStatus,
+      startDate,
+      endDate,
+    ],
+  )
 
   useEffect(() => {
     loadOrders(false)
@@ -976,6 +1058,7 @@ export default function OrderStatusPage() {
   const clearFilters = () => {
     const defaults = getDefaultDateRange()
     setSearch('')
+    setDebouncedSearch('')
     setChannel('all')
     setCourier('all')
     setPaymentStatus('all')
@@ -986,135 +1069,10 @@ export default function OrderStatusPage() {
     setPage(1)
   }
 
-  const couriers = useMemo(() => {
-    const set = new Set<string>()
-    orders.forEach((o) => {
-      const c = o.fulfillments?.[0]?.tracking_company
-      if (c) set.add(c)
-    })
-    return Array.from(set).sort()
-  }, [orders])
-
-  // Parent → clone trail (name convention `{parent}-C`), from full cache not just filtered list
-  const cloneRelations = useMemo(() => {
-    const byClean = new Map<string, OrderRow>()
-    const clonesByParent = new Map<string, OrderRow[]>()
-
-    orders.forEach((o) => {
-      if ((o as any).is_test_order) return
-      const clean = cleanOrderName(o.name)
-      if (!clean) return
-      byClean.set(clean, o)
-
-      const parentBase = getCloneParentBase(o.name)
-      if (!parentBase) return
-      const list = clonesByParent.get(parentBase) || []
-      list.push(o)
-      clonesByParent.set(parentBase, list)
-    })
-
-    clonesByParent.forEach((list, key) => {
-      list.sort(
-        (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime(),
-      )
-      clonesByParent.set(key, list)
-    })
-
-    return { byClean, clonesByParent }
-  }, [orders])
-
   const getRelatedClones = useCallback(
-    (o: OrderRow) => cloneRelations.clonesByParent.get(cleanOrderName(o.name)) || [],
-    [cloneRelations],
+    (o: OrderStatusRow) => o._related_clones || [],
+    [],
   )
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
-
-    const list = orders.filter((o) => {
-      // Match Shiprocket: hide test orders from ops views
-      if ((o as any).is_test_order) return false
-
-      // Clones with a known parent only appear on the parent's trail
-      const parentBase = getCloneParentBase(o.name)
-      if (parentBase && cloneRelations.byClean.has(parentBase)) return false
-
-      const isSrOnly = o.source === 'shiprocket'
-      if (channel === 'shopify' && isSrOnly) return false
-      if (channel === 'shiprocket' && !isSrOnly) return false
-
-      // Date filter stays on the original (parent) order created_at
-      if (!isCreatedInDateRange(o, startDate, endDate)) return false
-
-      const relatedClones = getRelatedClones(o)
-      const live = getOperationalOrder(o, relatedClones)
-
-      if (q) {
-        const hay = `${o.name || ''} ${o.id}`.toLowerCase()
-        if (!hay.includes(q)) return false
-      }
-
-      const status = normalizeShipmentStatus(live)
-      const pay = paymentLabel(o)
-      const company =
-        live.fulfillments?.[0]?.tracking_company ||
-        o.fulfillments?.[0]?.tracking_company ||
-        ''
-
-      if (courier !== 'all' && company !== courier) return false
-      if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
-      if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
-      // Ops cards / delivery filters follow the active clone when present
-      if (deliveryStatus === 'delivered' && !isShiprocketDeliveredStatus(live)) return false
-      if (deliveryStatus === 'not_delivered' && isShiprocketDeliveredStatus(live)) return false
-      if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(live)) return false
-      if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
-      if (deliveryStatus === 'rto' && !isActiveRtoStatus(live)) return false
-      if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
-      if (deliveryStatus === 'cancelled' && !isCancelledOrder(live)) return false
-      if (deliveryStatus === 'not_shipped' && (isCancelledOrder(live) || !isNotShippedStatus(live))) return false
-      if (deliveryStatus === 'delayed' && (isCancelledOrder(live) || !isOrderDelayed(live))) return false
-      if (
-        deliveryStatus === 'rto_alerts' &&
-        !isActiveRtoStatus(live) &&
-        buildAlerts(live).length === 0
-      ) {
-        return false
-      }
-
-      // Other quick filters exclude cancelled — they live under Cancelled
-      if (
-        deliveryStatus !== 'all' &&
-        deliveryStatus !== 'cancelled' &&
-        isCancelledOrder(live)
-      ) {
-        return false
-      }
-
-      return true
-    })
-
-    return list.sort((a, b) => {
-      if (deliveryStatus === 'delayed') {
-        const aDays = getDelayDays(getOperationalOrder(a, getRelatedClones(a)))
-        const bDays = getDelayDays(getOperationalOrder(b, getRelatedClones(b)))
-        if (aDays !== bDays) return bDays - aDays
-      }
-      return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
-    })
-  }, [
-    orders,
-    search,
-    channel,
-    courier,
-    paymentStatus,
-    fulfillmentStatus,
-    deliveryStatus,
-    startDate,
-    endDate,
-    cloneRelations,
-    getRelatedClones,
-  ])
 
   const defaultDates = useMemo(() => getDefaultDateRange(), [])
   const isLast30Days =
@@ -1131,149 +1089,41 @@ export default function OrderStatusPage() {
     deliveryStatus !== 'all' ||
     !isLast30Days
 
-  const channelBreakdown = useMemo(() => {
-    const shopify = orders.filter((o) => o.source !== 'shiprocket').length
-    const shiprocket = orders.filter((o) => o.source === 'shiprocket').length
-    return { shopify, shiprocket }
-  }, [orders])
-
   const openRelatedOrder = useCallback(
     (orderId: number) => {
-      const target = orders.find((o) => o.id === orderId)
-      if (!target) {
-        window.location.href = `/orders/${orderId}`
-        return
-      }
-
-      // Clone rows are folded into the parent card — open the parent instead
-      const parentBase = getCloneParentBase(target.name)
-      const focusId =
-        parentBase && cloneRelations.byClean.has(parentBase)
-          ? cloneRelations.byClean.get(parentBase)!.id
-          : orderId
-
-      const inFiltered = filtered.some((o) => o.id === focusId)
-      if (inFiltered) {
-        const idx = filtered.findIndex((o) => o.id === focusId)
-        const targetPage = Math.floor(idx / pageSize) + 1
-        setPage(targetPage)
-        setExpandedId(focusId)
+      const onPage = orders.find((o) => o.id === orderId)
+      if (onPage) {
+        setExpandedId(orderId)
         if (typeof window !== 'undefined') {
           window.setTimeout(() => {
-            document.getElementById(`order-card-${focusId}`)?.scrollIntoView({
+            document.getElementById(`order-card-${orderId}`)?.scrollIntoView({
               behavior: 'smooth',
               block: 'start',
             })
           }, 50)
         }
-      } else {
-        window.location.href = `/orders/${focusId}`
-      }
-    },
-    [orders, filtered, pageSize, cloneRelations],
-  )
-
-  // Base list for summary cards (everything except the quick deliveryStatus card filter)
-  const summaryBase = useMemo(() => {
-    const q = search.trim().toLowerCase()
-
-    return orders.filter((o) => {
-      if ((o as any).is_test_order) return false
-
-      const parentBase = getCloneParentBase(o.name)
-      if (parentBase && cloneRelations.byClean.has(parentBase)) return false
-
-      const isSrOnly = o.source === 'shiprocket'
-      if (channel === 'shopify' && isSrOnly) return false
-      if (channel === 'shiprocket' && !isSrOnly) return false
-
-      if (!isCreatedInDateRange(o, startDate, endDate)) return false
-
-      const relatedClones = getRelatedClones(o)
-
-      if (q) {
-        const hay = `${o.name || ''} ${o.id}`.toLowerCase()
-        if (!hay.includes(q)) return false
-      }
-      const live = getOperationalOrder(o, relatedClones)
-      const status = normalizeShipmentStatus(live)
-      const pay = paymentLabel(o)
-      const company =
-        live.fulfillments?.[0]?.tracking_company ||
-        o.fulfillments?.[0]?.tracking_company ||
-        ''
-      if (courier !== 'all' && company !== courier) return false
-      if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
-      if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
-      return true
-    })
-  }, [
-    orders,
-    search,
-    channel,
-    courier,
-    paymentStatus,
-    fulfillmentStatus,
-    startDate,
-    endDate,
-    cloneRelations,
-    getRelatedClones,
-  ])
-
-  const summary = useMemo(() => {
-    const counts = {
-      total: 0,
-      delivered: 0,
-      inTransit: 0,
-      delayed: 0,
-      rto: 0,
-      cancelled: 0,
-      notShipped: 0,
-    }
-    const values = {
-      total: 0,
-      delivered: 0,
-      inTransit: 0,
-      delayed: 0,
-      rto: 0,
-      cancelled: 0,
-      notShipped: 0,
-    }
-    summaryBase.forEach((o) => {
-      const live = getOperationalOrder(o, getRelatedClones(o))
-      const price = orderValue(o)
-      const cancelled = isCancelledOrder(live)
-      const activeRto = !cancelled && isActiveRtoStatus(live)
-      counts.total++
-      values.total += price
-      if (cancelled) {
-        counts.cancelled++
-        values.cancelled += price
         return
       }
-      if (isNotShippedStatus(live)) {
-        counts.notShipped++
-        values.notShipped += price
+      // Clone may be folded under a parent on this page
+      const parentOnPage = orders.find((o) =>
+        (o._related_clones || []).some((c) => c.id === orderId),
+      )
+      if (parentOnPage) {
+        setExpandedId(parentOnPage.id)
+        if (typeof window !== 'undefined') {
+          window.setTimeout(() => {
+            document.getElementById(`order-card-${parentOnPage.id}`)?.scrollIntoView({
+              behavior: 'smooth',
+              block: 'start',
+            })
+          }, 50)
+        }
+        return
       }
-      if (isShiprocketDeliveredStatus(live)) {
-        counts.delivered++
-        values.delivered += price
-      }
-      if (isShiprocketInTransitStatus(live)) {
-        counts.inTransit++
-        values.inTransit += price
-      }
-      if (activeRto) {
-        counts.rto++
-        values.rto += price
-      }
-      if (!activeRto && !hasRtoInitiated(live) && isOrderDelayed(live)) {
-        counts.delayed++
-        values.delayed += price
-      }
-    })
-    return { ...counts, values }
-  }, [summaryBase, getRelatedClones])
+      window.location.href = `/orders/${orderId}`
+    },
+    [orders],
+  )
 
   const toggleQuickFilter = (key: string) => {
     setDeliveryStatus((s) => (s === key ? 'all' : key))
@@ -1294,21 +1144,25 @@ export default function OrderStatusPage() {
     return map[tone] || map.purple
   }
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize))
   const safePage = Math.min(page, totalPages)
-  const pageStart = (safePage - 1) * pageSize
-  const pageOrders = filtered.slice(pageStart, pageStart + pageSize)
+  const pageStart = total === 0 ? 0 : (safePage - 1) * pageSize
+  const pageOrders = orders
 
   // Reset to page 1 whenever filters / page size change
   useEffect(() => {
     setPage(1)
     setExpandedId(null)
-  }, [search, channel, courier, paymentStatus, fulfillmentStatus, deliveryStatus, startDate, endDate, pageSize])
-
-  // Clamp page if filtered results shrink
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages)
-  }, [page, totalPages])
+  }, [
+    debouncedSearch,
+    channel,
+    courier,
+    paymentStatus,
+    fulfillmentStatus,
+    deliveryStatus,
+    startDate,
+    endDate,
+    pageSize,
+  ])
 
   const goToPage = (next: number) => {
     setExpandedId(null)
@@ -1454,11 +1308,11 @@ export default function OrderStatusPage() {
               </button>
             ))}
           </div>
-          {orders.length > 0 && (
+          {(summary.total > 0 || total > 0) && (
             <p className="text-xs mb-3" style={{ color: 'var(--foreground-muted)' }}>
-              Loaded {orders.length.toLocaleString('en-IN')} from sync
+              {summary.total.toLocaleString('en-IN')} in range
               {' '}({channelBreakdown.shopify.toLocaleString('en-IN')} Shopify · {channelBreakdown.shiprocket.toLocaleString('en-IN')} Shiprocket-only)
-              {` · ${filtered.length.toLocaleString('en-IN')} matching`}
+              {` · ${total.toLocaleString('en-IN')} matching filters`}
             </p>
           )}
 
@@ -1587,13 +1441,13 @@ export default function OrderStatusPage() {
             </div>
           )}
 
-          {loading && orders.length === 0 ? (
+          {loading && orders.length === 0 && total === 0 ? (
             <div className="crm-card p-12 flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
               <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>Loading order journeys…</p>
               <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>First sync can take up to a minute.</p>
             </div>
-          ) : orders.length === 0 ? (
+          ) : total === 0 && !filtersActive && summary.total === 0 ? (
             <div className="crm-card p-12 text-center">
               <AlertCircle className="w-8 h-8 mx-auto mb-2 text-amber-500" />
               <p className="font-semibold" style={{ color: 'var(--foreground)' }}>No orders loaded yet</p>
@@ -1607,12 +1461,12 @@ export default function OrderStatusPage() {
                 <RefreshCw className="w-4 h-4" /> Refresh Status
               </button>
             </div>
-          ) : filtered.length === 0 ? (
+          ) : total === 0 ? (
             <div className="crm-card p-12 text-center">
               <AlertCircle className="w-8 h-8 mx-auto mb-2 text-amber-500" />
               <p className="font-semibold" style={{ color: 'var(--foreground)' }}>No orders match these filters</p>
               <p className="text-sm mt-1 mb-4" style={{ color: 'var(--foreground-muted)' }}>
-                {orders.length.toLocaleString('en-IN')} orders are loaded — clear the date range or other filters.
+                Clear the date range or other filters to see more orders.
               </p>
               <button type="button" onClick={clearFilters} className="text-sm font-semibold text-purple-600 hover:underline">
                 Clear all filters
@@ -1624,11 +1478,11 @@ export default function OrderStatusPage() {
                 <p>
                   Showing{' '}
                   <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                    {filtered.length === 0 ? 0 : pageStart + 1}–{Math.min(pageStart + pageSize, filtered.length)}
+                    {pageStart + 1}–{Math.min(pageStart + pageOrders.length, total)}
                   </span>{' '}
                   of{' '}
                   <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                    {filtered.length.toLocaleString('en-IN')}
+                    {total.toLocaleString('en-IN')}
                   </span>
                 </p>
                 <label className="inline-flex items-center gap-2">
@@ -1646,13 +1500,16 @@ export default function OrderStatusPage() {
                 </label>
               </div>
 
+              {loading && (
+                <div className="flex items-center justify-center gap-2 py-4 text-sm" style={{ color: 'var(--foreground-muted)' }}>
+                  <Loader2 className="w-4 h-4 animate-spin text-purple-500" />
+                  Loading page {safePage}…
+                </div>
+              )}
+
               {pageOrders.map((order) => {
-                const clean = cleanOrderName(order.name)
-                const relatedClones = cloneRelations.clonesByParent.get(clean) || []
-                const parentBase = getCloneParentBase(order.name)
-                const parentOrder = parentBase
-                  ? cloneRelations.byClean.get(parentBase) || null
-                  : null
+                const relatedClones = getRelatedClones(order)
+                const parentOrder = order._parent || null
                 return (
                   <div key={order.id} id={`order-card-${order.id}`}>
                     <OrderStatusCard
@@ -1672,12 +1529,27 @@ export default function OrderStatusPage() {
                 )
               })}
 
-              {totalPages > 1 && (
-                <div className="crm-card p-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="crm-card p-3 flex flex-col sm:flex-row items-center justify-between gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
                   <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
                     Page <span className="font-semibold" style={{ color: 'var(--foreground)' }}>{safePage}</span> of{' '}
                     <span className="font-semibold" style={{ color: 'var(--foreground)' }}>{totalPages}</span>
                   </p>
+                  <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--foreground-muted)' }}>
+                    <span>Per page</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])}
+                      className="px-2 py-1.5 rounded-lg border text-xs"
+                      style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                    >
+                      {PAGE_SIZE_OPTIONS.map((n) => (
+                        <option key={n} value={n}>{n}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {totalPages > 1 && (
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
@@ -1744,8 +1616,8 @@ export default function OrderStatusPage() {
                       Last
                     </button>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           )}
         </div>

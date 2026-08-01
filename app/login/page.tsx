@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   ShieldAlert
 } from 'lucide-react'
+import { homePathForRole } from '@/src/utils/accessControl'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -30,7 +31,7 @@ export default function LoginPage() {
         const res = await fetch('/api/auth/me', { cache: 'no-store' })
         const data = await res.json().catch(() => ({}))
         if (res.ok && data.authenticated) {
-          router.replace('/orders')
+          router.replace(homePathForRole(data.user?.role))
           return
         }
       } catch {
@@ -77,7 +78,7 @@ export default function LoginPage() {
       setSuccess('Access verified. Redirecting to dashboard...')
 
       setTimeout(() => {
-        router.replace('/orders')
+        router.replace(homePathForRole(data.user?.role))
       }, 400)
     } catch (err: any) {
       setError(err.message || 'Failed to connect to authentication server.')

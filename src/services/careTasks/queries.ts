@@ -1,0 +1,491 @@
+import admin from 'firebase-admin'
+import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
+import { getCachedOrders } from '@/src/services/ordersCache'
+import { findCloneTrail } from '@/src/utils/cloneOrders'
+import { isShiprocketDeliveredStatus } from '@/src/utils/orderTimeline'
+import {
+  computeFollowupScheduledAt,
+  createdDate,
+  serializeCareTask,
+} from './generator'
+import {
+  getCareTaskKind,
+  type CareTask,
+  type CareTaskKind,
+  type CareTaskSummary,
+  type CareTaskStatus,
+  type ExecutivePerformance,
+} from './types'
+
+function getDb() {
+  return admin.firestore(getFirebaseAdmin())
+}
+
+function startOfTodayIso(): string {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  return d.toISOString()
+}
+
+function endOfTodayIso(): string {
+  const d = new Date()
+  d.setHours(23, 59, 59, 999)
+  return d.toISOString()
+}
+
+function isOverdue(task: CareTask): boolean {
+  if (task.status !== 'pending' && task.status !== 'rescheduled') return false
+  return Boolean(task.scheduledAt && new Date(task.scheduledAt).getTime() < Date.now())
+}
+
+/** Numeric order id from `#2821` / `2821-C` — higher = more recently placed. */
+function orderNumber(task: CareTask): number {
+  const m = String(task.orderName || task.orderId || '').match(/(\d+)/)
+  return m ? Number(m[1]) : 0
+}
+
+/** Newest placed orders first (order created date, then order number). */
+function taskRecencyTs(task: CareTask): number {
+  const raw = task.orderCreatedAt || ''
+  const n = new Date(raw).getTime()
+  if (Number.isFinite(n) && n > 0) return n
+  // COD confirmation scheduledAt == order created; avoid future follow-up dates
+  if (getCareTaskKind(task) === 'cod_confirmation' && task.scheduledAt) {
+    const s = new Date(task.scheduledAt).getTime()
+    if (Number.isFinite(s) && s > 0) return s
+  }
+  return orderNumber(task)
+}
+
+function sortByRecentOrder(tasks: CareTask[]): CareTask[] {
+  return [...tasks].sort((a, b) => {
+    const dt = taskRecencyTs(b) - taskRecencyTs(a)
+    if (dt !== 0) return dt
+    return orderNumber(b) - orderNumber(a)
+  })
+}
+
+export type CarePageSize = 20 | 50 | 100
+
+export interface ListCareTasksParams {
+  status?: CareTaskStatus | 'all' | 'overdue' | 'today' | 'upcoming' | 'inbox'
+  kind?: CareTaskKind | 'all'
+  /** Optional filter — when set, only that assignee’s tasks. Omit for org-wide (admin + exec parity). */
+  assigneeEmail?: string | null
+  /** @deprecated ignored — list is always org-wide unless assigneeEmail is set */
+  includeUnassigned?: boolean
+  search?: string
+  /** @deprecated use page + pageSize */
+  limit?: number
+  page?: number
+  pageSize?: CarePageSize | number
+}
+
+export interface ListCareTasksResult {
+  tasks: CareTask[]
+  total: number
+  page: number
+  pageSize: number
+  kindCounts: Record<string, number>
+}
+
+function normalizePageSize(value?: number): CarePageSize {
+  if (value === 50 || value === 100) return value
+  return 20
+}
+
+function enrichOrderCreatedAt(tasks: CareTask[]): CareTask[] {
+  const orders = getCachedOrders() || []
+  if (!orders.length) return tasks
+  const byId = new Map(orders.map((o: any) => [String(o.id), o]))
+  const byName = new Map(
+    orders.map((o: any) => [String(o.name || '').replace(/^#/, '').toLowerCase(), o]),
+  )
+  return tasks.map((t) => {
+    const nameKey = String(t.orderName || '')
+      .replace(/^#/, '')
+      .toLowerCase()
+    const order = byId.get(String(t.orderId)) || byName.get(nameKey) || null
+    const orderCreatedAt = order?.created_at || t.orderCreatedAt || null
+    let scheduledAt = t.scheduledAt
+
+    // Repair follow-up due dates corrupted by DD-MM vs MM-DD delivery parse
+    if (order && typeof t.scheduleDay === 'number' && t.scheduleDay >= 0) {
+      const { operational } = findCloneTrail(order, orders)
+      const live = operational || order
+      if (isShiprocketDeliveredStatus(live)) {
+        const corrected = computeFollowupScheduledAt(live, t.scheduleDay)
+        const oldTs = new Date(t.scheduledAt || 0).getTime()
+        const newTs = new Date(corrected).getTime()
+        const createdTs = new Date(orderCreatedAt || 0).getTime()
+        const clearlyWrong =
+          Number.isFinite(oldTs) &&
+          Number.isFinite(newTs) &&
+          (Math.abs(oldTs - newTs) > 12 * 3600 * 1000 ||
+            (Number.isFinite(createdTs) && oldTs < createdTs - 24 * 3600 * 1000))
+        if (clearlyWrong) scheduledAt = corrected
+      }
+    } else if (order && getCareTaskKind(t) === 'cod_confirmation') {
+      // COD due = order created
+      const corrected = createdDate(order).toISOString()
+      const oldTs = new Date(t.scheduledAt || 0).getTime()
+      const newTs = new Date(corrected).getTime()
+      if (Number.isFinite(oldTs) && Number.isFinite(newTs) && Math.abs(oldTs - newTs) > 12 * 3600 * 1000) {
+        scheduledAt = corrected
+      }
+    }
+
+    return { ...t, orderCreatedAt, scheduledAt }
+  })
+}
+
+function resolveTaskOrder(task: CareTask, orders: any[]): any | null {
+  if (!orders.length) return null
+  const byId = new Map(orders.map((o: any) => [String(o.id), o]))
+  const byName = new Map(
+    orders.map((o: any) => [String(o.name || '').replace(/^#/, '').toLowerCase(), o]),
+  )
+  const nameKey = String(task.orderName || '')
+    .replace(/^#/, '')
+    .toLowerCase()
+  return byId.get(String(task.orderId)) || byName.get(nameKey) || null
+}
+
+/**
+ * COD confirmation is only relevant pre-delivery.
+ * Hide those tasks once the order (or its live clone) is delivered.
+ */
+function excludeDeliveredCodConfirmations(tasks: CareTask[]): CareTask[] {
+  const orders = getCachedOrders() || []
+  if (!orders.length) return tasks
+
+  return tasks.filter((t) => {
+    if (getCareTaskKind(t) !== 'cod_confirmation') return true
+    const order = resolveTaskOrder(t, orders)
+    if (!order) return true
+    const { operational } = findCloneTrail(order, orders)
+    return !isShiprocketDeliveredStatus(operational || order)
+  })
+}
+
+/** Page through the whole careTasks collection — same source for admin and executives. */
+async function fetchAllTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot[]> {
+  const col = getDb().collection('careTasks')
+  const all: admin.firestore.QueryDocumentSnapshot[] = []
+  const pageSize = 500
+  const maxDocs = 8000
+
+  async function pageBy(field: string) {
+    all.length = 0
+    let last: admin.firestore.QueryDocumentSnapshot | undefined
+    while (all.length < maxDocs) {
+      let q: admin.firestore.Query = col.orderBy(field, 'desc').limit(pageSize)
+      if (last) q = q.startAfter(last)
+      const snap = await q.get()
+      if (snap.empty) break
+      all.push(...snap.docs)
+      last = snap.docs[snap.docs.length - 1]
+      if (snap.size < pageSize) break
+    }
+  }
+
+  try {
+    await pageBy('createdAt')
+    if (all.length) return all
+  } catch {
+    // index / field missing
+  }
+
+  try {
+    await pageBy('scheduledAt')
+    if (all.length) return all
+  } catch {
+    // ignore
+  }
+
+  // Last resort: unordered chunks
+  all.length = 0
+  let snap = await col.limit(pageSize).get()
+  while (!snap.empty && all.length < maxDocs) {
+    all.push(...snap.docs)
+    const last = snap.docs[snap.docs.length - 1]
+    snap = await col.startAfter(last).limit(pageSize).get()
+  }
+  return all
+}
+
+async function fetchTaskDocs(params: ListCareTasksParams): Promise<admin.firestore.QueryDocumentSnapshot[]> {
+  // Optional assignee filter (admin “filter by executive” only)
+  if (params.assigneeEmail) {
+    const email = params.assigneeEmail.toLowerCase()
+    const assignedSnap = await getDb()
+      .collection('careTasks')
+      .where('assignedTo.email', '==', email)
+      .get()
+    return assignedSnap.docs
+  }
+
+  return fetchAllTaskDocs()
+}
+
+function filterTasksClient(
+  tasks: CareTask[],
+  params: ListCareTasksParams,
+  opts?: { ignoreKind?: boolean },
+): CareTask[] {
+  let list = tasks
+  const todayStart = new Date(startOfTodayIso()).getTime()
+  const todayEnd = new Date(endOfTodayIso()).getTime()
+
+  if (!opts?.ignoreKind && params.kind && params.kind !== 'all') {
+    list = list.filter((t) => getCareTaskKind(t) === params.kind)
+  }
+
+  if (params.status && params.status !== 'all') {
+    if (params.status === 'overdue') {
+      list = list.filter(isOverdue)
+    } else if (params.status === 'today') {
+      list = list.filter((t) => {
+        const ts = new Date(t.scheduledAt).getTime()
+        return (
+          (t.status === 'pending' || t.status === 'rescheduled') &&
+          ts >= todayStart &&
+          ts <= todayEnd
+        )
+      })
+    } else if (params.status === 'upcoming') {
+      list = list.filter(
+        (t) =>
+          (t.status === 'pending' || t.status === 'rescheduled') &&
+          new Date(t.scheduledAt).getTime() > todayEnd,
+      )
+    } else if (params.status === 'inbox') {
+      list = list.filter((t) => ['pending', 'rescheduled', 'escalated'].includes(t.status))
+    } else {
+      list = list.filter((t) => t.status === params.status)
+    }
+  }
+
+  if (params.search) {
+    const q = params.search.toLowerCase().trim()
+    list = list.filter(
+      (t) =>
+        t.customerName.toLowerCase().includes(q) ||
+        t.orderName.toLowerCase().includes(q) ||
+        t.orderId.includes(q) ||
+        t.phone.includes(q) ||
+        t.taskLabel.toLowerCase().includes(q),
+    )
+  }
+
+  return list
+}
+
+/** Persist corrected due dates (DD-MM misparse repairs) without blocking the response. */
+function persistScheduledAtRepairs(
+  original: CareTask[],
+  repaired: CareTask[],
+): void {
+  const byId = new Map(original.map((t) => [t.id, t]))
+  const updates: Array<{ id: string; scheduledAt: string; orderCreatedAt?: string | null }> = []
+  for (const t of repaired) {
+    const prev = byId.get(t.id)
+    if (!prev) continue
+    if (prev.scheduledAt === t.scheduledAt) continue
+    if (['completed'].includes(t.status)) continue
+    updates.push({
+      id: t.id,
+      scheduledAt: t.scheduledAt,
+      orderCreatedAt: t.orderCreatedAt,
+    })
+  }
+  if (!updates.length) return
+
+  void (async () => {
+    try {
+      const db = getDb()
+      const chunk = updates.slice(0, 200)
+      const batch = db.batch()
+      const now = new Date().toISOString()
+      for (const u of chunk) {
+        batch.update(db.collection('careTasks').doc(u.id), {
+          scheduledAt: u.scheduledAt,
+          ...(u.orderCreatedAt ? { orderCreatedAt: u.orderCreatedAt } : {}),
+          updatedAt: now,
+          updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      }
+      await batch.commit()
+      console.log(`careTasks: repaired scheduledAt on ${chunk.length} tasks`)
+    } catch (err) {
+      console.warn('careTasks: scheduledAt repair batch failed', err)
+    }
+  })()
+}
+
+export async function listCareTasks(params: ListCareTasksParams = {}): Promise<ListCareTasksResult> {
+  const pageSize = normalizePageSize(
+    params.pageSize ||
+      (params.limit && params.limit <= 20
+        ? 20
+        : params.limit && params.limit <= 50
+          ? 50
+          : params.limit && params.limit <= 100
+            ? 100
+            : 20),
+  )
+  // Legacy callers that passed limit:500 for summaries — treat as “all pages”
+  const wantAll =
+    typeof params.limit === 'number' &&
+    params.limit >= 500 &&
+    params.pageSize == null &&
+    params.page == null
+  const page = Math.max(1, Number(params.page || 1))
+
+  const docs = await fetchTaskDocs(params)
+  const rawTasks = docs.map((d) => serializeCareTask(d.id, d.data()))
+  const enriched = enrichOrderCreatedAt(rawTasks)
+  persistScheduledAtRepairs(rawTasks, enriched)
+  const tasks = excludeDeliveredCodConfirmations(enriched)
+
+  const statusFiltered = filterTasksClient(tasks, params, { ignoreKind: true })
+  const kindCounts: Record<string, number> = {}
+  for (const t of statusFiltered) {
+    const k = getCareTaskKind(t)
+    kindCounts[k] = (kindCounts[k] || 0) + 1
+  }
+
+  const filtered = sortByRecentOrder(
+    params.kind && params.kind !== 'all'
+      ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
+      : statusFiltered,
+  )
+
+  const total = filtered.length
+  if (wantAll) {
+    return { tasks: filtered, total, page: 1, pageSize: total || pageSize, kindCounts }
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const safePage = Math.min(page, totalPages)
+  const start = (safePage - 1) * pageSize
+
+  return {
+    tasks: filtered.slice(start, start + pageSize),
+    total,
+    page: safePage,
+    pageSize,
+    kindCounts,
+  }
+}
+
+export async function getCareTaskById(id: string): Promise<CareTask | null> {
+  const snap = await getDb().collection('careTasks').doc(id).get()
+  if (!snap.exists) return null
+  const [task] = enrichOrderCreatedAt([serializeCareTask(snap.id, snap.data() || {})])
+  return task
+}
+
+/** Org-wide summary — same numbers for admin and care executives. */
+export async function summarizeCareTasks(assigneeEmail?: string | null): Promise<CareTaskSummary> {
+  const { tasks } = await listCareTasks({
+    assigneeEmail: assigneeEmail || undefined,
+    limit: 5000,
+    status: 'all',
+    kind: 'all',
+  })
+  const todayStart = new Date(startOfTodayIso()).getTime()
+  const todayEnd = new Date(endOfTodayIso()).getTime()
+
+  const summary: CareTaskSummary = {
+    total: tasks.length,
+    pending: 0,
+    completed: 0,
+    overdue: 0,
+    today: 0,
+    upcoming: 0,
+    missed: 0,
+    escalated: 0,
+    unreachable: 0,
+  }
+
+  for (const t of tasks) {
+    if (t.status === 'completed') summary.completed += 1
+    if (t.status === 'pending' || t.status === 'rescheduled' || t.status === 'escalated') {
+      summary.pending += 1
+    }
+    if (t.status === 'escalated') summary.escalated += 1
+    if (t.status === 'unreachable') summary.unreachable += 1
+    if (isOverdue(t)) {
+      summary.overdue += 1
+      summary.missed += 1
+    }
+    const ts = new Date(t.scheduledAt).getTime()
+    if (
+      (t.status === 'pending' || t.status === 'rescheduled') &&
+      ts >= todayStart &&
+      ts <= todayEnd
+    ) {
+      summary.today += 1
+    }
+    if ((t.status === 'pending' || t.status === 'rescheduled') && ts > todayEnd) {
+      summary.upcoming += 1
+    }
+  }
+
+  return summary
+}
+
+export async function getExecutivePerformance(): Promise<ExecutivePerformance[]> {
+  const { tasks } = await listCareTasks({ limit: 5000, status: 'all', kind: 'all' })
+  const byEmail = new Map<string, CareTask[]>()
+
+  for (const t of tasks) {
+    const email = t.assignedTo?.email || 'unassigned'
+    if (!byEmail.has(email)) byEmail.set(email, [])
+    byEmail.get(email)!.push(t)
+  }
+
+  const rows: ExecutivePerformance[] = []
+  for (const [email, list] of byEmail) {
+    const completed = list.filter((t) => t.status === 'completed')
+    const pending = list.filter(
+      (t) => t.status === 'pending' || t.status === 'rescheduled' || t.status === 'escalated',
+    )
+    const overdue = list.filter(isOverdue)
+    const callsMade = list.reduce((n, t) => n + (t.calls?.length || 0), 0)
+
+    let avgCompletionHours: number | null = null
+    const durations: number[] = []
+    for (const t of completed) {
+      if (!t.completedAt || !t.createdAt) continue
+      const ms = new Date(t.completedAt).getTime() - new Date(t.createdAt).getTime()
+      if (ms > 0) durations.push(ms / 3600000)
+    }
+    if (durations.length) {
+      avgCompletionHours = durations.reduce((a, b) => a + b, 0) / durations.length
+    }
+
+    const lastActivity =
+      list
+        .map((t) => t.updatedAt || t.completedAt || t.createdAt)
+        .filter(Boolean)
+        .sort()
+        .reverse()[0] || null
+
+    rows.push({
+      email,
+      name: list[0]?.assignedTo?.name || email.split('@')[0] || email,
+      assigned: list.length,
+      completed: completed.length,
+      pending: pending.length,
+      overdue: overdue.length,
+      callsMade,
+      avgCompletionHours,
+      completionPct: list.length ? Math.round((completed.length / list.length) * 100) : 0,
+      lastActivity,
+    })
+  }
+
+  return rows.sort((a, b) => b.assigned - a.assigned)
+}

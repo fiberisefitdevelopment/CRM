@@ -32,6 +32,7 @@ yarn-error.log*
 .orders-cache.json
 .shiprocket-phones.json
 .order-notes.json
+.care-order-tags.json
 
 
 # vercel

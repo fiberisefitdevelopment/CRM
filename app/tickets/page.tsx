@@ -224,7 +224,7 @@ export default function TicketsPage() {
               <div>
                 <h1 className="text-2xl lg:text-3xl font-bold text-white mb-2 flex items-center gap-2">
                   <Ticket className="w-7 h-7 text-purple-400" />
-                  Support Tickets
+                  Tasks
                 </h1>
                 <p className="text-white/60 text-sm">
                   Manage support issues synced from the wellness app ticket backend.

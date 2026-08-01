@@ -9,10 +9,12 @@ import {
   Headphones,
   ScrollText,
   BarChart3,
+  ListTodo,
 } from 'lucide-react'
 
 const tabs = [
   { label: 'Dashboard', href: '/customer-service/dashboard', icon: LayoutDashboard },
+  { label: 'Customer Care Tasks', href: '/customer-service/care-tasks', icon: ListTodo },
   { label: 'Call History', href: '/customer-service/call-history', icon: Phone },
   { label: 'Recordings', href: '/customer-service/recordings', icon: Headphones },
   { label: 'Integration Logs', href: '/customer-service/integration-logs', icon: ScrollText },

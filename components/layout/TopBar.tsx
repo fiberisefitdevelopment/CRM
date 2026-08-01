@@ -158,6 +158,11 @@ export function TopBar() {
   useEffect(() => {
     const checkNewOrders = async (isFirstRun: boolean) => {
       try {
+        // Care executives should not pull the full orders feed
+        const me = await fetch('/api/auth/me', { cache: 'no-store' }).then((r) => r.json()).catch(() => null)
+        const role = me?.user?.role
+        if (role === 'care_executive' || role === 'support') return
+
         const res = await fetch('/api/shopify/orders')
         if (!res.ok) return
 
@@ -236,6 +241,115 @@ export function TopBar() {
       const interval = setInterval(() => checkNewOrders(false), 15000)
       return () => clearInterval(interval)
     })
+  }, [])
+
+  // ── 3b. Care-task due / overdue notifications ─────────────────────────────
+  useEffect(() => {
+    const seenKey = 'fiberise_care_notif_seen'
+    const loadSeen = (): Set<string> => {
+      try {
+        const raw = localStorage.getItem(seenKey)
+        return new Set(raw ? JSON.parse(raw) : [])
+      } catch {
+        return new Set()
+      }
+    }
+    const saveSeen = (seen: Set<string>) => {
+      localStorage.setItem(seenKey, JSON.stringify([...seen].slice(-200)))
+    }
+
+    const pollCare = async () => {
+      try {
+        const me = await fetch('/api/auth/me', { cache: 'no-store' }).then((r) => r.json())
+        if (!me?.authenticated) return
+        const role = me.user?.role
+        const isCare =
+          role === 'care_executive' || role === 'support' || role === 'admin' || role === 'super_admin'
+        if (!isCare) return
+
+        const [todayRes, overdueRes] = await Promise.all([
+          fetch('/api/care-tasks?status=today&limit=50', { cache: 'no-store' }),
+          fetch('/api/care-tasks?status=overdue&limit=50', { cache: 'no-store' }),
+        ])
+        if (!todayRes.ok || !overdueRes.ok) return
+        const todayData = await todayRes.json()
+        const overdueData = await overdueRes.json()
+        const seen = loadSeen()
+        const incoming: AppNotification[] = []
+
+        for (const t of overdueData.tasks || []) {
+          const id = `care-overdue-${t.id}`
+          if (seen.has(id)) continue
+          // Admins only for overdue beyond SLA (flagged) or all overdue for executives
+          if ((role === 'admin' || role === 'super_admin') && !t.overdueNotifiedAt) {
+            // still notify admins of overdue
+          }
+          seen.add(id)
+          incoming.push({
+            id,
+            title: 'Care task overdue',
+            body: `${t.orderName} — ${t.taskLabel} (${t.customerName})`,
+            time: 'Just now',
+            createdAt: Date.now(),
+            unread: true,
+            type: 'alert',
+          })
+        }
+
+        if (role === 'care_executive' || role === 'support') {
+          for (const t of todayData.tasks || []) {
+            const id = `care-today-${t.id}`
+            if (seen.has(id)) continue
+            seen.add(id)
+            incoming.push({
+              id,
+              title: 'Care task due today',
+              body: `${t.orderName} — ${t.taskLabel} (${t.customerName})`,
+              time: 'Just now',
+              createdAt: Date.now(),
+              unread: true,
+              type: 'system',
+            })
+          }
+        }
+
+        if (incoming.length === 0) return
+        saveSeen(seen)
+        setNotifications((prev) => {
+          const existingIds = new Set(prev.map((n) => n.id))
+          const unique = incoming.filter((n) => !existingIds.has(n.id))
+          if (!unique.length) return prev
+          const updated = sortNotifications([...unique, ...prev])
+          localStorage.setItem('fiberise_notifications', JSON.stringify(updated))
+          setPulseBell(true)
+          setTimeout(() => setPulseBell(false), 2000)
+          setActiveToast(unique[0])
+          return updated
+        })
+      } catch {
+        // ignore poll errors
+      }
+    }
+
+    pollCare()
+    const interval = setInterval(pollCare, 60000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // ── 3c. External localStorage notification updates (care page escalations) ─
+  useEffect(() => {
+    const reload = () => {
+      try {
+        const cached = localStorage.getItem('fiberise_notifications')
+        if (!cached) return
+        const parsed: AppNotification[] = JSON.parse(cached)
+        setNotifications(sortNotifications(parsed))
+      } catch {
+        // ignore
+      }
+    }
+    window.addEventListener('fiberise_notifications_updated', reload)
+    return () => window.removeEventListener('fiberise_notifications_updated', reload)
   }, [])
 
   // ── 4. Auto-dismiss active toast after 6.5 seconds ───────────────────────

@@ -7,20 +7,61 @@
 export type PaymentLike = {
   payment_method?: string | null
   financial_status?: string | null
+  gateway?: string | null
+  payment_gateway_names?: string[] | null
+  tags?: string | null
   fulfillments?: Array<{ tracking_company?: string | null } | null> | null
+}
+
+function looksCod(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('cod') ||
+    t.includes('cash on delivery') ||
+    t.includes('cash-on-delivery') ||
+    t.includes('cash_on_delivery')
+  )
+}
+
+function looksPrepaid(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('prepaid') ||
+    t.includes('pre-paid') ||
+    t.includes('pre paid') ||
+    t === 'online' ||
+    t.includes('razorpay') ||
+    t.includes('payu') ||
+    t.includes('stripe')
+  )
 }
 
 export function isCodOrder(order: PaymentLike): boolean {
   const pm = String(order.payment_method || '').toLowerCase().trim()
   if (pm) {
-    if (pm.includes('cod')) return true
-    if (pm.includes('prepaid') || pm.includes('pre-paid') || pm === 'online') return false
+    if (looksCod(pm)) return true
+    if (looksPrepaid(pm)) return false
   }
 
-  // Courier name often encodes payment mode (e.g. "Amazon COD Surface", "Amazon Prepaid Surface")
+  // Shopify gateway fields (available before Shiprocket enrichment)
+  const gateways = [
+    String(order.gateway || ''),
+    ...(Array.isArray(order.payment_gateway_names) ? order.payment_gateway_names.map(String) : []),
+  ]
+    .join(' ')
+    .toLowerCase()
+  if (gateways) {
+    if (looksCod(gateways)) return true
+    if (looksPrepaid(gateways) && !looksCod(gateways)) return false
+  }
+
+  const tags = String(order.tags || '').toLowerCase()
+  if (looksCod(tags)) return true
+
+  // Courier name often encodes payment mode (e.g. "Amazon COD Surface")
   const courier = String(order.fulfillments?.[0]?.tracking_company || '').toLowerCase()
-  if (courier.includes('cod')) return true
-  if (courier.includes('prepaid') || courier.includes('pre-paid')) return false
+  if (looksCod(courier)) return true
+  if (looksPrepaid(courier)) return false
 
   // Fallback when Shiprocket has not enriched the order yet
   const fs = String(order.financial_status || '').toLowerCase()

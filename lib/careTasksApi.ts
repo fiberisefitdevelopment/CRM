@@ -1,0 +1,117 @@
+import type {
+  CareTask,
+  CareTaskSummary,
+  ExecutivePerformance,
+} from '@/src/services/careTasks/types'
+
+async function parseJson(res: Response) {
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
+  return data
+}
+
+export async function listCareTasks(params?: {
+  status?: string
+  kind?: string
+  search?: string
+  page?: number
+  pageSize?: 20 | 50 | 100 | number
+  assignee?: string
+}): Promise<{
+  tasks: CareTask[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+  kindCounts: Record<string, number>
+}> {
+  const qs = new URLSearchParams()
+  if (params?.status) qs.set('status', params.status)
+  if (params?.kind) qs.set('kind', params.kind)
+  if (params?.search) qs.set('search', params.search)
+  if (params?.page) qs.set('page', String(params.page))
+  if (params?.pageSize) qs.set('pageSize', String(params.pageSize))
+  if (params?.assignee) qs.set('assignee', params.assignee)
+  const res = await fetch(`/api/care-tasks?${qs.toString()}`, { cache: 'no-store' })
+  const data = await parseJson(res)
+  return {
+    tasks: data.tasks || [],
+    total: Number(data.total || 0),
+    page: Number(data.page || 1),
+    pageSize: Number(data.pageSize || 20),
+    totalPages: Number(data.totalPages || 1),
+    kindCounts: data.kindCounts || {},
+  }
+}
+
+export async function getCareTaskSummary(assignee?: string): Promise<CareTaskSummary> {
+  const qs = assignee ? `?assignee=${encodeURIComponent(assignee)}` : ''
+  const res = await fetch(`/api/care-tasks/summary${qs}`, { cache: 'no-store' })
+  const data = await parseJson(res)
+  return data.summary
+}
+
+export async function getCarePerformance(): Promise<ExecutivePerformance[]> {
+  const res = await fetch('/api/care-tasks/performance', { cache: 'no-store' })
+  const data = await parseJson(res)
+  return data.executives || []
+}
+
+export async function getCareTask(id: string): Promise<CareTask> {
+  const res = await fetch(`/api/care-tasks/${encodeURIComponent(id)}`, { cache: 'no-store' })
+  const data = await parseJson(res)
+  return data.task
+}
+
+export async function updateCareTask(
+  id: string,
+  body: Record<string, unknown>,
+): Promise<CareTask> {
+  const res = await fetch(`/api/care-tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await parseJson(res)
+  return data.task
+}
+
+export async function addCareTaskNote(id: string, text: string): Promise<CareTask> {
+  const res = await fetch(`/api/care-tasks/${encodeURIComponent(id)}/notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  const data = await parseJson(res)
+  return data.task
+}
+
+export async function syncCareTaskCalls(hoursBack = 48) {
+  const res = await fetch('/api/care-tasks/sync-calls', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hoursBack }),
+  })
+  return parseJson(res)
+}
+
+export async function generateCareTasks(maxOrders = 200, refresh = true) {
+  const res = await fetch('/api/care-tasks/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ maxOrders, refresh }),
+  })
+  return parseJson(res)
+}
+
+export async function getCareOrderContext(orderId: string, orderName?: string) {
+  const qs = new URLSearchParams()
+  if (orderId) qs.set('orderId', orderId)
+  if (orderName) qs.set('orderName', orderName)
+  const res = await fetch(`/api/care-tasks/order-context?${qs.toString()}`, {
+    cache: 'no-store',
+  })
+  return parseJson(res)
+}
+
+export type { CareTask, CareTaskSummary, ExecutivePerformance }
