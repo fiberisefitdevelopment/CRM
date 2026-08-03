@@ -190,7 +190,9 @@ export async function GET(req: NextRequest) {
       : `${baseUrl}/api/shopify/orders?all=true`
 
     const ordersRes = await fetch(ordersUrl, {
-      headers: { cookie: req.headers.get('cookie') || '' },
+      headers: {
+        authorization: req.headers.get('authorization') || '',
+      },
     })
     if (!ordersRes.ok) {
       return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 502 })

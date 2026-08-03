@@ -8,6 +8,7 @@ import {
   createdDate,
   serializeCareTask,
 } from './generator'
+import { invalidateCareTasksCache, loadCareTasksCached, getCachedCareTasks } from './taskCache'
 import {
   getCareTaskKind,
   type CareTask,
@@ -16,6 +17,8 @@ import {
   type CareTaskStatus,
   type ExecutivePerformance,
 } from './types'
+
+export { invalidateCareTasksCache } from './taskCache'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -57,8 +60,16 @@ function taskRecencyTs(task: CareTask): number {
   return orderNumber(task)
 }
 
+function kindRank(task: CareTask): number {
+  // COD confirmation always floats to the top of mixed lists
+  if (getCareTaskKind(task) === 'cod_confirmation') return 0
+  return 1
+}
+
 function sortByRecentOrder(tasks: CareTask[]): CareTask[] {
   return [...tasks].sort((a, b) => {
+    const kr = kindRank(a) - kindRank(b)
+    if (kr !== 0) return kr
     const dt = taskRecencyTs(b) - taskRecencyTs(a)
     if (dt !== 0) return dt
     return orderNumber(b) - orderNumber(a)
@@ -126,16 +137,26 @@ function enrichOrderCreatedAt(tasks: CareTask[]): CareTask[] {
         if (clearlyWrong) scheduledAt = corrected
       }
     } else if (order && getCareTaskKind(t) === 'cod_confirmation') {
-      // COD due = order created
+      // COD due defaults to order created — but never clobber Call After / Unreachable reschedules.
       const corrected = createdDate(order).toISOString()
       const oldTs = new Date(t.scheduledAt || 0).getTime()
       const newTs = new Date(corrected).getTime()
-      if (Number.isFinite(oldTs) && Number.isFinite(newTs) && Math.abs(oldTs - newTs) > 12 * 3600 * 1000) {
+      const intentionallyRescheduled =
+        t.status === 'rescheduled' || Boolean(t.lastUnreachableAt) || (Number.isFinite(oldTs) && oldTs > newTs + 60 * 60 * 1000)
+      if (
+        !intentionallyRescheduled &&
+        Number.isFinite(oldTs) &&
+        Number.isFinite(newTs) &&
+        // Only repair parse bugs (stored due far *before* order created), not future Call After times
+        oldTs < newTs - 12 * 3600 * 1000
+      ) {
         scheduledAt = corrected
       }
     }
 
-    return { ...t, orderCreatedAt, scheduledAt }
+    return orderCreatedAt === t.orderCreatedAt && scheduledAt === t.scheduledAt
+      ? t
+      : { ...t, orderCreatedAt, scheduledAt }
   })
 }
 
@@ -214,18 +235,65 @@ async function fetchAllTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot
   return all
 }
 
-async function fetchTaskDocs(params: ListCareTasksParams): Promise<admin.firestore.QueryDocumentSnapshot[]> {
-  // Optional assignee filter (admin “filter by executive” only)
-  if (params.assigneeEmail) {
-    const email = params.assigneeEmail.toLowerCase()
-    const assignedSnap = await getDb()
+/** Active work queue only — much smaller than the full history. */
+async function fetchActiveTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot[]> {
+  try {
+    const snap = await getDb()
       .collection('careTasks')
-      .where('assignedTo.email', '==', email)
+      .where('status', 'in', ['pending', 'rescheduled', 'escalated'])
       .get()
-    return assignedSnap.docs
+    return snap.docs
+  } catch {
+    // Fallback if composite/in query unsupported
+    return fetchAllTaskDocs()
+  }
+}
+
+function needsFullHistory(params: ListCareTasksParams): boolean {
+  const s = params.status
+  return !s || s === 'all' || s === 'completed' || s === 'unreachable'
+}
+
+async function docsToEnrichedTasks(
+  docs: admin.firestore.QueryDocumentSnapshot[],
+): Promise<CareTask[]> {
+  const rawTasks = docs.map((d) => serializeCareTask(d.id, d.data()))
+  const enriched = enrichOrderCreatedAt(rawTasks)
+  persistScheduledAtRepairs(rawTasks, enriched)
+  return excludeDeliveredCodConfirmations(enriched)
+}
+
+/** Org-wide enriched tasks (cached ~20s, single-flight). */
+async function loadOrgTasks(): Promise<CareTask[]> {
+  return loadCareTasksCached(async () => {
+    const docs = await fetchAllTaskDocs()
+    return docsToEnrichedTasks(docs)
+  })
+}
+
+async function resolveTaskUniverse(params: ListCareTasksParams): Promise<CareTask[]> {
+  // Warm org cache first if present
+  const cached = getCachedCareTasks()
+  if (cached) {
+    if (params.assigneeEmail) {
+      const email = params.assigneeEmail.toLowerCase()
+      return cached.filter((t) => t.assignedTo?.email?.toLowerCase() === email)
+    }
+    return cached
   }
 
-  return fetchAllTaskDocs()
+  // Cold path for inbox/today/overdue: only pull active statuses (fast)
+  if (!params.assigneeEmail && !needsFullHistory(params)) {
+    const docs = await fetchActiveTaskDocs()
+    return docsToEnrichedTasks(docs)
+  }
+
+  const tasks = await loadOrgTasks()
+  if (params.assigneeEmail) {
+    const email = params.assigneeEmail.toLowerCase()
+    return tasks.filter((t) => t.assignedTo?.email?.toLowerCase() === email)
+  }
+  return tasks
 }
 
 function filterTasksClient(
@@ -243,24 +311,25 @@ function filterTasksClient(
 
   if (params.status && params.status !== 'all') {
     if (params.status === 'overdue') {
-      list = list.filter(isOverdue)
+      // Overdue open work only — rescheduled live in their own tab
+      list = list.filter((t) => t.status === 'pending' && isOverdue(t))
     } else if (params.status === 'today') {
       list = list.filter((t) => {
         const ts = new Date(t.scheduledAt).getTime()
-        return (
-          (t.status === 'pending' || t.status === 'rescheduled') &&
-          ts >= todayStart &&
-          ts <= todayEnd
-        )
+        return t.status === 'pending' && ts >= todayStart && ts <= todayEnd
       })
     } else if (params.status === 'upcoming') {
       list = list.filter(
         (t) =>
-          (t.status === 'pending' || t.status === 'rescheduled') &&
-          new Date(t.scheduledAt).getTime() > todayEnd,
+          t.status === 'pending' && new Date(t.scheduledAt).getTime() > todayEnd,
       )
     } else if (params.status === 'inbox') {
-      list = list.filter((t) => ['pending', 'rescheduled', 'escalated'].includes(t.status))
+      // Open queue only — Call After / escalations live in their own tabs
+      list = list.filter((t) => t.status === 'pending')
+    } else if (params.status === 'rescheduled') {
+      list = list.filter((t) => t.status === 'rescheduled')
+    } else if (params.status === 'escalated') {
+      list = list.filter((t) => t.status === 'escalated')
     } else {
       list = list.filter((t) => t.status === params.status)
     }
@@ -342,11 +411,7 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
     params.page == null
   const page = Math.max(1, Number(params.page || 1))
 
-  const docs = await fetchTaskDocs(params)
-  const rawTasks = docs.map((d) => serializeCareTask(d.id, d.data()))
-  const enriched = enrichOrderCreatedAt(rawTasks)
-  persistScheduledAtRepairs(rawTasks, enriched)
-  const tasks = excludeDeliveredCodConfirmations(enriched)
+  const tasks = await resolveTaskUniverse(params)
 
   const statusFiltered = filterTasksClient(tasks, params, { ignoreKind: true })
   const kindCounts: Record<string, number> = {}
@@ -355,11 +420,18 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
     kindCounts[k] = (kindCounts[k] || 0) + 1
   }
 
-  const filtered = sortByRecentOrder(
-    params.kind && params.kind !== 'all'
-      ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
-      : statusFiltered,
-  )
+  const filtered =
+    params.status === 'rescheduled'
+      ? [...(params.kind && params.kind !== 'all'
+          ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
+          : statusFiltered)].sort(
+          (a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime(),
+        )
+      : sortByRecentOrder(
+          params.kind && params.kind !== 'all'
+            ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
+            : statusFiltered,
+        )
 
   const total = filtered.length
   if (wantAll) {
@@ -388,11 +460,8 @@ export async function getCareTaskById(id: string): Promise<CareTask | null> {
 
 /** Org-wide summary — same numbers for admin and care executives. */
 export async function summarizeCareTasks(assigneeEmail?: string | null): Promise<CareTaskSummary> {
-  const { tasks } = await listCareTasks({
+  const tasks = await resolveTaskUniverse({
     assigneeEmail: assigneeEmail || undefined,
-    limit: 5000,
-    status: 'all',
-    kind: 'all',
   })
   const todayStart = new Date(startOfTodayIso()).getTime()
   const todayEnd = new Date(endOfTodayIso()).getTime()
@@ -406,29 +475,25 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
     upcoming: 0,
     missed: 0,
     escalated: 0,
+    rescheduled: 0,
     unreachable: 0,
   }
 
   for (const t of tasks) {
     if (t.status === 'completed') summary.completed += 1
-    if (t.status === 'pending' || t.status === 'rescheduled' || t.status === 'escalated') {
-      summary.pending += 1
-    }
+    if (t.status === 'pending') summary.pending += 1
+    if (t.status === 'rescheduled') summary.rescheduled += 1
     if (t.status === 'escalated') summary.escalated += 1
     if (t.status === 'unreachable') summary.unreachable += 1
-    if (isOverdue(t)) {
+    if (t.status === 'pending' && isOverdue(t)) {
       summary.overdue += 1
       summary.missed += 1
     }
     const ts = new Date(t.scheduledAt).getTime()
-    if (
-      (t.status === 'pending' || t.status === 'rescheduled') &&
-      ts >= todayStart &&
-      ts <= todayEnd
-    ) {
+    if (t.status === 'pending' && ts >= todayStart && ts <= todayEnd) {
       summary.today += 1
     }
-    if ((t.status === 'pending' || t.status === 'rescheduled') && ts > todayEnd) {
+    if (t.status === 'pending' && ts > todayEnd) {
       summary.upcoming += 1
     }
   }
@@ -437,7 +502,7 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
 }
 
 export async function getExecutivePerformance(): Promise<ExecutivePerformance[]> {
-  const { tasks } = await listCareTasks({ limit: 5000, status: 'all', kind: 'all' })
+  const tasks = await loadOrgTasks()
   const byEmail = new Map<string, CareTask[]>()
 
   for (const t of tasks) {

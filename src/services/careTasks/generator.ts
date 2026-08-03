@@ -421,6 +421,9 @@ export function serializeCareTask(id: string, data: Record<string, any>): CareTa
     outcome: data.outcome,
     remarks: data.remarks,
     customerResponse: data.customerResponse,
+    customerRating:
+      typeof data.customerRating === 'number' ? data.customerRating : undefined,
+    lastUnreachableAt: data.lastUnreachableAt || null,
     notes: Array.isArray(data.notes) ? data.notes : [],
     lastCall: data.lastCall || null,
     calls: Array.isArray(data.calls) ? data.calls : [],

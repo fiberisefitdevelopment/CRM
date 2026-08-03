@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
-import { getCareTaskById } from '@/src/services/careTasks/queries'
+import { getCareTaskById, invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { logCareAction } from '@/src/services/careTasks/logger'
 import {
   canAccessCareTasksApi,
@@ -11,7 +11,12 @@ import {
   requireSession,
 } from '@/src/services/careTasks/session'
 import { isCareExecutiveRole } from '@/src/utils/accessControl'
-import type { CareTaskStatus } from '@/src/services/careTasks/types'
+import {
+  CALL_AFTER_MAX_MS,
+  UNREACHABLE_RETRY_MS,
+  requiresCustomerRating,
+  type CareTaskStatus,
+} from '@/src/services/careTasks/types'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -62,8 +67,9 @@ export async function PATCH(
 
     const body = await req.json().catch(() => ({}))
     const action = String(body.action || '').toLowerCase()
+    const nowIso = new Date().toISOString()
     const patch: Record<string, unknown> = {
-      updatedAt: new Date().toISOString(),
+      updatedAt: nowIso,
       updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
     }
 
@@ -101,7 +107,7 @@ export async function PATCH(
           : 'Customer wants to cancel — tag set for ops (order not cancelled in Shopify)'
       patch.customerResponse =
         action === 'confirm_cod' ? 'Customer confirmed COD order' : 'Customer requested cancellation'
-      patch.completedAt = new Date().toISOString()
+      patch.completedAt = nowIso
       patch.careOrderTag = tag.kind
     } else if (action === 'complete' || body.status === 'completed') {
       if (!body.outcome || !body.remarks || !body.customerResponse) {
@@ -110,15 +116,53 @@ export async function PATCH(
           { status: 400 },
         )
       }
+      if (requiresCustomerRating(task)) {
+        const rating = Number(body.customerRating)
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+          return NextResponse.json(
+            { error: 'Customer rating (1–5 stars) is required for this call type.' },
+            { status: 400 },
+          )
+        }
+        patch.customerRating = rating
+      }
       patch.status = 'completed' as CareTaskStatus
       patch.outcome = String(body.outcome)
       patch.remarks = String(body.remarks)
       patch.customerResponse = String(body.customerResponse)
-      patch.completedAt = new Date().toISOString()
+      patch.completedAt = nowIso
     } else if (action === 'unreachable' || body.status === 'unreachable') {
-      patch.status = 'unreachable'
-      if (body.remarks) patch.remarks = String(body.remarks)
+      // Auto-bring back in 1 hour as a rescheduled reminder
+      const retryAt = new Date(Date.now() + UNREACHABLE_RETRY_MS).toISOString()
+      patch.status = 'rescheduled' as CareTaskStatus
+      patch.scheduledAt = retryAt
+      patch.lastUnreachableAt = nowIso
+      patch.remarks = body.remarks ? String(body.remarks) : 'Customer unreachable'
       if (body.outcome) patch.outcome = String(body.outcome)
+    } else if (action === 'call_after') {
+      if (!body.scheduledAt) {
+        return NextResponse.json(
+          { error: 'Pick a call-after date & time (within 3 days).' },
+          { status: 400 },
+        )
+      }
+      const when = new Date(String(body.scheduledAt)).getTime()
+      if (Number.isNaN(when)) {
+        return NextResponse.json({ error: 'Invalid call-after date.' }, { status: 400 })
+      }
+      const now = Date.now()
+      if (when < now - 60_000) {
+        return NextResponse.json({ error: 'Call-after time must be in the future.' }, { status: 400 })
+      }
+      if (when > now + CALL_AFTER_MAX_MS) {
+        return NextResponse.json(
+          { error: 'Call After can be at most 3 days from now.' },
+          { status: 400 },
+        )
+      }
+      patch.status = 'rescheduled' as CareTaskStatus
+      patch.scheduledAt = new Date(when).toISOString()
+      if (body.remarks) patch.remarks = String(body.remarks)
     } else if (action === 'reschedule' || body.status === 'rescheduled') {
       if (!body.scheduledAt) {
         return NextResponse.json({ error: 'scheduledAt is required to reschedule.' }, { status: 400 })
@@ -127,8 +171,15 @@ export async function PATCH(
       patch.scheduledAt = String(body.scheduledAt)
       if (body.remarks) patch.remarks = String(body.remarks)
     } else if (action === 'escalate' || body.status === 'escalated') {
+      const reason = String(body.remarks || '').trim()
+      if (!reason) {
+        return NextResponse.json(
+          { error: 'Escalate reason is required.' },
+          { status: 400 },
+        )
+      }
       patch.status = 'escalated'
-      if (body.remarks) patch.remarks = String(body.remarks)
+      patch.remarks = reason
       if (body.outcome) patch.outcome = String(body.outcome)
     } else if (body.status) {
       patch.status = body.status
@@ -137,12 +188,21 @@ export async function PATCH(
     }
 
     await getDb().collection('careTasks').doc(params.id).update(patch)
+    invalidateCareTasksCache()
+
+    const logAction =
+      action === 'unreachable'
+        ? 'TASK_UNREACHABLE'
+        : action === 'call_after'
+          ? 'TASK_CALL_AFTER'
+          : `TASK_${String(patch.status || action).toUpperCase()}`
+
     await logCareAction({
-      action: `TASK_${String(patch.status || action).toUpperCase()}`,
+      action: logAction,
       taskId: params.id,
       orderId: task.orderId,
       orderName: task.orderName,
-      details: { by: session.email, ...patch },
+      details: { by: session.email, action, ...patch },
       status: 'success',
     })
 

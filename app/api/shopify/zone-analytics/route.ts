@@ -8,7 +8,9 @@ export async function GET(req: NextRequest) {
     // Fetch orders from existing Shopify cache endpoint
     const baseUrl = req.nextUrl.origin
     const ordersRes = await fetch(`${baseUrl}/api/shopify/orders?all=true`, {
-      headers: { cookie: req.headers.get('cookie') || '' },
+      headers: {
+        authorization: req.headers.get('authorization') || '',
+      },
     })
 
     if (!ordersRes.ok) {

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { TopBar } from '@/components/layout/TopBar';
+import { apiFetch } from '@/lib/auth';
 import {
   FileText,
   Download,
@@ -34,7 +35,7 @@ export default function ReportsPage() {
     setError(null);
     try {
       const url = `/api/reports/shipment/download?startDate=${start}&endDate=${end}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));

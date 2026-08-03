@@ -401,7 +401,7 @@ function GenderAnalyticsSection({ orders, refreshTrigger }: { orders: ShopifyOrd
         ? '/api/shopify/gender-analytics?refresh=true'
         : '/api/shopify/gender-analytics'
 
-      const res = await fetch(url)
+      const res = await apiFetch(url)
       const d = await res.json()
 
       if (d.syncing) {
@@ -651,7 +651,7 @@ export default function SalesDashboardPage() {
         setRefreshTrigger(prev => prev + 1)
       }
       const url = forceRefresh ? '/api/shopify/orders?all=true&refresh=true' : '/api/shopify/orders?all=true'
-      const res = await fetch(url)
+      const res = await apiFetch(url)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to fetch sales database')
 

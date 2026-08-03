@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
-import { getCareTaskById } from '@/src/services/careTasks/queries'
+import { getCareTaskById, invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { logCareAction } from '@/src/services/careTasks/logger'
 import {
   canAccessCareTasksApi,
@@ -55,6 +55,7 @@ export async function POST(
       updatedAt: new Date().toISOString(),
       updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
     })
+    invalidateCareTasksCache()
 
     await logCareAction({
       action: 'NOTE_ADDED',

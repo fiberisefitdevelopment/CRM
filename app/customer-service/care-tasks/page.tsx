@@ -15,6 +15,7 @@ import {
   User,
   MoreHorizontal,
   X,
+  Star,
 } from 'lucide-react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
@@ -38,15 +39,44 @@ import { isAdminRole, isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
 import {
   CARE_TASK_KIND_TABS,
+  CALL_AFTER_MAX_MS,
   getCareTaskKind,
+  requiresCustomerRating,
   type CareTaskKind,
 } from '@/src/services/careTasks/types'
 import type { TimelineStep } from '@/src/utils/orderTimeline'
 
-type StatusFilter = 'inbox' | 'today' | 'overdue' | 'upcoming' | 'completed' | 'all'
+type StatusFilter =
+  | 'inbox'
+  | 'today'
+  | 'overdue'
+  | 'upcoming'
+  | 'rescheduled'
+  | 'escalated'
+  | 'completed'
+  | 'all'
 type PageSize = 20 | 50 | 100
 
 const PAGE_SIZE_OPTIONS: PageSize[] = [20, 50, 100]
+const REMINDER_SEEN_KEY = 'fiberise_care_unreachable_reminders'
+
+function toDatetimeLocalValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function loadReminderSeen(): Set<string> {
+  try {
+    const raw = localStorage.getItem(REMINDER_SEEN_KEY)
+    return new Set(raw ? JSON.parse(raw) : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveReminderSeen(seen: Set<string>) {
+  localStorage.setItem(REMINDER_SEEN_KEY, JSON.stringify([...seen].slice(-100)))
+}
 
 function fmtWhen(value?: string | null) {
   if (!value) return '—'
@@ -157,11 +187,11 @@ function isTaskOverdue(task: CareTask) {
 }
 
 function statusBadge(task: CareTask) {
-  if (isTaskOverdue(task)) return { label: 'Overdue', tone: 'red' as const }
   if (task.status === 'completed') return { label: 'Done', tone: 'emerald' as const }
   if (task.status === 'escalated') return { label: 'Escalated', tone: 'red' as const }
   if (task.status === 'unreachable') return { label: 'Unreachable', tone: 'amber' as const }
-  if (task.status === 'rescheduled') return { label: 'Rescheduled', tone: 'blue' as const }
+  if (isTaskOverdue(task)) return { label: 'Overdue', tone: 'red' as const }
+  if (task.status === 'rescheduled') return { label: 'Call after', tone: 'blue' as const }
   return { label: 'Pending', tone: 'amber' as const }
 }
 
@@ -195,7 +225,7 @@ export default function CareTasksPage() {
   const [tasks, setTasks] = useState<CareTask[]>([])
   const [summary, setSummary] = useState<CareTaskSummary | null>(null)
   const [performance, setPerformance] = useState<ExecutivePerformance[]>([])
-  const [kindFilter, setKindFilter] = useState<CareTaskKind>('cod_confirmation')
+  const [kindFilter, setKindFilter] = useState<CareTaskKind | 'all'>('cod_confirmation')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('inbox')
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -216,15 +246,31 @@ export default function CareTasksPage() {
   const [orderCtxError, setOrderCtxError] = useState<string | null>(null)
   const autoGenerateTried = useRef(false)
   const loadSeq = useRef(0)
+  const execDefaultsApplied = useRef(false)
 
   const [outcome, setOutcome] = useState('')
   const [remarks, setRemarks] = useState('')
   const [customerResponse, setCustomerResponse] = useState('')
+  const [customerRating, setCustomerRating] = useState(0)
   const [noteText, setNoteText] = useState('')
   const [rescheduleAt, setRescheduleAt] = useState('')
+  const [callAfterAt, setCallAfterAt] = useState('')
+  const [escalateReason, setEscalateReason] = useState('')
+  const [unreachableConfirmTask, setUnreachableConfirmTask] = useState<CareTask | null>(null)
+  const [escalateConfirmTask, setEscalateConfirmTask] = useState<CareTask | null>(null)
+  const [callAfterConfirmTask, setCallAfterConfirmTask] = useState<CareTask | null>(null)
+  const [reminderTask, setReminderTask] = useState<CareTask | null>(null)
 
   const isAdmin = isAdminRole(role)
   const isExec = isCareExecutiveRole(role)
+
+  // Care executives: unified open queue, COD first (no kind tabs)
+  useEffect(() => {
+    if (!isExec || execDefaultsApplied.current) return
+    execDefaultsApplied.current = true
+    setKindFilter('all')
+    setStatusFilter('inbox')
+  }, [isExec])
 
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedSearch(search.trim()), 300)
@@ -236,45 +282,49 @@ export default function CareTasksPage() {
     const seq = ++loadSeq.current
     setLoading(true)
     setError(null)
-    setExpandedId(null)
-    setTasks([])
+    // Keep previous rows visible while refreshing (no empty flash)
     try {
-      const [listRes, sum] = await Promise.all([
-        listCareTasks({
-          status: statusFilter,
-          kind: kindFilter,
-          search: debouncedSearch || undefined,
-          page,
-          pageSize,
-        }),
-        getCareTaskSummary(),
-      ])
-      if (seq !== loadSeq.current) return sum
+      const listRes = await listCareTasks({
+        status: statusFilter,
+        kind: isExec || kindFilter === 'all' ? 'all' : kindFilter,
+        search: debouncedSearch || undefined,
+        page,
+        pageSize,
+      })
+      if (seq !== loadSeq.current) return null
 
       setTasks(listRes.tasks)
       setTotal(listRes.total)
       setTotalPages(listRes.totalPages)
       setKindCounts(listRes.kindCounts || {})
       if (listRes.page !== page) setPage(listRes.page)
-      setSummary(sum)
+      setLoading(false)
+
+      // Summary + performance after list paints (shared server cache makes this cheap)
+      void getCareTaskSummary()
+        .then((sum) => {
+          if (seq === loadSeq.current) setSummary(sum)
+        })
+        .catch(() => {})
 
       if (isAdmin) {
-        try {
-          setPerformance(await getCarePerformance())
-        } catch {
-          if (seq === loadSeq.current) setPerformance([])
-        }
+        void getCarePerformance()
+          .then((rows) => {
+            if (seq === loadSeq.current) setPerformance(rows)
+          })
+          .catch(() => {
+            if (seq === loadSeq.current) setPerformance([])
+          })
       }
-      return sum
+      return listRes.total
     } catch (err: any) {
       if (seq === loadSeq.current) {
         setError(err?.message || 'Failed to load care tasks')
+        setLoading(false)
       }
       return null
-    } finally {
-      if (seq === loadSeq.current) setLoading(false)
     }
-  }, [statusFilter, kindFilter, debouncedSearch, page, pageSize, isAdmin])
+  }, [statusFilter, kindFilter, debouncedSearch, page, pageSize, isAdmin, isExec])
 
   const runGenerate = useCallback(
     async (silent = false) => {
@@ -313,8 +363,8 @@ export default function CareTasksPage() {
   useEffect(() => {
     if (role === null) return
     ;(async () => {
-      const sum = await load()
-      if (!autoGenerateTried.current && sum && sum.total === 0) {
+      const totalCount = await load()
+      if (!autoGenerateTried.current && totalCount === 0) {
         autoGenerateTried.current = true
         await runGenerate(true)
       }
@@ -338,8 +388,11 @@ export default function CareTasksPage() {
     setOutcome('')
     setRemarks('')
     setCustomerResponse('')
+    setCustomerRating(0)
     setNoteText('')
     setRescheduleAt('')
+    setCallAfterAt('')
+    setEscalateReason('')
     setOrderCtx(null)
     setOrderCtxError(null)
 
@@ -364,6 +417,27 @@ export default function CareTasksPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandedId])
+
+  // Reminder popup when a previously-unreachable task becomes due again
+  useEffect(() => {
+    const check = () => {
+      const now = Date.now()
+      const seen = loadReminderSeen()
+      const due = tasks.find(
+        (t) =>
+          t.lastUnreachableAt &&
+          (t.status === 'pending' || t.status === 'rescheduled') &&
+          new Date(t.scheduledAt).getTime() <= now &&
+          !seen.has(`${t.id}:${t.lastUnreachableAt}`),
+      )
+      if (due && !reminderTask) {
+        setReminderTask(due)
+      }
+    }
+    check()
+    const id = window.setInterval(check, 15_000)
+    return () => window.clearInterval(id)
+  }, [tasks, reminderTask])
 
   // Same KPI cards for admin and executives so dashboards match
   const cards = useMemo(() => {
@@ -390,7 +464,16 @@ export default function CareTasksPage() {
         setSuccess(`Tagged ${task.orderName} as Care cancelled (display only — order not cancelled)`)
         setExpandedId(null)
       } else if (action === 'complete') {
-        await updateCareTask(task.id, { action: 'complete', outcome, remarks, customerResponse })
+        if (requiresCustomerRating(task) && (customerRating < 1 || customerRating > 5)) {
+          throw new Error('Please rate the customer (1–5 stars) before completing')
+        }
+        await updateCareTask(task.id, {
+          action: 'complete',
+          outcome,
+          remarks,
+          customerResponse,
+          ...(requiresCustomerRating(task) ? { customerRating } : {}),
+        })
         setSuccess('Task completed')
         setExpandedId(null)
       } else if (action === 'unreachable') {
@@ -398,11 +481,35 @@ export default function CareTasksPage() {
           action: 'unreachable',
           remarks: remarks || 'Customer unreachable',
         })
-        setSuccess('Marked unreachable')
+        setUnreachableConfirmTask(null)
+        setSuccess('Marked unreachable — task will return in 1 hour')
+        setExpandedId(null)
       } else if (action === 'escalate') {
-        await updateCareTask(task.id, { action: 'escalate', remarks: remarks || 'Escalated' })
+        const reason = escalateReason.trim()
+        if (!reason) throw new Error('Escalate reason is required')
+        await updateCareTask(task.id, { action: 'escalate', remarks: reason })
+        setEscalateConfirmTask(null)
+        setEscalateReason('')
         setSuccess('Escalated to admin')
         pushLocalNotif('Care task escalated', `${task.orderName} — ${task.taskLabel}`, 'alert')
+        setExpandedId(null)
+      } else if (action === 'call_after') {
+        if (!callAfterAt) throw new Error('Pick a call-after date & time first')
+        const when = new Date(callAfterAt).getTime()
+        if (Number.isNaN(when)) throw new Error('Invalid call-after date')
+        if (when > Date.now() + CALL_AFTER_MAX_MS) {
+          throw new Error('Call After can be at most 3 days from now')
+        }
+        if (when < Date.now() - 60_000) throw new Error('Call-after time must be in the future')
+        await updateCareTask(task.id, {
+          action: 'call_after',
+          scheduledAt: new Date(when).toISOString(),
+          remarks,
+        })
+        setCallAfterConfirmTask(null)
+        setCallAfterAt('')
+        setSuccess('Scheduled call after')
+        setExpandedId(null)
       } else if (action === 'reschedule') {
         if (!rescheduleAt) throw new Error('Pick a new date & time first')
         await updateCareTask(task.id, {
@@ -438,9 +545,22 @@ export default function CareTasksPage() {
   const statusFilters: Array<[StatusFilter, string]> = [
     ['inbox', 'To do'],
     ['overdue', 'Overdue'],
+    ['rescheduled', 'Rescheduled'],
+    ['escalated', 'Escalated'],
     ['completed', 'Done'],
     ['all', 'All'],
   ]
+
+  const statusFilterCounts: Partial<Record<StatusFilter, number>> = summary
+    ? {
+        inbox: summary.pending,
+        overdue: summary.overdue,
+        rescheduled: summary.rescheduled,
+        escalated: summary.escalated,
+        completed: summary.completed,
+        all: summary.total,
+      }
+    : {}
 
   const visibleKindTabs = useMemo(() => {
     return CARE_TASK_KIND_TABS.filter((tab) => {
@@ -458,7 +578,22 @@ export default function CareTasksPage() {
   }, [kindCounts])
 
   const activeKindLabel =
-    CARE_TASK_KIND_TABS.find((t) => t.key === kindFilter)?.label || 'Tasks'
+    kindFilter === 'all'
+      ? 'All tasks'
+      : CARE_TASK_KIND_TABS.find((t) => t.key === kindFilter)?.label || 'Tasks'
+
+  const callAfterMin = toDatetimeLocalValue(new Date())
+  const callAfterMax = toDatetimeLocalValue(new Date(Date.now() + CALL_AFTER_MAX_MS))
+
+  const dismissReminder = (open: boolean) => {
+    if (reminderTask?.lastUnreachableAt) {
+      const seen = loadReminderSeen()
+      seen.add(`${reminderTask.id}:${reminderTask.lastUnreachableAt}`)
+      saveReminderSeen(seen)
+    }
+    if (open && reminderTask) setExpandedId(reminderTask.id)
+    setReminderTask(null)
+  }
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--background)' }}>
@@ -610,7 +745,8 @@ export default function CareTasksPage() {
             </div>
           )}
 
-          {/* Call-type tabs */}
+          {/* Call-type tabs — admins only; care executives see a unified list */}
+          {!isExec ? (
           <div
             className="mb-3 flex gap-1 overflow-x-auto pb-1 border-b"
             style={{ borderColor: 'var(--border)' }}
@@ -644,12 +780,18 @@ export default function CareTasksPage() {
               )
             })}
           </div>
+          ) : (
+            <p className="mb-3 text-sm font-medium" style={{ color: 'var(--foreground-muted)' }}>
+              COD confirmation first · all call types
+            </p>
+          )}
 
           {/* Status + search */}
           <div className="mb-4 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
             <div className="flex gap-1 overflow-x-auto pb-1">
               {statusFilters.map(([value, label]) => {
                 const active = statusFilter === value
+                const count = statusFilterCounts[value]
                 return (
                   <button
                     key={value}
@@ -669,6 +811,11 @@ export default function CareTasksPage() {
                     }
                   >
                     {label}
+                    {typeof count === 'number' ? (
+                      <span className={`ml-1.5 tabular-nums ${active ? 'opacity-80' : 'opacity-50'}`}>
+                        {count}
+                      </span>
+                    ) : null}
                   </button>
                 )
               })}
@@ -692,7 +839,7 @@ export default function CareTasksPage() {
             </div>
           </div>
 
-          {loading ? (
+          {loading && tasks.length === 0 ? (
             <div className="space-y-2.5" aria-busy="true" aria-label="Loading tasks">
               <div
                 className="flex items-center justify-center gap-2 py-6 text-sm"
@@ -740,9 +887,16 @@ export default function CareTasksPage() {
               <p className="text-sm mt-1 mb-4" style={{ color: 'var(--foreground-muted)' }}>
                 {debouncedSearch
                   ? 'Nothing matches this search. Try another query or clear filters.'
-                  : 'Nothing for this status yet. Try Generate tasks from COD orders.'}
+                  : statusFilter === 'rescheduled'
+                    ? 'No Call After / unreachable reschedules right now.'
+                    : statusFilter === 'escalated'
+                      ? 'No escalated tasks right now.'
+                      : 'Nothing for this status yet. Try Generate tasks from COD orders.'}
               </p>
-              {!debouncedSearch && (
+              {!debouncedSearch &&
+                statusFilter !== 'rescheduled' &&
+                statusFilter !== 'escalated' &&
+                statusFilter !== 'completed' && (
                 <button
                   onClick={() => runGenerate(false)}
                   disabled={generating}
@@ -822,6 +976,9 @@ export default function CareTasksPage() {
                         <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-12 gap-3">
                           <div className="md:col-span-4">
                             <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                              {getCareTaskKind(task) === 'cod_confirmation' && (
+                                <span className={badge('purple')}>COD</span>
+                              )}
                               <span className={badge(st.tone)}>{st.label}</span>
                               {task.priority === 'high' && (
                                 <span className={badge('red')}>High</span>
@@ -859,7 +1016,7 @@ export default function CareTasksPage() {
                               className="text-[10px] font-bold uppercase tracking-wider"
                               style={{ color: 'var(--foreground-muted)' }}
                             >
-                              Due
+                              {task.status === 'rescheduled' ? 'Call after' : 'Due'}
                             </p>
                             <p className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
                               {fmtDay(task.scheduledAt)}
@@ -1217,35 +1374,83 @@ export default function CareTasksPage() {
                                   }}
                                 />
                               </label>
+                              {requiresCustomerRating(task) && (
+                                <div>
+                                  <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
+                                    Customer rating * (1–5)
+                                  </span>
+                                  <div className="mt-1.5 flex items-center gap-1">
+                                    {[1, 2, 3, 4, 5].map((n) => (
+                                      <button
+                                        key={n}
+                                        type="button"
+                                        disabled={busy}
+                                        onClick={() => setCustomerRating(n)}
+                                        className="p-0.5 disabled:opacity-50"
+                                        title={`${n} star${n > 1 ? 's' : ''}`}
+                                      >
+                                        <Star
+                                          className={`w-6 h-6 ${
+                                            n <= customerRating
+                                              ? 'fill-amber-400 text-amber-400'
+                                              : 'text-[var(--foreground-muted)]'
+                                          }`}
+                                        />
+                                      </button>
+                                    ))}
+                                    {customerRating > 0 && (
+                                      <span className="ml-2 text-xs font-semibold tabular-nums" style={{ color: 'var(--foreground-muted)' }}>
+                                        {customerRating}/5
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <div className="flex flex-nowrap items-center gap-2 pt-1 overflow-x-auto">
                               <button
                                 disabled={busy}
                                 onClick={() => onAction(task, 'complete')}
-                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white disabled:opacity-50"
+                                className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white disabled:opacity-50"
                               >
                                 <CheckCircle2 className="w-4 h-4" />
                                 Mark completed
                               </button>
                               <button
                                 disabled={busy}
-                                onClick={() => onAction(task, 'unreachable')}
-                                className="px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
+                                onClick={() => setUnreachableConfirmTask(task)}
+                                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
                                 style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
                               >
                                 Unreachable
                               </button>
                               <button
                                 disabled={busy}
-                                onClick={() => onAction(task, 'escalate')}
-                                className="px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
+                                onClick={() => {
+                                  setEscalateReason('')
+                                  setEscalateConfirmTask(task)
+                                }}
+                                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
                                 style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
                               >
                                 Escalate
                               </button>
+                              <button
+                                disabled={busy}
+                                onClick={() => {
+                                  setCallAfterAt(toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000)))
+                                  setCallAfterConfirmTask(task)
+                                }}
+                                className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
+                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                              >
+                                <Clock className="w-4 h-4" />
+                                Call After
+                              </button>
                             </div>
 
+                            {!isExec && (
                             <div className="flex flex-wrap items-end gap-2 pt-1">
                               <label className="block">
                                 <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
@@ -1272,6 +1477,7 @@ export default function CareTasksPage() {
                                 Save new time
                               </button>
                             </div>
+                            )}
 
                             <div className="flex gap-2 pt-1">
                               <input
@@ -1308,6 +1514,21 @@ export default function CareTasksPage() {
                               Response: {task.customerResponse || '—'}
                             </p>
                             <p style={{ color: 'var(--foreground-muted)' }}>Remarks: {task.remarks || '—'}</p>
+                            {typeof task.customerRating === 'number' && (
+                              <p style={{ color: 'var(--foreground-muted)' }} className="flex items-center gap-1">
+                                Rating:{' '}
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <Star
+                                    key={n}
+                                    className={`w-3.5 h-3.5 ${
+                                      n <= (task.customerRating || 0)
+                                        ? 'fill-amber-400 text-amber-400'
+                                        : 'text-[var(--foreground-muted)]'
+                                    }`}
+                                  />
+                                ))}
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1439,6 +1660,241 @@ export default function CareTasksPage() {
           <button className="ml-2 opacity-60" onClick={() => setSuccess(null)}>
             ✕
           </button>
+        </div>
+      )}
+
+      {/* Unreachable confirmation */}
+      {unreachableConfirmTask && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
+          <div
+            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
+                Customer unreachable
+              </h3>
+              <button
+                type="button"
+                onClick={() => setUnreachableConfirmTask(null)}
+                className="p-1 rounded-lg"
+                style={{ color: 'var(--foreground-muted)' }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm mb-4" style={{ color: 'var(--foreground-muted)' }}>
+              We’ll bring <span className="font-semibold" style={{ color: 'var(--foreground)' }}>{unreachableConfirmTask.orderName}</span> back
+              as a reminder in <strong>1 hour</strong>.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setUnreachableConfirmTask(null)}
+                className="px-3 py-2 rounded-lg text-sm border"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingId === unreachableConfirmTask.id}
+                onClick={() => onAction(unreachableConfirmTask, 'unreachable')}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-600 text-white disabled:opacity-50"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Escalate reason popup */}
+      {escalateConfirmTask && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
+          <div
+            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
+                Escalate task
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setEscalateConfirmTask(null)
+                  setEscalateReason('')
+                }}
+                className="p-1 rounded-lg"
+                style={{ color: 'var(--foreground-muted)' }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
+              {escalateConfirmTask.orderName} — {escalateConfirmTask.taskLabel}
+            </p>
+            <label className="block mb-4">
+              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
+                Reason *
+              </span>
+              <textarea
+                value={escalateReason}
+                onChange={(e) => setEscalateReason(e.target.value)}
+                rows={3}
+                placeholder="Why are you escalating this?"
+                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30 resize-none"
+                style={{
+                  background: 'var(--background)',
+                  borderColor: 'var(--border)',
+                  color: 'var(--foreground)',
+                }}
+                autoFocus
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEscalateConfirmTask(null)
+                  setEscalateReason('')
+                }}
+                className="px-3 py-2 rounded-lg text-sm border"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingId === escalateConfirmTask.id || !escalateReason.trim()}
+                onClick={() => onAction(escalateConfirmTask, 'escalate')}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white disabled:opacity-50"
+              >
+                Escalate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Call After popup */}
+      {callAfterConfirmTask && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
+          <div
+            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
+                Call After
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setCallAfterConfirmTask(null)
+                  setCallAfterAt('')
+                }}
+                className="p-1 rounded-lg"
+                style={{ color: 'var(--foreground-muted)' }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
+              {callAfterConfirmTask.orderName} — schedule a callback within 3 days.
+            </p>
+            <label className="block mb-4">
+              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
+                Date & time *
+              </span>
+              <input
+                type="datetime-local"
+                value={callAfterAt}
+                min={callAfterMin}
+                max={callAfterMax}
+                onChange={(e) => setCallAfterAt(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border"
+                style={{
+                  background: 'var(--background)',
+                  borderColor: 'var(--border)',
+                  color: 'var(--foreground)',
+                }}
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setCallAfterConfirmTask(null)
+                  setCallAfterAt('')
+                }}
+                className="px-3 py-2 rounded-lg text-sm border"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingId === callAfterConfirmTask.id || !callAfterAt}
+                onClick={() => onAction(callAfterConfirmTask, 'call_after')}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white disabled:opacity-50"
+              >
+                Schedule
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Due reminder for previously unreachable tasks */}
+      {reminderTask && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
+          <div
+            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-start gap-3 mb-3">
+              <div className="p-2 rounded-xl bg-amber-500/15 text-amber-600">
+                <Phone className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
+                  Reminder: call again
+                </h3>
+                <p className="text-sm mt-1" style={{ color: 'var(--foreground-muted)' }}>
+                  {reminderTask.orderName} — {reminderTask.taskLabel}
+                  <br />
+                  {reminderTask.customerName} · {reminderTask.phone}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => dismissReminder(false)}
+                className="p-1 rounded-lg"
+                style={{ color: 'var(--foreground-muted)' }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => dismissReminder(false)}
+                className="px-3 py-2 rounded-lg text-sm border"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                onClick={() => dismissReminder(true)}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white"
+              >
+                Open task
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -69,6 +69,10 @@ export interface CareTask {
   outcome?: string
   remarks?: string
   customerResponse?: string
+  /** 1–5 star rating (required on complete for Introduction onwards) */
+  customerRating?: number
+  /** When the executive last marked the customer unreachable */
+  lastUnreachableAt?: string | null
   notes: CareTaskNote[]
   lastCall?: CareLinkedCall | null
   calls: CareLinkedCall[]
@@ -119,6 +123,17 @@ export function getCareTaskKind(task: Pick<CareTask, 'taskType' | 'scheduleDay'>
   return 'other'
 }
 
+/** Star rating required when completing any task except COD confirmation. */
+export function requiresCustomerRating(
+  task: Pick<CareTask, 'taskType' | 'scheduleDay'>,
+): boolean {
+  return getCareTaskKind(task) !== 'cod_confirmation'
+}
+
+export const CALL_AFTER_MAX_MS = 3 * 24 * 60 * 60 * 1000
+export const UNREACHABLE_RETRY_MS = 60 * 60 * 1000
+
+
 export interface FollowupStep {
   day: number
   taskType: CareTaskType
@@ -148,6 +163,7 @@ export interface CareTaskSummary {
   upcoming: number
   missed: number
   escalated: number
+  rescheduled: number
   unreachable: number
 }
 

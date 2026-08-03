@@ -5,6 +5,7 @@ import { syncSalestrailCallsToCareTasks } from './callLinker'
 import { processOrdersForCareTasks } from './generator'
 import { getCareTaskConfig } from './followupPlans'
 import { logCareAction } from './logger'
+import { invalidateCareTasksCache } from './taskCache'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -50,6 +51,7 @@ export async function runCareTaskScheduler(): Promise<CareSchedulerResult> {
   const ordersProcessed = await processOrdersForCareTasks(orders)
   const callsSynced = await syncSalestrailCallsToCareTasks(48)
   const overdueMarked = await sweepOverdue()
+  invalidateCareTasksCache()
 
   await logCareAction({
     action: 'SCHEDULER_RUN',

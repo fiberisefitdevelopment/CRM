@@ -19,7 +19,9 @@ export async function GET(req: NextRequest) {
     // Fetch all orders
     const baseUrl = req.nextUrl.origin
     const ordersRes = await fetch(`${baseUrl}/api/shopify/orders?all=true`, {
-      headers: { cookie: req.headers.get('cookie') || '' },
+      headers: {
+        authorization: req.headers.get('authorization') || '',
+      },
     })
     if (!ordersRes.ok) {
       return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 502 })

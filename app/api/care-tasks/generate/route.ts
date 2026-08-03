@@ -8,6 +8,7 @@ import {
   getCacheExpiresAt,
 } from '@/src/services/ordersCache'
 import { processOrdersForCareTasks } from '@/src/services/careTasks/generator'
+import { invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { seedAdminUser } from '@/src/services/auth'
 import {
   canAccessCareTasksApi,
@@ -114,6 +115,7 @@ export async function POST(req: NextRequest) {
     }
 
     const result = await processOrdersForCareTasks(orders, { maxOrders })
+    invalidateCareTasksCache()
     return NextResponse.json({
       success: true,
       cacheSize: orders.length,
