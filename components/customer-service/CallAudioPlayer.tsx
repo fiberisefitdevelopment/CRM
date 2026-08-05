@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Download, VolumeX, Loader2 } from 'lucide-react'
+import { apiFetch } from '@/lib/auth'
 import { getRecordingStreamUrl } from '@/lib/customerServiceApi'
 import { cn } from '@/lib/utils'
 
@@ -14,21 +15,109 @@ interface CallAudioPlayerProps {
 
 export function CallAudioPlayer({ callId, className }: CallAudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const blobUrlRef = useRef<string | null>(null)
+  const [src, setSrc] = useState('')
   const [loading, setLoading] = useState(false)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  // Authenticated CRM proxy — Salestrail recUrl requires Basic auth and must not be used in <audio>
-  const src = callId ? getRecordingStreamUrl(callId, 'proxy') : ''
-  const downloadHref = callId
-    ? `${getRecordingStreamUrl(callId, 'proxy')}&download=1`
-    : ''
+  const [downloading, setDownloading] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
+
+    const revoke = () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current)
+        blobUrlRef.current = null
+      }
+    }
+
+    setSrc('')
     setLoading(false)
     setReady(false)
     setError(null)
+    revoke()
+
+    if (!callId) return
+
+    const load = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        // <audio src> cannot send Authorization — fetch via apiFetch then play a blob URL
+        const res = await apiFetch(getRecordingStreamUrl(callId, 'proxy'), {
+          cache: 'no-store',
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(
+            (data as { error?: string })?.error ||
+              (res.status === 401
+                ? 'Unauthorized. Please sign in again.'
+                : res.status === 404
+                  ? 'Recording not available.'
+                  : 'Unable to load recording'),
+          )
+        }
+        const blob = await res.blob()
+        if (!blob || blob.size === 0) {
+          throw new Error('Recording file is empty.')
+        }
+        if (cancelled) return
+        const type =
+          blob.type && blob.type.startsWith('audio/')
+            ? blob.type
+            : 'audio/mp4'
+        const objectUrl = URL.createObjectURL(new Blob([blob], { type }))
+        blobUrlRef.current = objectUrl
+        setSrc(objectUrl)
+        setReady(true)
+      } catch (err: any) {
+        if (cancelled) return
+        setError(err?.message || 'Unable to load recording')
+        setReady(false)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load()
+
+    return () => {
+      cancelled = true
+      revoke()
+    }
   }, [callId])
+
+  const handleDownload = async () => {
+    if (!callId || downloading) return
+    setDownloading(true)
+    try {
+      const res = await apiFetch(
+        `${getRecordingStreamUrl(callId, 'proxy')}&download=1`,
+        { cache: 'no-store' },
+      )
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error((data as { error?: string })?.error || 'Download failed')
+      }
+      const blob = await res.blob()
+      const type = blob.type || 'audio/mp4'
+      const ext = type.includes('wav') ? 'wav' : type.includes('mpeg') || type.includes('mp3') ? 'mp3' : 'm4a'
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `recording-${callId}.${ext}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err: any) {
+      setError(err?.message || 'Download failed')
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   if (!callId) {
     return (
@@ -47,44 +136,40 @@ export function CallAudioPlayer({ callId, className }: CallAudioPlayerProps) {
         )}
         <audio
           ref={audioRef}
-          key={src}
+          key={src || callId}
           controls
           preload="metadata"
           className="h-9 flex-1 min-w-0"
-          src={src}
-          onLoadStart={() => {
-            setLoading(true)
-            setError(null)
-          }}
-          onLoadedMetadata={() => {
-            setLoading(false)
-            setReady(true)
-          }}
+          src={src || undefined}
           onCanPlay={() => {
-            setLoading(false)
             setReady(true)
           }}
           onError={() => {
-            setLoading(false)
+            if (!src) return
             setReady(false)
-            setError('Unable to load recording')
+            setError('Unable to play recording')
           }}
         />
-        <a
-          href={downloadHref}
-          download={`recording-${callId}.m4a`}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-sm font-semibold hover:bg-white/10 transition-colors shrink-0"
+        <button
+          type="button"
+          onClick={() => void handleDownload()}
+          disabled={downloading || loading}
+          className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-white/70 text-sm font-semibold hover:bg-white/10 transition-colors shrink-0 disabled:opacity-50"
           title="Download recording"
         >
-          <Download className="w-3.5 h-3.5" />
+          {downloading ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <Download className="w-3.5 h-3.5" />
+          )}
           Download
-        </a>
+        </button>
       </div>
 
       {error && (
         <p className="text-xs text-red-400 flex items-center gap-1.5">
           <VolumeX className="w-3.5 h-3.5" />
-          {error}. Try Download.
+          {error}
         </p>
       )}
     </div>

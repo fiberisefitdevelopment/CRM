@@ -35,3 +35,25 @@ export function careOrderTagTone(kind: CareOrderTagKind): 'emerald' | 'amber' | 
       return 'emerald'
   }
 }
+
+/** True if Customer Care or AiSensy already confirmed the COD order. */
+export function hasCodConfirmation(order: {
+  tags?: string | null
+  care_tag?: CareOrderTagEntry | null
+}): boolean {
+  const kind = order?.care_tag?.kind
+  if (kind === 'care_confirmed' || kind === 'aisensy_confirmed') return true
+
+  const tags = String(order?.tags || '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+  if (!tags.trim()) return false
+
+  // Shopify / AiSensy tags e.g. "ai sensy cod confirmed", "aisensy_cod_confirmed"
+  if (tags.includes('ai sensy cod confirmed') || tags.includes('aisensy cod confirmed')) return true
+  if (tags.includes('aisensy') && tags.includes('confirm')) return true
+  if (tags.includes('cod confirmed') && (tags.includes('aisensy') || tags.includes('ai sensy'))) {
+    return true
+  }
+  return false
+}

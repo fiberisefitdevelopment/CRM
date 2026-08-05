@@ -137,9 +137,17 @@ export async function GET(_req: NextRequest) {
     const cacheIsFresh = cacheHasData && now < expiresAt
 
     // Helper: build a paginated JSON response from current cache
-    function serveCachedResponse(isOffline = false) {
+    async function serveCachedResponse(isOffline = false) {
       const { applyNotesToOrders } = require('@/src/services/orderNotesStore')
-      const { applyCareTagsToOrders } = require('@/src/services/careOrderTagStore')
+      const {
+        applyCareTagsToOrders,
+        ensureCareTagsHydrated,
+      } = require('@/src/services/careOrderTagStore') as {
+        applyCareTagsToOrders: (list: any[]) => any[]
+        ensureCareTagsHydrated: () => Promise<void>
+      }
+      // Pull Care confirmed / cancelled from Firestore care tasks into local cache
+      await ensureCareTagsHydrated()
       const decorate = (list: any[]) => applyCareTagsToOrders(applyNotesToOrders(list))
 
       if (orderStatusView && !returnAll) {
@@ -552,30 +560,38 @@ export async function GET(_req: NextRequest) {
           console.error('⚠️ Failed to load post-delivery journey trigger:', e)
         }
 
-        // COD care-task generation (confirmation + delivered follow-ups)
-        try {
-          const { processOrdersForCareTasks } = require('@/src/services/careTasks/generator')
-          processOrdersForCareTasks(enrichedOrders).catch((err: any) =>
-            console.error('⚠️ Failed to process care tasks:', err)
-          )
-        } catch (e) {
-          console.error('⚠️ Failed to load care task generator:', e)
-        }
+        // COD care-task generation (confirmation + delivered follow-ups), then RTO alerts.
+        // Run sequentially so both jobs don't stampede Firestore at once.
+        void (async () => {
+          try {
+            const { processOrdersForCareTasks } = require('@/src/services/careTasks/generator')
+            await processOrdersForCareTasks(enrichedOrders)
+          } catch (e: any) {
+            console.error('⚠️ Failed to process care tasks:', e?.message || e)
+          }
 
-        // Proactively scan for RTO email alerts
-        try {
-          const { shootRtoEmailAlert } = require('@/src/services/emailService')
-          const { isActiveRtoStatus } = require('@/src/utils/orderTimeline')
-          enrichedOrders.forEach((order) => {
-            if (isActiveRtoStatus(order)) {
-              shootRtoEmailAlert(order).catch((err: any) =>
-                console.error(`⚠️ Failed to shoot RTO alert email for order ${order.name || order.id}:`, err)
+          try {
+            const { shootRtoEmailAlert } = require('@/src/services/emailService')
+            const { isActiveRtoStatus } = require('@/src/utils/orderTimeline')
+            const rtoOrders = enrichedOrders.filter((order: any) => isActiveRtoStatus(order))
+            const concurrency = 3
+            for (let i = 0; i < rtoOrders.length; i += concurrency) {
+              const chunk = rtoOrders.slice(i, i + concurrency)
+              await Promise.all(
+                chunk.map((order: any) =>
+                  shootRtoEmailAlert(order).catch((err: any) =>
+                    console.error(
+                      `⚠️ Failed to shoot RTO alert email for order ${order.name || order.id}:`,
+                      err,
+                    ),
+                  ),
+                ),
               )
             }
-          })
-        } catch (e) {
-          console.error('⚠️ Failed to load RTO email alert engine:', e)
-        }
+          } catch (e) {
+            console.error('⚠️ Failed to load RTO email alert engine:', e)
+          }
+        })()
 
         console.log(`✅ Background sync complete: ${combinedOrders.length} orders cached`)
         } catch (err: any) {

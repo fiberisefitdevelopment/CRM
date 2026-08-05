@@ -184,9 +184,34 @@ export function normalizeShipmentStatus(order: any): string {
 }
 
 /**
+ * Awaiting courier pickup (label printed / scheduled / out for pickup / exception).
+ * Own Order Status card — excluded from Not Shipped.
+ */
+export function isReadyForPickupStatus(order: any): boolean {
+  if (order?.cancelled_at) return false
+  if (isActiveRtoStatus(order) || isShiprocketDeliveredStatus(order) || isShiprocketInTransitStatus(order)) {
+    return false
+  }
+  const status = normalizeShipmentStatus(order)
+  if (status === 'ready_pickup' || status === 'pickup_scheduled') return true
+
+  const meta = String(order?.shiprocket_meta?.status || '')
+    .toUpperCase()
+    .trim()
+  if (!meta) return false
+  if (meta.includes('RTO') || meta.includes('DELIVERED') || meta.includes('TRANSIT')) return false
+  return (
+    meta.includes('PICKUP') ||
+    meta === 'LABEL GENERATED' ||
+    meta === 'LABEL PRINTED' ||
+    meta === 'READY TO SHIP'
+  )
+}
+
+/**
  * Not yet handed to courier / left warehouse:
- * unfulfilled, processing, ready for pickup, confirmed, label printed, etc.
- * Excludes in-transit, OFD, delivered, RTO, failed, cancelled.
+ * unfulfilled, processing, confirmed, label printed (pre-pickup), etc.
+ * Excludes ready-for-pickup (own card), in-transit, OFD, delivered, RTO, failed, cancelled.
  */
 export function isNotShippedStatus(order: any): boolean {
   if (order?.cancelled_at) return false
@@ -196,6 +221,7 @@ export function isNotShippedStatus(order: any): boolean {
   if (isActiveRtoStatus(order) || isShiprocketDeliveredStatus(order) || isShiprocketInTransitStatus(order)) {
     return false
   }
+  if (isReadyForPickupStatus(order)) return false
 
   const status = normalizeShipmentStatus(order)
   if (
@@ -209,6 +235,8 @@ export function isNotShippedStatus(order: any): boolean {
       'rto',
       'in_transit',
       'cancelled',
+      'ready_pickup',
+      'pickup_scheduled',
     ].includes(status)
   ) {
     return false
@@ -268,6 +296,45 @@ function metaStatusAttemptLabel(meta: any): string | null {
   return raw ? raw.replace(/_/g, ' ') : null
 }
 
+/**
+ * True when the shipment has entered the courier pipeline (pickup / transit / OFD / NDR).
+ * Excludes NEW / CONFIRMED / SELF FULFILLED where Shiprocket's delivery_delayed flag
+ * often sticks forever and must not inflate Delayed First.
+ */
+export function isInShippingPipeline(order: any): boolean {
+  const status = normalizeShipmentStatus(order)
+  const meta = String(order?.shiprocket_meta?.status || '')
+    .toUpperCase()
+    .trim()
+
+  if (['unfulfilled', 'processing', 'confirmed'].includes(status)) return false
+  if (
+    meta === 'NEW' ||
+    meta === 'CONFIRMED' ||
+    meta === 'SELF FULFILLED' ||
+    meta === 'ORDERED' ||
+    meta === 'FULFILLED'
+  ) {
+    return false
+  }
+
+  if (
+    ['in_transit', 'out_for_delivery', 'attempted_delivery', 'ready_pickup'].includes(status)
+  ) {
+    return true
+  }
+
+  return (
+    meta.includes('PICKUP') ||
+    meta.includes('TRANSIT') ||
+    meta.includes('SHIPPED') ||
+    meta.includes('UNDELIVERED') ||
+    meta.includes('OUT FOR DELIVERY') ||
+    meta.includes('REACHED') ||
+    meta.includes('ATTEMPT')
+  )
+}
+
 /** True when Shiprocket marked delay, or ETD has past and order is still undelivered. */
 export function isOrderDelayed(order: any): boolean {
   const status = normalizeShipmentStatus(order)
@@ -279,23 +346,42 @@ export function isOrderDelayed(order: any): boolean {
   }
   if (order?.cancelled_at) return false
   if (hasRtoInitiated(order) || isActiveRtoStatus(order)) return false
+  // Sticky SR delay flags on never-shipped orders are not "Delayed First"
+  if (!isInShippingPipeline(order)) return false
 
   const meta = order?.shiprocket_meta || {}
   const etd = parseFlexibleDate(meta.etd_date)
   const etdDay = etd ? startOfDay(etd) : null
   const todayDay = startOfDay(new Date())
   const etdPassed = Boolean(etdDay && etdDay.getTime() < todayDay.getTime())
-  const etdIsToday = Boolean(etdDay && etdDay.getTime() === todayDay.getTime())
 
-  // Soft Shiprocket flags (delivery_delayed / delay_reason) often stick while a
-  // replacement clone is still on track. Only treat as Delayed when ETD is due
-  // or past (or there is no ETD to judge against).
+  // Soft Shiprocket flags: only when ETD has actually passed (not merely "due today")
   if (meta.delivery_delayed || meta.delay_reason) {
-    if (!etdDay || etdPassed || etdIsToday) return true
-    return false
+    if (!etdDay) return true
+    return etdPassed
   }
 
   return etdPassed
+}
+
+/**
+ * Open RTO anywhere on the parent/clone trail.
+ * Clone override must not hide an open return on the parent shipment —
+ * unless the replacement clone is already delivered (reship succeeded).
+ */
+export function trailHasActiveRto(order: any, relatedClones: any[] = []): boolean {
+  const live =
+    relatedClones.length > 0 ? relatedClones[relatedClones.length - 1] : order
+  if (isActiveRtoStatus(live)) return true
+  // Parent still in open RTO, clone is a replacement that hasn't been delivered yet
+  if (
+    relatedClones.length > 0 &&
+    isActiveRtoStatus(order) &&
+    !isShiprocketDeliveredStatus(live)
+  ) {
+    return true
+  }
+  return relatedClones.some((c) => isActiveRtoStatus(c))
 }
 
 function startOfDay(d: Date): Date {

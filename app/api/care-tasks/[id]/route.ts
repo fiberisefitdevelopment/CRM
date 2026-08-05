@@ -137,6 +137,7 @@ export async function PATCH(
       patch.status = 'rescheduled' as CareTaskStatus
       patch.scheduledAt = retryAt
       patch.lastUnreachableAt = nowIso
+      patch.rescheduledAt = nowIso
       patch.remarks = body.remarks ? String(body.remarks) : 'Customer unreachable'
       if (body.outcome) patch.outcome = String(body.outcome)
     } else if (action === 'call_after') {
@@ -162,6 +163,7 @@ export async function PATCH(
       }
       patch.status = 'rescheduled' as CareTaskStatus
       patch.scheduledAt = new Date(when).toISOString()
+      patch.rescheduledAt = nowIso
       if (body.remarks) patch.remarks = String(body.remarks)
     } else if (action === 'reschedule' || body.status === 'rescheduled') {
       if (!body.scheduledAt) {
@@ -169,6 +171,7 @@ export async function PATCH(
       }
       patch.status = 'rescheduled'
       patch.scheduledAt = String(body.scheduledAt)
+      patch.rescheduledAt = nowIso
       if (body.remarks) patch.remarks = String(body.remarks)
     } else if (action === 'escalate' || body.status === 'escalated') {
       const reason = String(body.remarks || '').trim()

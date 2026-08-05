@@ -174,7 +174,31 @@ async function createTaskIfMissing(params: {
       }
       return null
     }
-    throw err
+    // One retry on transient Firestore timeouts
+    if (
+      code === 4 ||
+      code === 'deadline-exceeded' ||
+      /DEADLINE_EXCEEDED/i.test(msg)
+    ) {
+      await new Promise((r) => setTimeout(r, 1500))
+      try {
+        await ref.create({
+          ...doc,
+          createdAtTs: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      } catch (retryErr: any) {
+        const rCode = retryErr?.code
+        const rMsg = String(retryErr?.message || '')
+        if (rCode === 6 || rCode === 'already-exists' || /already exists/i.test(rMsg)) {
+          return null
+        }
+        throw retryErr
+      }
+      // fall through to logging below on success
+    } else {
+      throw err
+    }
   }
 
   if (!params.quiet) {
@@ -399,6 +423,20 @@ export async function processOrdersForCareTasks(
   return result
 }
 
+function inferCareOrderTag(
+  data: Record<string, any>,
+): CareTask['careOrderTag'] {
+  const raw = String(data.careOrderTag || '').trim()
+  if (raw === 'care_confirmed' || raw === 'care_cancelled' || raw === 'aisensy_confirmed') {
+    return raw
+  }
+  // Recover tags when Firestore field was dropped but outcome text remains
+  const outcome = String(data.outcome || '').toLowerCase()
+  if (outcome.includes('cod confirmed by customer care')) return 'care_confirmed'
+  if (outcome.includes('cancel requested by customer care')) return 'care_cancelled'
+  return null
+}
+
 export function serializeCareTask(id: string, data: Record<string, any>): CareTask {
   return {
     id,
@@ -424,6 +462,7 @@ export function serializeCareTask(id: string, data: Record<string, any>): CareTa
     customerRating:
       typeof data.customerRating === 'number' ? data.customerRating : undefined,
     lastUnreachableAt: data.lastUnreachableAt || null,
+    rescheduledAt: data.rescheduledAt || null,
     notes: Array.isArray(data.notes) ? data.notes : [],
     lastCall: data.lastCall || null,
     calls: Array.isArray(data.calls) ? data.calls : [],
@@ -433,5 +472,6 @@ export function serializeCareTask(id: string, data: Record<string, any>): CareTa
     source: data.source || 'auto',
     overdueNotifiedAt: data.overdueNotifiedAt || null,
     companyId: data.companyId,
+    careOrderTag: inferCareOrderTag(data),
   }
 }

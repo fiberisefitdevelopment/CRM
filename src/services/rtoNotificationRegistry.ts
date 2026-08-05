@@ -5,6 +5,7 @@ import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 
 const COLLECTION = 'rto_notified_orders'
 const LEGACY_LOG_FILE_PATH = path.join(process.cwd(), 'src/services/rto_notified_orders.json')
+const MIGRATED_MARKER_PATH = path.join(process.cwd(), 'src/services/.rto_notified_orders.migrated')
 
 let legacyMigrationPromise: Promise<void> | null = null
 
@@ -37,12 +38,40 @@ function writeLegacyNotifiedIds(ids: string[]): void {
   }
 }
 
+function isLegacyMigrationDone(): boolean {
+  try {
+    if (fs.existsSync(MIGRATED_MARKER_PATH)) return true
+    const ids = readLegacyNotifiedIds()
+    return ids.length === 0
+  } catch {
+    return false
+  }
+}
+
+function markLegacyMigrationDone(): void {
+  try {
+    fs.writeFileSync(
+      MIGRATED_MARKER_PATH,
+      JSON.stringify({ migratedAt: new Date().toISOString() }),
+      'utf-8',
+    )
+  } catch (error) {
+    console.error('⚠️ Failed to write RTO migration marker:', error)
+  }
+}
+
 async function migrateLegacyRegistryToFirestore(): Promise<void> {
+  if (isLegacyMigrationDone()) return
+
   const legacyIds = readLegacyNotifiedIds()
-  if (legacyIds.length === 0) return
+  if (legacyIds.length === 0) {
+    markLegacyMigrationDone()
+    return
+  }
 
   const db = getDb()
-  const batchSize = 400
+  // Keep batches small — large commits time out when Firestore is under load
+  const batchSize = 50
 
   for (let i = 0; i < legacyIds.length; i += batchSize) {
     const chunk = legacyIds.slice(i, i + batchSize)
@@ -57,23 +86,33 @@ async function migrateLegacyRegistryToFirestore(): Promise<void> {
           source: 'legacy_json_migration',
           notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
         },
-        { merge: true }
+        { merge: true },
       )
     }
 
     await batch.commit()
   }
 
+  markLegacyMigrationDone()
   console.log(`✅ Migrated ${legacyIds.length} legacy RTO notification records to Firestore`)
 }
 
-async function ensureLegacyMigration(): Promise<void> {
-  if (!legacyMigrationPromise) {
-    legacyMigrationPromise = migrateLegacyRegistryToFirestore().catch((error) => {
+/** Fire-and-forget single-flight migration — never blocks RTO claims. */
+function kickLegacyMigration(): void {
+  if (isLegacyMigrationDone()) return
+  if (legacyMigrationPromise) return
+
+  legacyMigrationPromise = migrateLegacyRegistryToFirestore()
+    .catch((error) => {
       console.error('⚠️ Failed to migrate legacy RTO notification registry:', error)
+      // Allow a later retry after transient DEADLINE_EXCEEDED
+      legacyMigrationPromise = null
     })
-  }
-  await legacyMigrationPromise
+    .then(() => {
+      // Keep promise settled on success so we don't re-enter
+      if (isLegacyMigrationDone()) return
+      legacyMigrationPromise = null
+    })
 }
 
 function isAlreadyExistsError(error: unknown): boolean {
@@ -86,8 +125,19 @@ function isAlreadyExistsError(error: unknown): boolean {
   )
 }
 
+function isDeadlineExceeded(error: unknown): boolean {
+  const err = error as { code?: number | string; message?: string }
+  return (
+    err?.code === 4 ||
+    err?.code === 'deadline-exceeded' ||
+    err?.code === 'DEADLINE_EXCEEDED' ||
+    Boolean(err?.message?.includes('DEADLINE_EXCEEDED'))
+  )
+}
+
 async function claimInFirestore(orderId: string, orderName: string): Promise<boolean> {
-  await ensureLegacyMigration()
+  // Migration must not gate claims — it was causing 60s timeouts on every RTO alert
+  kickLegacyMigration()
 
   const db = getDb()
   const ref = db.collection(COLLECTION).doc(orderId)
@@ -137,7 +187,13 @@ export async function claimRtoNotification(orderId: string, orderName: string): 
   try {
     return await claimInFirestore(normalizedId, orderName)
   } catch (error) {
-    console.warn('⚠️ Firestore RTO registry unavailable, using legacy file fallback:', error)
+    if (isDeadlineExceeded(error)) {
+      console.warn(
+        `⚠️ Firestore RTO claim timed out for ${orderName || normalizedId}, using legacy file fallback`,
+      )
+    } else {
+      console.warn('⚠️ Firestore RTO registry unavailable, using legacy file fallback:', error)
+    }
     return claimInLegacyFile(normalizedId)
   }
 }

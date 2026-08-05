@@ -73,6 +73,8 @@ export interface CareTask {
   customerRating?: number
   /** When the executive last marked the customer unreachable */
   lastUnreachableAt?: string | null
+  /** When Call After / reschedule was submitted */
+  rescheduledAt?: string | null
   notes: CareTaskNote[]
   lastCall?: CareLinkedCall | null
   calls: CareLinkedCall[]
@@ -82,6 +84,8 @@ export interface CareTask {
   source: 'auto' | 'manual'
   overdueNotifiedAt?: string | null
   companyId?: string
+  /** Display tag written on confirm_cod / cancel_cod */
+  careOrderTag?: 'care_confirmed' | 'care_cancelled' | 'aisensy_confirmed' | null
 }
 
 /** UI / filter buckets for call-type tabs */

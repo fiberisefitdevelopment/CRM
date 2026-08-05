@@ -15,6 +15,7 @@ export interface CareSchedulerResult {
   ordersProcessed: Awaited<ReturnType<typeof processOrdersForCareTasks>>
   callsSynced: Awaited<ReturnType<typeof syncSalestrailCallsToCareTasks>>
   overdueMarked: number
+  promotedReschedules: number
 }
 
 /** Mark pending tasks past schedule + SLA as needing attention (status stays pending; flag for UI). */
@@ -46,10 +47,41 @@ async function sweepOverdue(): Promise<number> {
   return marked
 }
 
+/** Call After / unreachable retries whose time has arrived → back to To do. */
+async function promoteDueReschedules(): Promise<number> {
+  const snap = await getDb()
+    .collection('careTasks')
+    .where('status', '==', 'rescheduled')
+    .limit(500)
+    .get()
+
+  if (snap.empty) return 0
+
+  const now = Date.now()
+  const due = snap.docs.filter((d) => {
+    const ts = new Date(String(d.data().scheduledAt || '')).getTime()
+    return Number.isFinite(ts) && ts <= now
+  })
+  if (!due.length) return 0
+
+  const batch = getDb().batch()
+  const updatedAt = new Date().toISOString()
+  for (const doc of due.slice(0, 200)) {
+    batch.update(doc.ref, {
+      status: 'pending',
+      updatedAt,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+  await batch.commit()
+  return Math.min(due.length, 200)
+}
+
 export async function runCareTaskScheduler(): Promise<CareSchedulerResult> {
   const orders = getCachedOrders() || []
   const ordersProcessed = await processOrdersForCareTasks(orders)
   const callsSynced = await syncSalestrailCallsToCareTasks(48)
+  const promotedReschedules = await promoteDueReschedules()
   const overdueMarked = await sweepOverdue()
   invalidateCareTasksCache()
 
@@ -60,10 +92,11 @@ export async function runCareTaskScheduler(): Promise<CareSchedulerResult> {
       confirmationCreated: ordersProcessed.confirmationCreated,
       followupsCreated: ordersProcessed.followupsCreated,
       callsAttached: callsSynced.attached,
+      promotedReschedules,
       overdueMarked,
     },
     status: 'success',
   })
 
-  return { ordersProcessed, callsSynced, overdueMarked }
+  return { ordersProcessed, callsSynced, overdueMarked, promotedReschedules }
 }

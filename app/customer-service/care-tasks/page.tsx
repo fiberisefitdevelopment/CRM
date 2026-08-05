@@ -1273,6 +1273,32 @@ export default function CareTasksPage() {
                             <li style={{ color: 'var(--foreground)' }}>
                               Scheduled · <span style={{ color: 'var(--foreground-muted)' }}>{fmtWhen(task.scheduledAt)}</span>
                             </li>
+                            {(task.rescheduledAt || task.status === 'rescheduled') && (
+                              <>
+                                <li style={{ color: 'var(--foreground)' }}>
+                                  Call after requested ·{' '}
+                                  <span style={{ color: 'var(--foreground-muted)' }}>
+                                    {fmtWhen(task.rescheduledAt || task.updatedAt || task.createdAt)}
+                                  </span>
+                                </li>
+                                <li style={{ color: 'var(--foreground)' }}>
+                                  {new Date(task.scheduledAt).getTime() <= Date.now()
+                                    ? 'Moved to To do · '
+                                    : 'Moves to To do · '}
+                                  <span style={{ color: 'var(--foreground-muted)' }}>
+                                    {fmtWhen(task.scheduledAt)}
+                                  </span>
+                                </li>
+                              </>
+                            )}
+                            {task.lastUnreachableAt && (
+                              <li style={{ color: 'var(--foreground)' }}>
+                                Marked unreachable ·{' '}
+                                <span style={{ color: 'var(--foreground-muted)' }}>
+                                  {fmtWhen(task.lastUnreachableAt)}
+                                </span>
+                              </li>
+                            )}
                             {(task.notes || []).slice(0, 3).map((n) => (
                               <li key={n.id} style={{ color: 'var(--foreground)' }}>
                                 <StickyNote className="w-3 h-3 inline mr-1 opacity-50" />

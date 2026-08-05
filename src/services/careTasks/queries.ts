@@ -2,7 +2,11 @@ import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { getCachedOrders } from '@/src/services/ordersCache'
 import { findCloneTrail } from '@/src/utils/cloneOrders'
-import { isShiprocketDeliveredStatus } from '@/src/utils/orderTimeline'
+import {
+  isActiveRtoStatus,
+  isShiprocketDeliveredStatus,
+  normalizeShipmentStatus,
+} from '@/src/utils/orderTimeline'
 import {
   computeFollowupScheduledAt,
   createdDate,
@@ -189,6 +193,39 @@ function excludeDeliveredCodConfirmations(tasks: CareTask[]): CareTask[] {
   })
 }
 
+function isCareOrderCancelled(order: any): boolean {
+  if (!order) return false
+  if (order.cancelled_at) return true
+  const financial = String(order.financial_status || '').toLowerCase()
+  if (financial === 'voided' || financial === 'cancelled') return true
+  return normalizeShipmentStatus(order) === 'cancelled'
+}
+
+function isCareOrderRto(order: any): boolean {
+  if (!order) return false
+  if (isActiveRtoStatus(order)) return true
+  const status = normalizeShipmentStatus(order)
+  return status === 'rto' || status === 'rto_delivered'
+}
+
+/**
+ * Hide open care work for cancelled / RTO Initiated / RTO Delivered orders
+ * (still keep completed history).
+ */
+function excludeNonActionableOrderTasks(tasks: CareTask[]): CareTask[] {
+  const orders = getCachedOrders() || []
+  if (!orders.length) return tasks
+
+  return tasks.filter((t) => {
+    if (t.status === 'completed') return true
+    const order = resolveTaskOrder(t, orders)
+    if (!order) return true
+    const { operational } = findCloneTrail(order, orders)
+    const live = operational || order
+    return !isCareOrderCancelled(live) && !isCareOrderRto(live)
+  })
+}
+
 /** Page through the whole careTasks collection — same source for admin and executives. */
 async function fetchAllTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot[]> {
   const col = getDb().collection('careTasks')
@@ -258,9 +295,56 @@ async function docsToEnrichedTasks(
   docs: admin.firestore.QueryDocumentSnapshot[],
 ): Promise<CareTask[]> {
   const rawTasks = docs.map((d) => serializeCareTask(d.id, d.data()))
+  try {
+    const { syncCareTagsFromCareTasks } = require('@/src/services/careOrderTagStore') as {
+      syncCareTagsFromCareTasks: (tasks: CareTask[]) => number
+    }
+    syncCareTagsFromCareTasks(rawTasks)
+  } catch {
+    // tag store unavailable
+  }
   const enriched = enrichOrderCreatedAt(rawTasks)
   persistScheduledAtRepairs(rawTasks, enriched)
-  return excludeDeliveredCodConfirmations(enriched)
+  const promoted = promoteDueReschedules(enriched)
+  return excludeNonActionableOrderTasks(excludeDeliveredCodConfirmations(promoted))
+}
+
+/** When Call After time arrives, move task back to To do (pending). */
+function promoteDueReschedules(tasks: CareTask[]): CareTask[] {
+  const now = Date.now()
+  const dueIds: string[] = []
+  const next = tasks.map((t) => {
+    if (t.status !== 'rescheduled') return t
+    const due = new Date(t.scheduledAt).getTime()
+    if (!Number.isFinite(due) || due > now) return t
+    dueIds.push(t.id)
+    return { ...t, status: 'pending' as const }
+  })
+  if (dueIds.length) persistPromoteDueReschedules(dueIds)
+  return next
+}
+
+function persistPromoteDueReschedules(ids: string[]): void {
+  void (async () => {
+    try {
+      const db = getDb()
+      const chunk = ids.slice(0, 200)
+      const batch = db.batch()
+      const now = new Date().toISOString()
+      for (const id of chunk) {
+        batch.update(db.collection('careTasks').doc(id), {
+          status: 'pending',
+          updatedAt: now,
+          updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      }
+      await batch.commit()
+      invalidateCareTasksCache()
+      console.log(`careTasks: promoted ${chunk.length} due reschedules back to To do`)
+    } catch (err) {
+      console.warn('careTasks: promote due reschedules failed', err)
+    }
+  })()
 }
 
 /** Org-wide enriched tasks (cached ~20s, single-flight). */
@@ -327,7 +411,14 @@ function filterTasksClient(
       // Open queue only — Call After / escalations live in their own tabs
       list = list.filter((t) => t.status === 'pending')
     } else if (params.status === 'rescheduled') {
-      list = list.filter((t) => t.status === 'rescheduled')
+      // Future Call After only — due ones are promoted back to To do
+      const now = Date.now()
+      list = list.filter(
+        (t) =>
+          t.status === 'rescheduled' &&
+          Number.isFinite(new Date(t.scheduledAt).getTime()) &&
+          new Date(t.scheduledAt).getTime() > now,
+      )
     } else if (params.status === 'escalated') {
       list = list.filter((t) => t.status === 'escalated')
     } else {
@@ -454,7 +545,9 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
 export async function getCareTaskById(id: string): Promise<CareTask | null> {
   const snap = await getDb().collection('careTasks').doc(id).get()
   if (!snap.exists) return null
-  const [task] = enrichOrderCreatedAt([serializeCareTask(snap.id, snap.data() || {})])
+  const [task] = promoteDueReschedules(
+    enrichOrderCreatedAt([serializeCareTask(snap.id, snap.data() || {})]),
+  )
   return task
 }
 
@@ -482,7 +575,12 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
   for (const t of tasks) {
     if (t.status === 'completed') summary.completed += 1
     if (t.status === 'pending') summary.pending += 1
-    if (t.status === 'rescheduled') summary.rescheduled += 1
+    if (t.status === 'rescheduled') {
+      const due = new Date(t.scheduledAt).getTime()
+      // Due reschedules are treated as To do after promote; count only still-waiting ones
+      if (Number.isFinite(due) && due > Date.now()) summary.rescheduled += 1
+      else summary.pending += 1
+    }
     if (t.status === 'escalated') summary.escalated += 1
     if (t.status === 'unreachable') summary.unreachable += 1
     if (t.status === 'pending' && isOverdue(t)) {

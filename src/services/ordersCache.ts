@@ -12,17 +12,22 @@ import {
   isCreatedInDateRange,
   isNotShippedStatus,
   isOrderDelayed,
+  isReadyForPickupStatus,
   isShiprocketDeliveredStatus,
   isShiprocketInTransitStatus,
   normalizeShipmentStatus,
   paymentLabel,
   toIstDateKey,
+  trailHasActiveRto,
 } from '@/src/utils/orderTimeline'
 import {
   cleanOrderName,
   getCloneParentBase,
   getOperationalOrder,
 } from '@/src/utils/cloneOrders'
+import { isCodOrder } from '@/src/utils/orderPayment'
+import { hasCodConfirmation } from '@/src/utils/careOrderTags'
+import { lookupCareOrderTag } from '@/src/services/careOrderTagStore'
 
 export let cachedOrders: any[] | null = null
 export let cacheExpiresAt = 0
@@ -182,6 +187,26 @@ function isOrderCancelled(order: any): boolean {
     order.financial_status?.toLowerCase() === 'refunded' ||
     order.fulfillments?.[0]?.shipment_status === 'cancelled'
   )
+}
+
+/** COD with no Care confirmed and no AiSensy confirmed tag. */
+function isCodNotConfirmed(order: any, live?: any): boolean {
+  if (!isCodOrder(order)) return false
+  if (isOrderCancelled(live || order)) return false
+  const careTag = order.care_tag || lookupCareOrderTag(order.id, order.name)
+  return !hasCodConfirmation({ ...order, care_tag: careTag })
+}
+
+/**
+ * Not Shipped bucket: prepaid + not shipped, or COD confirmed via
+ * Customer Care / AiSensy + not shipped. Unconfirmed COD stays in COD Not Confirmed.
+ */
+function isNotShippedBucket(order: any, live?: any): boolean {
+  const op = live || order
+  if (isOrderCancelled(op) || !isNotShippedStatus(op)) return false
+  if (!isCodOrder(order)) return true
+  const careTag = order.care_tag || lookupCareOrderTag(order.id, order.name)
+  return hasCodConfirmation({ ...order, care_tag: careTag })
 }
 
 /** Resolve date presets / bounds to inclusive IST YYYY-MM-DD keys (Shiprocket parity). */
@@ -570,8 +595,10 @@ export type OrderStatusDeliveryFilter =
   | 'rto_delivered'
   | 'cancelled'
   | 'not_shipped'
+  | 'ready_for_pickup'
   | 'delayed'
   | 'rto_alerts'
+  | 'cod_not_confirmed'
 
 export interface OrderStatusListFilters extends OrderFilters {
   deliveryStatus?: OrderStatusDeliveryFilter
@@ -607,6 +634,8 @@ export function getOrderStatusPaginated(
     rto: number
     cancelled: number
     notShipped: number
+    readyForPickup: number
+    codNotConfirmed: number
     values: {
       total: number
       delivered: number
@@ -615,6 +644,8 @@ export function getOrderStatusPaginated(
       rto: number
       cancelled: number
       notShipped: number
+      readyForPickup: number
+      codNotConfirmed: number
     }
   }
   channelBreakdown: { shopify: number; shiprocket: number }
@@ -670,6 +701,7 @@ export function getOrderStatusPaginated(
       live.fulfillments?.[0]?.tracking_company ||
       o.fulfillments?.[0]?.tracking_company ||
       ''
+    const activeRto = trailHasActiveRto(o, relatedClones)
 
     if (filters.courier && filters.courier !== 'all' && company !== filters.courier) return false
     if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
@@ -679,16 +711,27 @@ export function getOrderStatusPaginated(
     if (deliveryStatus === 'not_delivered' && isShiprocketDeliveredStatus(live)) return false
     if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(live)) return false
     if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
-    if (deliveryStatus === 'rto' && !isActiveRtoStatus(live)) return false
+    if (deliveryStatus === 'rto' && !activeRto) return false
     if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
     if (deliveryStatus === 'cancelled' && !isOrderCancelled(live)) return false
-    if (deliveryStatus === 'not_shipped' && (isOrderCancelled(live) || !isNotShippedStatus(live)))
+    if (deliveryStatus === 'not_shipped' && !isNotShippedBucket(o, live)) return false
+    if (
+      deliveryStatus === 'ready_for_pickup' &&
+      (isOrderCancelled(live) || !isReadyForPickupStatus(live))
+    ) {
       return false
-    if (deliveryStatus === 'delayed' && (isOrderCancelled(live) || !isOrderDelayed(live)))
+    }
+    // Delayed First: in-pipeline past ETD only — never open RTO (parent or clone)
+    if (
+      deliveryStatus === 'delayed' &&
+      (isOrderCancelled(live) || activeRto || !isOrderDelayed(live))
+    ) {
       return false
+    }
+    if (deliveryStatus === 'cod_not_confirmed' && !isCodNotConfirmed(o, live)) return false
     if (
       deliveryStatus === 'rto_alerts' &&
-      !isActiveRtoStatus(live) &&
+      !activeRto &&
       buildAlerts(live).length === 0
     ) {
       return false
@@ -696,6 +739,7 @@ export function getOrderStatusPaginated(
     if (
       deliveryStatus !== 'all' &&
       deliveryStatus !== 'cancelled' &&
+      deliveryStatus !== 'cod_not_confirmed' &&
       isOrderCancelled(live)
     ) {
       return false
@@ -727,6 +771,8 @@ export function getOrderStatusPaginated(
     rto: 0,
     cancelled: 0,
     notShipped: 0,
+    readyForPickup: 0,
+    codNotConfirmed: 0,
     values: {
       total: 0,
       delivered: 0,
@@ -735,6 +781,8 @@ export function getOrderStatusPaginated(
       rto: 0,
       cancelled: 0,
       notShipped: 0,
+      readyForPickup: 0,
+      codNotConfirmed: 0,
     },
   }
 
@@ -743,7 +791,7 @@ export function getOrderStatusPaginated(
     const live = getOperationalOrder(o, relatedClones)
     const price = orderPrice(o)
     const cancelled = isOrderCancelled(live)
-    const activeRto = !cancelled && isActiveRtoStatus(live)
+    const activeRto = !cancelled && trailHasActiveRto(o, relatedClones)
     summary.total++
     summary.values.total += price
     if (cancelled) {
@@ -751,9 +799,17 @@ export function getOrderStatusPaginated(
       summary.values.cancelled += price
       continue
     }
-    if (isNotShippedStatus(live)) {
+    if (isCodNotConfirmed(o, live)) {
+      summary.codNotConfirmed++
+      summary.values.codNotConfirmed += price
+    }
+    if (isNotShippedBucket(o, live)) {
       summary.notShipped++
       summary.values.notShipped += price
+    }
+    if (isReadyForPickupStatus(live)) {
+      summary.readyForPickup++
+      summary.values.readyForPickup += price
     }
     if (isShiprocketDeliveredStatus(live)) {
       summary.delivered++

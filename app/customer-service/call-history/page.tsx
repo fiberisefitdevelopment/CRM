@@ -23,6 +23,7 @@ import { CallDetailsDrawer } from '@/components/customer-service/CallDetailsDraw
 import { CallAudioPlayer } from '@/components/customer-service/CallAudioPlayer'
 import { CallStatusBadge, boolBadge } from '@/components/customer-service/CallStatusBadge'
 import { ErrorToast } from '@/components/ErrorToast'
+import { apiFetch } from '@/lib/auth'
 import {
   CallData,
   copyText,
@@ -34,6 +35,32 @@ import {
   formatDuration,
   getRecordingStreamUrl,
 } from '@/lib/customerServiceApi'
+
+async function downloadRecording(callId: string) {
+  const res = await apiFetch(
+    `${getRecordingStreamUrl(callId, 'proxy')}&download=1`,
+    { cache: 'no-store' },
+  )
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error((data as { error?: string })?.error || 'Download failed')
+  }
+  const blob = await res.blob()
+  const type = blob.type || 'audio/mp4'
+  const ext = type.includes('wav')
+    ? 'wav'
+    : type.includes('mpeg') || type.includes('mp3')
+      ? 'mp3'
+      : 'm4a'
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `recording-${callId}.${ext}`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
 
 type ColKey =
   | 'callId'
@@ -495,7 +522,11 @@ export default function CallHistoryPage() {
                                 icon={Download}
                                 label="Download Recording"
                                 onClick={() => {
-                                  window.open(getRecordingStreamUrl(call.callId, 'proxy'), '_blank')
+                                  void downloadRecording(call.callId)
+                                    .then(() => setToast('Download started'))
+                                    .catch((err) =>
+                                      setToast(err?.message || 'Download failed'),
+                                    )
                                   setMenuOpen(null)
                                 }}
                               />

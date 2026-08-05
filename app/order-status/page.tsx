@@ -433,7 +433,6 @@ function OrderStatusCard({
                     Clone{parentOrder ? ` of ${parentOrder.name}` : ''}
                   </span>
                 )}
-                <CareOrderTagBadge tag={(order as OrderRow).care_tag} />
               </p>
               <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
                 {order.name}
@@ -470,6 +469,7 @@ function OrderStatusCard({
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone(isCodOrder(order) ? 'amber' : 'emerald')}`}>
                   {payMethod}
                 </span>
+                <CareOrderTagBadge tag={(order as OrderRow).care_tag} />
               </div>
               <p className="text-sm font-bold mt-1" style={{ color: 'var(--foreground)' }}>
                 ₹{order.total_price}
@@ -922,6 +922,8 @@ type OrderStatusSummary = {
   rto: number
   cancelled: number
   notShipped: number
+  readyForPickup: number
+  codNotConfirmed: number
   values: {
     total: number
     delivered: number
@@ -930,6 +932,8 @@ type OrderStatusSummary = {
     rto: number
     cancelled: number
     notShipped: number
+    readyForPickup: number
+    codNotConfirmed: number
   }
 }
 
@@ -959,6 +963,8 @@ export default function OrderStatusPage() {
     rto: 0,
     cancelled: 0,
     notShipped: 0,
+    readyForPickup: 0,
+    codNotConfirmed: 0,
     values: {
       total: 0,
       delivered: 0,
@@ -967,6 +973,8 @@ export default function OrderStatusPage() {
       rto: 0,
       cancelled: 0,
       notShipped: 0,
+      readyForPickup: 0,
+      codNotConfirmed: 0,
     },
   })
 
@@ -1026,7 +1034,30 @@ export default function OrderStatusPage() {
         setTotal(Number(pag.total || 0))
         setTotalPages(Math.max(1, Number(pag.total_pages || 1)))
         if (pag.page && Number(pag.page) !== page) setPage(Number(pag.page))
-        if (data.summary) setSummary(data.summary)
+        if (data.summary) {
+          setSummary({
+            total: Number(data.summary.total || 0),
+            delivered: Number(data.summary.delivered || 0),
+            inTransit: Number(data.summary.inTransit || 0),
+            delayed: Number(data.summary.delayed || 0),
+            rto: Number(data.summary.rto || 0),
+            cancelled: Number(data.summary.cancelled || 0),
+            notShipped: Number(data.summary.notShipped || 0),
+            readyForPickup: Number(data.summary.readyForPickup || 0),
+            codNotConfirmed: Number(data.summary.codNotConfirmed || 0),
+            values: {
+              total: Number(data.summary.values?.total || 0),
+              delivered: Number(data.summary.values?.delivered || 0),
+              inTransit: Number(data.summary.values?.inTransit || 0),
+              delayed: Number(data.summary.values?.delayed || 0),
+              rto: Number(data.summary.values?.rto || 0),
+              cancelled: Number(data.summary.values?.cancelled || 0),
+              notShipped: Number(data.summary.values?.notShipped || 0),
+              readyForPickup: Number(data.summary.values?.readyForPickup || 0),
+              codNotConfirmed: Number(data.summary.values?.codNotConfirmed || 0),
+            },
+          })
+        }
         if (Array.isArray(data.couriers)) setCouriers(data.couriers)
         if (data.channelBreakdown) setChannelBreakdown(data.channelBreakdown)
         setLastSynced(new Date())
@@ -1210,7 +1241,7 @@ export default function OrderStatusPage() {
           </div>
 
           {/* Summary — click a card to filter the list */}
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-3 mb-5">
             {([
               {
                 label: 'Orders',
@@ -1225,6 +1256,20 @@ export default function OrderStatusPage() {
                 amount: summary.values.notShipped,
                 tone: 'slate',
                 key: 'not_shipped',
+              },
+              {
+                label: 'Ready for Pickup',
+                value: summary.readyForPickup,
+                amount: summary.values.readyForPickup,
+                tone: 'blue',
+                key: 'ready_for_pickup',
+              },
+              {
+                label: 'COD Not Confirmed',
+                value: summary.codNotConfirmed,
+                amount: summary.values.codNotConfirmed,
+                tone: 'amber',
+                key: 'cod_not_confirmed',
               },
               {
                 label: 'Delayed First',
@@ -1369,6 +1414,8 @@ export default function OrderStatusPage() {
               <select value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
                 <option value="all">All Delivery Status</option>
                 <option value="not_shipped">Not Shipped</option>
+                <option value="ready_for_pickup">Ready for Pickup</option>
+                <option value="cod_not_confirmed">COD Not Confirmed</option>
                 <option value="delayed">Delayed Only</option>
                 <option value="delivered">Delivered</option>
                 <option value="not_delivered">Not Delivered</option>
