@@ -2,11 +2,7 @@ export const dynamic = 'force-dynamic'
 export const maxDuration = 120
 
 import { NextRequest, NextResponse } from 'next/server'
-import {
-  getCachedOrders,
-  setCachedOrders,
-  getCacheExpiresAt,
-} from '@/src/services/ordersCache'
+import { OrderRepository } from '@/src/repositories/orderRepository'
 import { processOrdersForCareTasks } from '@/src/services/careTasks/generator'
 import { invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { seedAdminUser } from '@/src/services/auth'
@@ -25,7 +21,7 @@ async function refreshRecentOrdersIntoCache(limit = 50): Promise<{
   cacheSize: number
 }> {
   if (!SHOP_DOMAIN || !ADMIN_TOKEN) {
-    return { pulled: 0, cacheSize: (getCachedOrders() || []).length }
+    return { pulled: 0, cacheSize: ((await OrderRepository.getCachedOrders()) || []).length }
   }
 
   const url = `https://${SHOP_DOMAIN}/admin/api/${API_VERSION}/orders.json?limit=${Math.min(
@@ -49,7 +45,7 @@ async function refreshRecentOrdersIntoCache(limit = 50): Promise<{
 
   const data = await res.json()
   const fresh: any[] = Array.isArray(data.orders) ? data.orders : []
-  const existing = getCachedOrders() || []
+  const existing = (await OrderRepository.getCachedOrders()) || []
   const byId = new Map(existing.map((o: any) => [String(o.id), o]))
 
   for (const o of fresh) {
@@ -71,8 +67,8 @@ async function refreshRecentOrdersIntoCache(limit = 50): Promise<{
     (a: any, b: any) =>
       new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime(),
   )
-  const ttl = getCacheExpiresAt() || Date.now() + 5 * 60 * 1000
-  setCachedOrders(merged, Math.max(ttl, Date.now() + 60 * 1000))
+  const ttl = OrderRepository.getCacheExpiresAt() || Date.now() + 5 * 60 * 1000
+  OrderRepository.setCachedOrders(merged, Math.max(ttl, Date.now() + 60 * 1000))
   return { pulled: fresh.length, cacheSize: merged.length }
 }
 
@@ -102,7 +98,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const orders = getCachedOrders() || []
+    const orders = (await OrderRepository.getCachedOrders()) || []
     if (!orders.length) {
       return NextResponse.json(
         {

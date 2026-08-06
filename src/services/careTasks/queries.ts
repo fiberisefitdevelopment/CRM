@@ -1,6 +1,6 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
-import { getCachedOrders } from '@/src/services/ordersCache'
+import { OrderRepository } from '@/src/repositories/orderRepository'
 import { findCloneTrail } from '@/src/utils/cloneOrders'
 import {
   isActiveRtoStatus,
@@ -12,7 +12,7 @@ import {
   createdDate,
   serializeCareTask,
 } from './generator'
-import { invalidateCareTasksCache, loadCareTasksCached, getCachedCareTasks } from './taskCache'
+import { invalidateCareTasksCache, loadCareTasksCached } from './taskCache'
 import {
   getCareTaskKind,
   type CareTask,
@@ -109,8 +109,7 @@ function normalizePageSize(value?: number): CarePageSize {
   return 20
 }
 
-function enrichOrderCreatedAt(tasks: CareTask[]): CareTask[] {
-  const orders = getCachedOrders() || []
+function enrichOrderCreatedAt(tasks: CareTask[], orders: any[]): CareTask[] {
   if (!orders.length) return tasks
   const byId = new Map(orders.map((o: any) => [String(o.id), o]))
   const byName = new Map(
@@ -180,8 +179,7 @@ function resolveTaskOrder(task: CareTask, orders: any[]): any | null {
  * COD confirmation is only relevant pre-delivery.
  * Hide those tasks once the order (or its live clone) is delivered.
  */
-function excludeDeliveredCodConfirmations(tasks: CareTask[]): CareTask[] {
-  const orders = getCachedOrders() || []
+function excludeDeliveredCodConfirmations(tasks: CareTask[], orders: any[]): CareTask[] {
   if (!orders.length) return tasks
 
   return tasks.filter((t) => {
@@ -212,8 +210,7 @@ function isCareOrderRto(order: any): boolean {
  * Hide open care work for cancelled / RTO Initiated / RTO Delivered orders
  * (still keep completed history).
  */
-function excludeNonActionableOrderTasks(tasks: CareTask[]): CareTask[] {
-  const orders = getCachedOrders() || []
+function excludeNonActionableOrderTasks(tasks: CareTask[], orders: any[]): CareTask[] {
   if (!orders.length) return tasks
 
   return tasks.filter((t) => {
@@ -275,13 +272,15 @@ async function fetchAllTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot
 /** Active work queue only — much smaller than the full history. */
 async function fetchActiveTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot[]> {
   try {
-    const snap = await getDb()
-      .collection('careTasks')
-      .where('status', 'in', ['pending', 'rescheduled', 'escalated'])
-      .get()
-    return snap.docs
+    const statuses = ['pending', 'rescheduled', 'escalated'] as const
+    const snaps = await Promise.all(
+      statuses.map((status) =>
+        getDb().collection('careTasks').where('status', '==', status).get(),
+      ),
+    )
+    return snaps.flatMap((snap) => snap.docs)
   } catch {
-    // Fallback if composite/in query unsupported
+    // Fallback if queries fail
     return fetchAllTaskDocs()
   }
 }
@@ -303,10 +302,11 @@ async function docsToEnrichedTasks(
   } catch {
     // tag store unavailable
   }
-  const enriched = enrichOrderCreatedAt(rawTasks)
+  const orders = (await OrderRepository.getCachedOrders()) || []
+  const enriched = enrichOrderCreatedAt(rawTasks, orders)
   persistScheduledAtRepairs(rawTasks, enriched)
   const promoted = promoteDueReschedules(enriched)
-  return excludeNonActionableOrderTasks(excludeDeliveredCodConfirmations(promoted))
+  return excludeNonActionableOrderTasks(excludeDeliveredCodConfirmations(promoted, orders), orders)
 }
 
 /** When Call After time arrives, move task back to To do (pending). */
@@ -347,32 +347,27 @@ function persistPromoteDueReschedules(ids: string[]): void {
   })()
 }
 
-/** Org-wide enriched tasks (cached ~20s, single-flight). */
+/** Org-wide enriched tasks (SWR + disk, single-flight). */
 async function loadOrgTasks(): Promise<CareTask[]> {
   return loadCareTasksCached(async () => {
     const docs = await fetchAllTaskDocs()
     return docsToEnrichedTasks(docs)
-  })
+  }, 'full')
+}
+
+/** Open-queue only — pending / rescheduled / escalated (SWR + disk, single-flight). */
+async function loadActiveTasks(): Promise<CareTask[]> {
+  const tasks = await loadCareTasksCached(async () => {
+    const docs = await fetchActiveTaskDocs()
+    return docsToEnrichedTasks(docs)
+  }, 'active')
+  // Warm full universe in background so summary/performance are instant next
+  void loadOrgTasks().catch(() => {})
+  return tasks
 }
 
 async function resolveTaskUniverse(params: ListCareTasksParams): Promise<CareTask[]> {
-  // Warm org cache first if present
-  const cached = getCachedCareTasks()
-  if (cached) {
-    if (params.assigneeEmail) {
-      const email = params.assigneeEmail.toLowerCase()
-      return cached.filter((t) => t.assignedTo?.email?.toLowerCase() === email)
-    }
-    return cached
-  }
-
-  // Cold path for inbox/today/overdue: only pull active statuses (fast)
-  if (!params.assigneeEmail && !needsFullHistory(params)) {
-    const docs = await fetchActiveTaskDocs()
-    return docsToEnrichedTasks(docs)
-  }
-
-  const tasks = await loadOrgTasks()
+  const tasks = needsFullHistory(params) ? await loadOrgTasks() : await loadActiveTasks()
   if (params.assigneeEmail) {
     const email = params.assigneeEmail.toLowerCase()
     return tasks.filter((t) => t.assignedTo?.email?.toLowerCase() === email)
@@ -545,8 +540,9 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
 export async function getCareTaskById(id: string): Promise<CareTask | null> {
   const snap = await getDb().collection('careTasks').doc(id).get()
   if (!snap.exists) return null
+  const orders = (await OrderRepository.getCachedOrders()) || []
   const [task] = promoteDueReschedules(
-    enrichOrderCreatedAt([serializeCareTask(snap.id, snap.data() || {})]),
+    enrichOrderCreatedAt([serializeCareTask(snap.id, snap.data() || {})], orders),
   )
   return task
 }

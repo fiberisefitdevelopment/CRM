@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
 
     // Success! Update the server-side memory cache with the new Shiprocket order
     try {
-      const { addOrderToCache } = require('@/src/services/ordersCache')
+      const { OrderRepository } = require('@/src/repositories/orderRepository')
       
       const srPhone = body.billing_phone || ''
       const isCod = String(body.payment_method || '').toLowerCase().includes('cod')
@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
         source: 'shiprocket',
       }
 
-      addOrderToCache(formattedCustomOrder)
+      OrderRepository.addOrderToCache(formattedCustomOrder)
 
       // Persist the phone to disk so it survives restarts & Shiprocket API masking
       storePhone(formattedCustomOrder.id, srPhone)

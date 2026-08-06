@@ -1,0 +1,10 @@
+{
+  "plugins": {
+    "shopify-plugin": {
+      "enabled": true
+    },
+    "firebase": {
+      "enabled": true
+    }
+  }
+}

@@ -1,4 +1,4 @@
-import { getCachedOrders, setCachedOrders, getCachedOrdersFiltered } from '@/src/services/ordersCache';
+import { OrderRepository } from '@/src/repositories/orderRepository';
 import { getAllShiprocketOrders } from '@/src/services/shiprocketClient';
 import {
   isActiveRtoStatus,
@@ -229,13 +229,13 @@ export async function syncOrders(): Promise<any[]> {
       };
     });
 
-    const CACHE_TTL_MS = 5 * 60 * 1000;
-    setCachedOrders(enrichedOrders, Date.now() + CACHE_TTL_MS);
+    const CACHE_TTL_MS = OrderRepository.CACHE_TTL_MS;
+    OrderRepository.setCachedOrders(enrichedOrders, Date.now() + CACHE_TTL_MS);
     console.log(`✅ [Report Service] Sync complete: ${enrichedOrders.length} orders cached`);
     return enrichedOrders;
   } catch (error: any) {
     console.error('❌ [Report Service] Sync failed:', error);
-    return getCachedOrders() || [];
+    return (await OrderRepository.getCachedOrders()) || [];
   }
 }
 
@@ -309,7 +309,7 @@ export interface ReportData {
 
 // Main logic to fetch, filter, and calculate the stats
 export async function getReportData(startDateStr?: string, endDateStr?: string): Promise<ReportData> {
-  let orders = getCachedOrders();
+  let orders = await OrderRepository.getCachedOrders();
   if (!orders || orders.length === 0) {
     orders = await syncOrders();
   }

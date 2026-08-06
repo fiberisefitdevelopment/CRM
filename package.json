@@ -6,12 +6,18 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "eslint .",
+    "backfill:orders": "npx tsx scripts/backfill-orders-to-firestore.ts",
+    "backfill:orders:dry": "npx tsx scripts/backfill-orders-to-firestore.ts --dry-run",
+    "shadow:compare": "npx tsx scripts/run-shadow-compare.ts",
+    "verify:read-cutover": "npx tsx scripts/verify-firestore-read-cutover.ts"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/nodemailer": "^8.0.0",
     "@types/react": "^18",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.3.0",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
   },

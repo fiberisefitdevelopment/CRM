@@ -154,12 +154,17 @@ export interface OrderFilters {
   includeTest?: boolean
 }
 
-export function getCachedOrdersCount(filters: OrderFilters = {}): number {
-  return getCachedOrdersFiltered(filters).length
+export function getCachedOrdersCount(filters: OrderFilters = {}, sourceOrders?: any[] | null): number {
+  return getCachedOrdersFiltered(filters, sourceOrders).length
 }
 
-export function getCachedOrdersPaginated(page: number, perPage: number, filters: OrderFilters = {}): any[] {
-  const filtered = getCachedOrdersFiltered(filters)
+export function getCachedOrdersPaginated(
+  page: number,
+  perPage: number,
+  filters: OrderFilters = {},
+  sourceOrders?: any[] | null,
+): any[] {
+  const filtered = getCachedOrdersFiltered(filters, sourceOrders)
   // Newest order-created first — same as Order Status / Shiprocket list
   const sorted = [...filtered].sort((a, b) => {
     let dateStrA = a.created_at
@@ -273,7 +278,10 @@ export interface TabCounts {
   test_orders: number
 }
 
-export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCounts {
+export function computeTabCounts(
+  filters: Omit<OrderFilters, 'tab'> = {},
+  sourceOrders?: any[] | null,
+): TabCounts {
   const counts: TabCounts = {
     new: 0,
     ready_to_ship: 0,
@@ -286,14 +294,16 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
     test_orders: 0,
   }
 
+  const baseList = sourceOrders !== undefined ? sourceOrders : cachedOrders
+
   // Count test orders directly from memory cache
-  if (cachedOrders) {
-    counts.test_orders = cachedOrders.filter(o => o.is_test_order === true).length
+  if (baseList) {
+    counts.test_orders = baseList.filter(o => o.is_test_order === true).length
   }
 
   // Get list without date filters first, then apply date filters dynamically inside the loop
   const { datePreset, startDate, endDate, ...otherFilters } = filters
-  const list = getCachedOrdersFiltered({ ...otherFilters, tab: 'all' })
+  const list = getCachedOrdersFiltered({ ...otherFilters, tab: 'all' }, sourceOrders)
   if (list.length === 0) return counts
 
   const { start: resolvedStart, end: resolvedEnd } = resolveIstDateBounds({
@@ -357,10 +367,14 @@ export function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}): TabCo
 
 // ── Generic Filter Logic ─────────────────────────────────────────────────────
 
-export function getCachedOrdersFiltered(filters: OrderFilters): any[] {
-  if (!cachedOrders) return []
+export function getCachedOrdersFiltered(
+  filters: OrderFilters = {},
+  sourceOrders?: any[] | null,
+): any[] {
+  const base = sourceOrders !== undefined ? sourceOrders : cachedOrders
+  if (!base) return []
 
-  let list = cachedOrders
+  let list = base
 
   // Filter test orders first
   const tab = filters.tab || 'all'
@@ -624,6 +638,7 @@ export function getOrderStatusPaginated(
   page: number,
   perPage: number,
   filters: OrderStatusListFilters = {},
+  sourceOrders?: any[] | null,
 ): {
   orders: any[]
   total: number
@@ -665,7 +680,7 @@ export function getOrderStatusPaginated(
     startDate: filters.startDate,
     endDate: filters.endDate,
     datePreset: filters.datePreset,
-  })
+  }, sourceOrders)
   const byClean = new Map<string, any>()
   const clonesByParent = new Map<string, any[]>()
 

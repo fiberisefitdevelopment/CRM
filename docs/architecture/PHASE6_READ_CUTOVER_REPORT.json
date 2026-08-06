@@ -1,0 +1,60 @@
+{
+  "ranAt": "2026-08-06T08:59:12.248Z",
+  "responseCount": {
+    "cache": 2126,
+    "firestore": 2126,
+    "equal": true
+  },
+  "firstPage": {
+    "cache": 20,
+    "firestore": 20,
+    "diffs": []
+  },
+  "filterDelivered": {
+    "cache": 1182,
+    "firestore": 1182,
+    "diffs": []
+  },
+  "search": {
+    "cache": 9,
+    "firestore": 9,
+    "diffs": []
+  },
+  "orderStatusPage": {
+    "cacheTotal": 2046,
+    "firestoreTotal": 2046,
+    "diffs": []
+  },
+  "tabCounts": {
+    "cache": {
+      "new": 37,
+      "ready_to_ship": 89,
+      "pickups_manifests": 0,
+      "in_transit": 149,
+      "delivered": 1182,
+      "rto": 53,
+      "cancelled": 106,
+      "all": 2079,
+      "test_orders": 47
+    },
+    "firestore": {
+      "new": 37,
+      "ready_to_ship": 89,
+      "pickups_manifests": 0,
+      "in_transit": 149,
+      "delivered": 1182,
+      "rto": 53,
+      "cancelled": 106,
+      "all": 2079,
+      "test_orders": 47
+    },
+    "diffs": []
+  },
+  "randomSampleDiffs": [],
+  "rollback": {
+    "restoredCacheReads": true,
+    "rollbackCount": 2126
+  },
+  "remainingDifferences": [],
+  "ready": true
+}

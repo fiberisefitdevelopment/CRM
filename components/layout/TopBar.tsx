@@ -269,10 +269,31 @@ export function TopBar() {
 
     const pollCare = async () => {
       try {
-        const [todayRes, overdueRes] = await Promise.all([
-          apiFetch('/api/care-tasks?status=today&limit=50', { cache: 'no-store' }),
-          apiFetch('/api/care-tasks?status=overdue&limit=50', { cache: 'no-store' }),
-        ])
+        // Cheap summary first (shared SWR cache) — avoid dual full list scans every minute
+        const summaryRes = await apiFetch('/api/care-tasks/summary', { cache: 'no-store' })
+        if (!summaryRes.ok) return
+        const summaryJson = await summaryRes.json()
+        const summary = summaryJson?.summary || {}
+        const overdueCount = Number(summary.overdue || 0)
+        const todayCount = Number(summary.today || 0)
+        if (overdueCount <= 0 && todayCount <= 0) return
+
+        const fetches: Promise<Response>[] = []
+        if (overdueCount > 0) {
+          fetches.push(apiFetch('/api/care-tasks?status=overdue&limit=50', { cache: 'no-store' }))
+        } else {
+          fetches.push(Promise.resolve(new Response(JSON.stringify({ tasks: [] }), { status: 200 })))
+        }
+        if (
+          todayCount > 0 &&
+          (role === 'care_executive' || role === 'support')
+        ) {
+          fetches.push(apiFetch('/api/care-tasks?status=today&limit=50', { cache: 'no-store' }))
+        } else {
+          fetches.push(Promise.resolve(new Response(JSON.stringify({ tasks: [] }), { status: 200 })))
+        }
+
+        const [overdueRes, todayRes] = await Promise.all(fetches)
         if (!todayRes.ok || !overdueRes.ok) return
         const todayData = await todayRes.json()
         const overdueData = await overdueRes.json()

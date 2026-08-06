@@ -1,12 +1,12 @@
 /**
  * Enrich Salestrail call rows with CRM customerName / orderId / orderName
- * by matching phone → careTasks (preferred) → ordersCache (fallback).
+ * by matching phone → careTasks (preferred) → OrderRepository (fallback).
  */
 
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import type { CallData } from '@/src/services/customerService'
-import { getCachedOrders } from '@/src/services/ordersCache'
+import { OrderRepository } from '@/src/repositories/orderRepository'
 import { phoneMatchKey } from '@/src/utils/phoneNormalize'
 
 export interface CallOrderMatch {
@@ -114,13 +114,12 @@ function phoneFromOrder(order: any): string {
   )
 }
 
-function lookupOrdersByPhones(phones: string[]): Map<string, CallOrderMatch> {
+function lookupOrdersByPhones(phones: string[], orders: any[]): Map<string, CallOrderMatch> {
   const map = new Map<string, CallOrderMatch>()
   if (!phones.length) return map
 
   const needed = new Set(phones)
   const bestByPhone = new Map<string, { match: CallOrderMatch; createdMs: number }>()
-  const orders = getCachedOrders() || []
 
   for (const order of orders) {
     const key = phoneFromOrder(order)
@@ -164,7 +163,8 @@ export async function enrichCallsWithOrders(calls: CallData[]): Promise<CallData
   }
 
   const missing = uniquePhones.filter((p) => !careMap.has(p))
-  const orderMap = missing.length ? lookupOrdersByPhones(missing) : new Map<string, CallOrderMatch>()
+  const orders = missing.length ? (await OrderRepository.getCachedOrders()) || [] : []
+  const orderMap = missing.length ? lookupOrdersByPhones(missing, orders) : new Map<string, CallOrderMatch>()
 
   return calls.map((call) => {
     const key = phoneMatchKey(call.number || call.formattedNumber)

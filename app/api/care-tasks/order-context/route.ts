@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { getCachedOrderById, getCachedOrders } from '@/src/services/ordersCache'
+import { OrderRepository } from '@/src/repositories/orderRepository'
 import { getShiprocketTrackingByAwb } from '@/src/services/shiprocketClient'
 import {
   buildTimeline,
@@ -30,9 +30,9 @@ export async function GET(req: NextRequest) {
     const orderId = searchParams.get('orderId') || ''
     const orderName = searchParams.get('orderName') || ''
 
-    const all = getCachedOrders() || []
+    const all = (await OrderRepository.getCachedOrders()) || []
     let order =
-      (orderId ? getCachedOrderById(orderId) : null) ||
+      (orderId ? await OrderRepository.getCachedOrderById(orderId) : null) ||
       all.find((o: any) => String(o.id) === String(orderId)) ||
       all.find((o: any) => cleanOrderName(o.name) === cleanOrderName(orderName)) ||
       null

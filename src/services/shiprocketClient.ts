@@ -230,6 +230,44 @@ export async function getAllShiprocketOrders(): Promise<any[]> {
   }
 }
 
+/**
+ * Fetch Shiprocket orders in a date window only (incremental / Phase 4).
+ * Does not pull full YTD history.
+ */
+export async function getShiprocketOrdersInDateRange(
+  fromYmd: string,
+  toYmd: string,
+): Promise<any[]> {
+  try {
+    const orders = await fetchShiprocketOrderPages(`from=${fromYmd}&to=${toYmd}`)
+    const seen = new Set<string>()
+    const deduped: any[] = []
+    for (const o of orders) {
+      const key = String(o.id ?? '')
+      if (!key || seen.has(key)) continue
+      seen.add(key)
+      deduped.push(o)
+    }
+    console.log(
+      `📦 Shiprocket incremental fetch ${fromYmd}→${toYmd}: ${deduped.length} orders`,
+    )
+    return deduped
+  } catch (error) {
+    console.error('Error fetching Shiprocket orders in date range:', error)
+    return []
+  }
+}
+
+/**
+ * Convenience: last N days inclusive through today (YYYY-MM-DD).
+ */
+export async function getRecentShiprocketOrders(lookbackDays = 14): Promise<any[]> {
+  const today = new Date()
+  const from = new Date(today)
+  from.setDate(from.getDate() - Math.max(1, lookbackDays))
+  return getShiprocketOrdersInDateRange(toYmd(from), toYmd(today))
+}
+
 export async function getShiprocketInvoices(orderIds: number[]) {
   // POST /orders/print/invoice with { ids: [shiprocketOrderId, ...] }
   return shiprocketPost('/orders/print/invoice', { ids: orderIds })

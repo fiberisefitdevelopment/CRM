@@ -1,0 +1,44 @@
+{
+  "ranAt": "2026-08-06T08:48:14.459Z",
+  "totalCacheOrders": 2126,
+  "totalFirestoreOrders": 2126,
+  "totalCompared": 2126,
+  "matches": 2125,
+  "mismatches": 1,
+  "missingInFirestore": 0,
+  "missingInCache": 0,
+  "duplicateIdsInCache": 0,
+  "duplicateIdsInFirestore": 0,
+  "sampleMismatches": [
+    {
+      "kind": "MISMATCH",
+      "docId": "7013246763283",
+      "name": "#3003",
+      "diffs": [
+        {
+          "field": "awb",
+          "cache": null,
+          "firestore": "TEST-AWB-PHASE4"
+        },
+        {
+          "field": "tracking_number",
+          "cache": null,
+          "firestore": "TEST-AWB-PHASE4"
+        },
+        {
+          "field": "tracking_url",
+          "cache": null,
+          "firestore": "https://example.com/track/TEST-AWB-PHASE4"
+        }
+      ]
+    }
+  ],
+  "sampleMissingInFirestore": [],
+  "sampleMissingInCache": [],
+  "rootCauses": [
+    "MISMATCH awb (n=1): logistics fields diverge — Phase 4 sync may have updated Firestore while cache still has older merge, or vice versa. Refresh cache and/or re-run logistics sync.",
+    "MISMATCH tracking_number (n=1): logistics fields diverge — Phase 4 sync may have updated Firestore while cache still has older merge, or vice versa. Refresh cache and/or re-run logistics sync.",
+    "MISMATCH tracking_url (n=1): logistics fields diverge — Phase 4 sync may have updated Firestore while cache still has older merge, or vice versa. Refresh cache and/or re-run logistics sync."
+  ],
+  "readyForPhase6": false
+}

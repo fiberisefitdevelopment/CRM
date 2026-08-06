@@ -1,0 +1,37 @@
+{
+  "ranAt": "2026-08-06T08:24:11.897Z",
+  "dryRun": false,
+  "totalCacheOrders": 2126,
+  "totalFirestoreOrders": 2126,
+  "shopifyOrders": 1966,
+  "shiprocketOnlyOrders": 160,
+  "duplicateDocIdsInCache": 0,
+  "failedWrites": 0,
+  "writeFailures": [],
+  "missingRequiredFields": {
+    "id": 0,
+    "name": 0,
+    "created_at": 0,
+    "financial_status": 0,
+    "total_price": 0,
+    "customer": 0,
+    "line_items": 0,
+    "shopifyOrderId": 0,
+    "shiprocketOrderId": 0,
+    "airExpressOrderId": 0,
+    "shopifyUpdatedAt": 0,
+    "shiprocketUpdatedAt": 0,
+    "airExpressUpdatedAt": 0,
+    "updatedAt": 0
+  },
+  "sampleDocIds": {
+    "shopify": "7013246763283",
+    "shiprocketOnly": "1498508648"
+  },
+  "notes": [
+    "Documents store the exact merged cache object plus additive source metadata fields.",
+    "No fields were removed from the cache payload.",
+    "ORDERS_WRITE_TO_FIRESTORE / webhooks were NOT enabled.",
+    "APIs, UI, and OrderRepository were NOT modified."
+  ]
+}

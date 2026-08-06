@@ -30,6 +30,9 @@ yarn-error.log*
 
 # local caches (runtime)
 .orders-cache.json
+.firestore-orders-cache.json
+.care-tasks-cache.json
+.care-tasks-active-cache.json
 .shiprocket-phones.json
 .order-notes.json
 .care-order-tags.json

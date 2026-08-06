@@ -9,22 +9,12 @@ const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
 const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
 
+import { OrderRepository } from '@/src/repositories/orderRepository'
 import {
-  getCachedOrders,
-  setCachedOrders,
-  getCacheExpiresAt,
-  CACHE_TTL_MS,
-  getActiveFetchPromise,
-  setActiveFetchPromise,
-  getCachedOrderById,
-  removeOrderFromCache,
-  cancelOrderInCache,
-  getCachedOrdersCount,
-  getCachedOrdersPaginated,
-  getCachedOrdersFiltered,
-  getOrderStatusPaginated,
-  computeTabCounts
-} from '@/src/services/ordersCache'
+  buildShopifyOrderLookupMap,
+  extractShiprocketLogistics,
+  matchShiprocketToShopify,
+} from '@/src/services/orders/shiprocketMergeHelpers'
 
 // Reusable helper to fetch all Shopify orders (handles pagination loop)
 async function fetchAllShopifyOrders(limit: number | null = null): Promise<any[]> {
@@ -129,14 +119,17 @@ export async function GET(_req: NextRequest) {
       includeTest,
     }
 
-    // A. Check in-memory cache for instant paginated response
+    // A. Serve from OrderRepository (cache or Firestore per flag)
     const now = Date.now()
-    const cached = getCachedOrders()
-    const expiresAt = getCacheExpiresAt()
-    const cacheHasData = cached && cached.length > 0
-    const cacheIsFresh = cacheHasData && now < expiresAt
+    const readFromFs = OrderRepository.isOrdersReadFromFirestoreEnabled()
+    const cached = await OrderRepository.getCachedOrders()
+    const expiresAt = OrderRepository.getCacheExpiresAt()
+    const cacheHasData = !!(cached && cached.length > 0)
+    const cacheClockFresh = now < expiresAt
+    // When reading Firestore, any non-empty snapshot is servable; still refresh cache in background if stale
+    const sourceIsFresh = readFromFs ? cacheHasData : cacheHasData && cacheClockFresh
 
-    // Helper: build a paginated JSON response from current cache
+    // Helper: build a paginated JSON response from current repository source
     async function serveCachedResponse(isOffline = false) {
       const { applyNotesToOrders } = require('@/src/services/orderNotesStore')
       const {
@@ -151,7 +144,7 @@ export async function GET(_req: NextRequest) {
       const decorate = (list: any[]) => applyCareTagsToOrders(applyNotesToOrders(list))
 
       if (orderStatusView && !returnAll) {
-        const result = getOrderStatusPaginated(page, perPage, {
+        const result = await OrderRepository.getOrderStatusPaginated(page, perPage, {
           ...filters,
           deliveryStatus: deliveryStatus as any,
           fulfillmentStatusUi: fulfillmentStatus,
@@ -169,7 +162,7 @@ export async function GET(_req: NextRequest) {
             summary: result.summary,
             couriers: result.couriers,
             channelBreakdown: result.channelBreakdown,
-            tabCounts: computeTabCounts(filters),
+            tabCounts: await OrderRepository.computeTabCounts(filters),
             isOffline,
             syncing: false,
           },
@@ -177,12 +170,12 @@ export async function GET(_req: NextRequest) {
         )
       }
 
-      const total = getCachedOrdersCount(filters)
-      const tabCounts = computeTabCounts(filters)
+      const total = await OrderRepository.getCachedOrdersCount(filters)
+      const tabCounts = await OrderRepository.computeTabCounts(filters)
 
       if (returnAll) {
         // Analytics mode: return ALL matching orders, no pagination
-        const allOrders = decorate(getCachedOrdersFiltered(filters))
+        const allOrders = decorate(await OrderRepository.getCachedOrdersFiltered(filters))
         return NextResponse.json(
           {
             orders: allOrders,
@@ -196,7 +189,9 @@ export async function GET(_req: NextRequest) {
       }
 
       const totalPages = Math.ceil(total / perPage) || 1
-      const paginatedSlice = decorate(getCachedOrdersPaginated(page, perPage, filters))
+      const paginatedSlice = decorate(
+        await OrderRepository.getCachedOrdersPaginated(page, perPage, filters),
+      )
 
       return NextResponse.json(
         {
@@ -212,7 +207,7 @@ export async function GET(_req: NextRequest) {
 
     // Helper: kick off background sync (fire-and-forget, never blocks response)
     function triggerBackgroundSync() {
-      if (getActiveFetchPromise()) return // Already syncing
+      if (OrderRepository.getActiveFetchPromise()) return // Already syncing
 
       const syncPromise = (async () => {
         try {
@@ -229,9 +224,9 @@ export async function GET(_req: NextRequest) {
 
           // Seed cache as soon as Shopify returns so the UI is never stuck waiting on Shiprocket
           const shopifyOrders = await shopifyPromise
-          const existing = getCachedOrders()
+          const existing = await OrderRepository.getCachedOrders()
           if ((!existing || existing.length === 0) && shopifyOrders.length > 0) {
-            setCachedOrders(
+            OrderRepository.setCachedOrders(
               shopifyOrders.map((o: any) => ({ ...o, is_test_order: o.is_test_order === true })),
               Date.now() + 60 * 1000,
             )
@@ -246,84 +241,29 @@ export async function GET(_req: NextRequest) {
           )
         }
 
-        // Map Shopify orders for rapid deduplication lookup
-        const shopifyMap = new Map<string, any>()
-        shopifyOrders.forEach((order) => {
-          if (order.name) {
-            const cleanName = order.name.replace(/^#/, '').trim().toLowerCase()
-            shopifyMap.set(cleanName, order)
-          }
-          if (order.id) {
-            shopifyMap.set(String(order.id), order)
-          }
-        })
+        // Map Shopify orders for rapid deduplication lookup (shared helper)
+        const shopifyMap = buildShopifyOrderLookupMap(shopifyOrders)
 
         // Match Shiprocket orders to enrich matched Shopify orders and extract custom ones
         const customOrders: any[] = []
+        const existingCachedOrders = (await OrderRepository.getCachedOrders()) || []
 
         shiprocketOrders.forEach((srOrder) => {
-          const cleanSrName = String(srOrder.channel_order_id || '').replace(/^#/, '').trim().toLowerCase()
-          const matchedShopify = shopifyMap.get(cleanSrName)
+          const matchedShopify = matchShiprocketToShopify(srOrder, shopifyMap)
+          const logistics = extractShiprocketLogistics(srOrder)
 
-          const latestShipment = srOrder.shipments?.[0]
-          const tracking_number = latestShipment?.awb || srOrder.last_mile_awb || null
-          const tracking_company = latestShipment?.courier || srOrder.last_mile_courier_name || null
-          const tracking_url = srOrder.last_mile_awb_track_url || null
-
-          const srStatus = (srOrder.status || '').toLowerCase()
-          let shipment_status: string | null = null
-          // Check RTO before "delivered" so "RTO DELIVERED" is not counted as Delivered
-          if (srStatus.includes('rto') || srStatus.includes('returned')) {
-            // Shiprocket RTO Initiated = open only; Delivered/Acknowledged are closed
-            if (srStatus.includes('delivered') || srStatus.includes('acknowledged')) {
-              shipment_status = 'rto_delivered'
-            } else {
-              shipment_status = 'rto'
-            }
-          } else if (srStatus.includes('lost') || srStatus.includes('untraceable')) {
-            shipment_status = 'failure'
-          } else if (srStatus.includes('undelivered') || srStatus.includes('attempt')) {
-            // NDR stays on Shiprocket In Transit tab until RTO
-            shipment_status = 'attempted_delivery'
-          } else if (srStatus.includes('fail') || srStatus.includes('error')) {
-            shipment_status = 'failure'
-          } else if (srStatus === 'delivered' || srStatus.startsWith('delivered')) {
-            shipment_status = 'delivered'
-          } else if (srStatus.includes('out for delivery')) {
-            shipment_status = 'out_for_delivery'
-          } else if (
-            srStatus.includes('transit') ||
-            srStatus.includes('reached') ||
-            srStatus === 'shipped' ||
-            srStatus.includes('picked up')
-          ) {
-            shipment_status = 'in_transit'
-          } else if (srStatus.includes('pickup') || srStatus.includes('scheduled')) {
-            shipment_status = 'pickup_scheduled'
-          } else if (srStatus.includes('cancel')) {
-            shipment_status = 'cancelled'
-          }
+          const tracking_number = logistics.tracking_number
+          const shipment_status = logistics.shipment_status
+          const shipment_status_reason = logistics.shipment_status_reason
+          const srStatus = logistics.srStatus.toLowerCase()
+          const srCreatedAt = logistics.srCreatedAt
+          const srDeliveredAt = logistics.srDeliveredAt
+          const srUpdatedAt = logistics.srUpdatedAt
+          const isSrCancelled = logistics.isSrCancelled
 
           const srPaymentRaw = String(srOrder.payment_method || '').toLowerCase().trim()
           const srIsCod = srPaymentRaw.includes('cod')
           const srPaymentMethod = srIsCod ? 'cod' : (srPaymentRaw ? 'prepaid' : null)
-
-          const srCreatedAt =
-            parseShiprocketDate(srOrder.created_at) ||
-            parseShiprocketDate(srOrder.channel_created_at) ||
-            null
-          const srDeliveredAt = parseShiprocketDate(srOrder.delivered_date) || null
-          const srUpdatedAt = parseShiprocketDate(srOrder.updated_at) || srCreatedAt
-
-          // Extract shipment status reason (from delay_reason, pickup_exception_reason, or courier_remarks)
-          const reasonCandidates = [
-            srOrder.delay_reason,
-            srOrder.pickup_exception_reason,
-            latestShipment?.delay_reason,
-            srOrder.awd_etds?.courier_remarks,
-            srOrder.edd_remark
-          ].filter(Boolean)
-          const shipment_status_reason = reasonCandidates.length > 0 ? reasonCandidates[0] : null
 
           if (matchedShopify) {
             // Always stamp Shiprocket payment method — Shopify marks COD as "paid" after collection
@@ -331,7 +271,6 @@ export async function GET(_req: NextRequest) {
               matchedShopify.payment_method = srPaymentMethod
             }
 
-            const isSrCancelled = srStatus.includes('cancel')
             if (isSrCancelled) {
               matchedShopify.cancelled_at =
                 matchedShopify.cancelled_at || srUpdatedAt || new Date().toISOString()
@@ -341,19 +280,10 @@ export async function GET(_req: NextRequest) {
             }
 
             // Enrich logistics from Shiprocket whenever we have status and/or AWB
-            if (shipment_status || tracking_number) {
+            if (logistics.enrichmentFulfillment) {
               const enrichmentFulfillment = {
-                id: latestShipment?.id || Math.floor(Math.random() * 10000),
-                status: 'success',
-                tracking_number,
-                tracking_company,
-                tracking_url,
-                shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
-                shipment_status_reason,
-                // Keep order-date semantics for fulfillment created_at (not updated_at)
+                ...logistics.enrichmentFulfillment,
                 created_at: srCreatedAt || matchedShopify.created_at,
-                dispatch_date: parseShiprocketDate(srOrder.pickup_booked_date) || srCreatedAt,
-                delivery_date: srDeliveredAt,
               }
               if (shipment_status && shipment_status !== 'cancelled') {
                 matchedShopify.fulfillment_status = 'fulfilled'
@@ -362,40 +292,19 @@ export async function GET(_req: NextRequest) {
             }
 
             matchedShopify.source = matchedShopify.source || 'shopify'
-            matchedShopify.shiprocket_order_id = srOrder.id
-            matchedShopify.shiprocket_meta = {
-              activities: Array.isArray(srOrder.activities) ? srOrder.activities : [],
-              status: srOrder.status || null,
-              pickup_location: srOrder.pickup_location || null,
-              shipping_method: srOrder.shipping_method || srOrder.ship_type || null,
-              payment_status: srOrder.payment_status || null,
-              picked_up_date: srOrder.picked_up_date || null,
-              pickup_booked_date: srOrder.pickup_booked_date || null,
-              out_for_delivery_date: srOrder.out_for_delivery_date || srOrder.first_out_for_delivery_date || null,
-              delivered_date: srOrder.delivered_date || null,
-              etd_date: srOrder.etd_date || srOrder.updated_edd_date || null,
-              delay_reason: srOrder.delay_reason || null,
-              delivery_delayed: Boolean(srOrder.delivery_delayed || srOrder.is_delayed),
-              has_calls: Boolean(srOrder.has_calls),
-              rto_reason: srOrder.rto_reason || null,
-            }
+            matchedShopify.shiprocket_order_id = logistics.shiprocket_order_id
+            matchedShopify.shiprocket_meta = logistics.shiprocket_meta
           } else {
-            const isSrCancelled = srStatus.includes('cancel')
             const financial_status = isSrCancelled ? 'voided' : (srIsCod ? 'pending' : 'paid')
             const cancelled_at = isSrCancelled ? (srUpdatedAt || new Date().toISOString()) : null
 
-            const enrichFulfillment = (shipment_status || tracking_number) ? [{
-              id: latestShipment?.id || Math.floor(Math.random() * 10000),
-              status: 'success',
-              tracking_number,
-              tracking_company,
-              tracking_url,
-              shipment_status: isSrCancelled ? 'cancelled' : shipment_status,
-              shipment_status_reason: isSrCancelled ? null : shipment_status_reason,
-              created_at: srCreatedAt || new Date().toISOString(),
-              dispatch_date: parseShiprocketDate(srOrder.pickup_booked_date) || srCreatedAt,
-              delivery_date: srDeliveredAt,
-            }] : []
+            const enrichFulfillment = logistics.enrichmentFulfillment
+              ? [{
+                  ...logistics.enrichmentFulfillment,
+                  shipment_status_reason: isSrCancelled ? null : shipment_status_reason,
+                  created_at: srCreatedAt || new Date().toISOString(),
+                }]
+              : []
 
             // Shiprocket masks customer_phone as "xxxxxxxxxx" in list API.
             // The real unmasked phone is in customer_phone_unmasked.
@@ -412,10 +321,9 @@ export async function GET(_req: NextRequest) {
             if (srPhone === 'xxxxxxxxxx') srPhone = ''
 
             if (!srPhone) {
-              // Fall back to in-memory cache phone (from addOrderToCache on creation)
-              const existingCached = require('@/src/services/ordersCache').cachedOrders
-              if (Array.isArray(existingCached)) {
-                const match = existingCached.find((o: any) => String(o.id) === String(srOrder.id))
+              // Fall back to in-memory order phone (from addOrderToCache on creation)
+              if (Array.isArray(existingCachedOrders)) {
+                const match = existingCachedOrders.find((o: any) => String(o.id) === String(srOrder.id))
                 if (match) {
                   srPhone = match.customer?.phone || match.shipping_address?.phone || ''
                 }
@@ -481,23 +389,8 @@ export async function GET(_req: NextRequest) {
               })),
               fulfillments: enrichFulfillment,
               source: 'shiprocket',
-              shiprocket_order_id: srOrder.id,
-              shiprocket_meta: {
-                activities: Array.isArray(srOrder.activities) ? srOrder.activities : [],
-                status: srOrder.status || null,
-                pickup_location: srOrder.pickup_location || null,
-                shipping_method: srOrder.shipping_method || srOrder.ship_type || null,
-                payment_status: srOrder.payment_status || null,
-                picked_up_date: srOrder.picked_up_date || null,
-                pickup_booked_date: srOrder.pickup_booked_date || null,
-                out_for_delivery_date: srOrder.out_for_delivery_date || srOrder.first_out_for_delivery_date || null,
-                delivered_date: srOrder.delivered_date || null,
-                etd_date: srOrder.etd_date || srOrder.updated_edd_date || null,
-                delay_reason: srOrder.delay_reason || null,
-                delivery_delayed: Boolean(srOrder.delivery_delayed || srOrder.is_delayed),
-                has_calls: Boolean(srOrder.has_calls),
-                rto_reason: srOrder.rto_reason || null,
-              },
+              shiprocket_order_id: logistics.shiprocket_order_id,
+              shiprocket_meta: logistics.shiprocket_meta,
             }
 
             customOrders.push(formattedCustomOrder)
@@ -506,9 +399,9 @@ export async function GET(_req: NextRequest) {
 
         const combinedOrders = shopifyOrders.concat(customOrders)
 
-        // Preserve any orders that were manually injected into cache (e.g. freshly cloned orders)
+        // Preserve any orders that were manually injected (e.g. freshly cloned orders)
         // that Shiprocket hasn't propagated yet in its listing API
-        const existingCache = require('@/src/services/ordersCache').cachedOrders
+        const existingCache = existingCachedOrders
         if (Array.isArray(existingCache) && existingCache.length > 0) {
           const combinedIds = new Set(combinedOrders.map((o: any) => String(o.id)))
           const orphaned = existingCache.filter((o: any) => !combinedIds.has(String(o.id)))
@@ -547,8 +440,8 @@ export async function GET(_req: NextRequest) {
         });
 
         // Short TTL if Shiprocket failed so the next request re-syncs quickly with a working fetch
-        const ttl = shiprocketOrders.length === 0 ? 30 * 1000 : CACHE_TTL_MS
-        setCachedOrders(enrichedOrders, Date.now() + ttl)
+        const ttl = shiprocketOrders.length === 0 ? 30 * 1000 : OrderRepository.CACHE_TTL_MS
+        OrderRepository.setCachedOrders(enrichedOrders, Date.now() + ttl)
 
         // Proactively scan for delivered orders to trigger post-delivery WhatsApp journeys
         try {
@@ -597,15 +490,16 @@ export async function GET(_req: NextRequest) {
         } catch (err: any) {
           console.warn('Background sync failed:', err?.message || err)
         } finally {
-          setActiveFetchPromise(null)
+          OrderRepository.setActiveFetchPromise(null)
         }
       })()
 
-      setActiveFetchPromise(syncPromise)
+      OrderRepository.setActiveFetchPromise(syncPromise)
     }
 
     // ─── Force refresh: re-sync in background but never blank the UI if we have data ───
     if (forceRefresh) {
+      OrderRepository.expireFirestoreOrdersSnapshot()
       triggerBackgroundSync()
       if (cacheHasData) return serveCachedResponse()
       return NextResponse.json(
@@ -620,8 +514,16 @@ export async function GET(_req: NextRequest) {
       )
     }
 
-    // ─── FAST PATH A: Cache is fresh → serve instantly ───
-    if (cacheIsFresh) {
+    // ─── FAST PATH A: Source is fresh → serve instantly ───
+    if (sourceIsFresh) {
+      // Keep rollback cache warm, but only occasionally (avoid Shiprocket stampede)
+      if (readFromFs && !cacheClockFresh) {
+        const lastBg = (globalThis as any).__ordersBgSyncAt || 0
+        if (Date.now() - lastBg > 5 * 60 * 1000) {
+          ;(globalThis as any).__ordersBgSyncAt = Date.now()
+          triggerBackgroundSync()
+        }
+      }
       return serveCachedResponse()
     }
 
@@ -679,7 +581,7 @@ export async function DELETE(req: NextRequest) {
 
     const results = await Promise.allSettled(
       ids.map(async (id) => {
-        const cachedOrder = getCachedOrderById(id)
+        const cachedOrder = await OrderRepository.getCachedOrderById(id)
         const isShiprocket = cachedOrder?.source === 'shiprocket'
 
         if (isShiprocket) {
@@ -688,7 +590,7 @@ export async function DELETE(req: NextRequest) {
           } catch (err: any) {
             console.warn(`Failed to cancel Shiprocket order ${id}:`, err)
           }
-          cancelOrderInCache(id)
+          OrderRepository.cancelOrderInCache(id)
           return { id, success: true, source: 'shiprocket' }
         }
 
@@ -714,7 +616,7 @@ export async function DELETE(req: NextRequest) {
           }
         }
 
-        cancelOrderInCache(id)
+        OrderRepository.cancelOrderInCache(id)
         return { id, success: true, source: 'shopify' }
       })
     )
@@ -728,10 +630,12 @@ export async function DELETE(req: NextRequest) {
     try {
       const { logAction } = require('@/src/services/auditLogService')
       const actionType = ids.length > 1 ? 'BULK_ORDER_CANCEL' : 'ORDER_CANCEL'
-      const orderNames = ids.map((id: any) => {
-        const cached = getCachedOrderById(id)
-        return cached?.name || `#${id}`
-      })
+      const orderNames = await Promise.all(
+        ids.map(async (id: any) => {
+          const cached = await OrderRepository.getCachedOrderById(id)
+          return cached?.name || `#${id}`
+        }),
+      )
       logAction({
         userId: auditUserId,
         userEmail: auditEmail,

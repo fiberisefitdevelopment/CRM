@@ -1,6 +1,6 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
-import { getCachedOrders } from '@/src/services/ordersCache'
+import { OrderRepository } from '@/src/repositories/orderRepository'
 import { syncSalestrailCallsToCareTasks } from './callLinker'
 import { processOrdersForCareTasks } from './generator'
 import { getCareTaskConfig } from './followupPlans'
@@ -78,7 +78,7 @@ async function promoteDueReschedules(): Promise<number> {
 }
 
 export async function runCareTaskScheduler(): Promise<CareSchedulerResult> {
-  const orders = getCachedOrders() || []
+  const orders = (await OrderRepository.getCachedOrders()) || []
   const ordersProcessed = await processOrdersForCareTasks(orders)
   const callsSynced = await syncSalestrailCallsToCareTasks(48)
   const promotedReschedules = await promoteDueReschedules()

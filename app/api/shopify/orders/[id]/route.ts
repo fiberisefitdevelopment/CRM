@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { cancelShiprocketOrder } from '@/src/services/shiprocketClient'
-import { getCachedOrderById, removeOrderFromCache, cancelOrderInCache } from '@/src/services/ordersCache'
+import { OrderRepository } from '@/src/repositories/orderRepository'
 
 const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
@@ -15,8 +15,8 @@ export async function GET(
   try {
     const { id } = await params
 
-    // Prefer live Shopify; fall back to CRM cache (Shiprocket-only / offline)
-    const cached = getCachedOrderById(id)
+    // Prefer live Shopify; fall back to CRM repository (Shiprocket-only / offline)
+    const cached = await OrderRepository.getCachedOrderById(id)
     if (cached?.source === 'shiprocket') {
       const { lookupNote } = require('@/src/services/orderNotesStore')
       const note = lookupNote(id) || cached.note || null
@@ -98,8 +98,8 @@ export async function DELETE(
   try {
     const { id } = await params
 
-    // 1. Identify order source from in-memory cache
-    const cachedOrder = getCachedOrderById(id)
+    // 1. Identify order source from repository
+    const cachedOrder = await OrderRepository.getCachedOrderById(id)
     const isShiprocket = cachedOrder?.source === 'shiprocket'
 
     if (isShiprocket) {
@@ -111,7 +111,7 @@ export async function DELETE(
       }
       
       // Update in memory cache to mark as cancelled
-      cancelOrderInCache(id)
+      OrderRepository.cancelOrderInCache(id)
       return NextResponse.json({ success: true, message: 'Shiprocket order cancelled successfully' }, { status: 200 })
     }
 
@@ -144,7 +144,7 @@ export async function DELETE(
     }
 
     // Update in-memory cache to reflect the cancelled status instantly
-    cancelOrderInCache(id)
+    OrderRepository.cancelOrderInCache(id)
 
     return NextResponse.json({ success: true, message: 'Shopify order cancelled successfully' }, { status: 200 })
   } catch (error: any) {
@@ -201,10 +201,9 @@ export async function PATCH(
     })
 
     // Update in-memory cache directly
-    const { toggleTestOrderInCache, getCachedOrderById } = require('@/src/services/ordersCache')
-    toggleTestOrderInCache(id, isTest)
+    OrderRepository.toggleTestOrderInCache(id, isTest)
 
-    const cachedOrder = getCachedOrderById(id)
+    const cachedOrder = await OrderRepository.getCachedOrderById(id)
     const orderName = cachedOrder?.name || `#${id}`
 
     // Log to audit logs (fire-and-forget)
@@ -250,11 +249,11 @@ export async function PUT(
     }
 
     const note = body.note.trim()
-    const cachedOrder = getCachedOrderById(id)
+    const cachedOrder = await OrderRepository.getCachedOrderById(id)
     const isShiprocket = cachedOrder?.source === 'shiprocket'
 
     const { storeNote } = require('@/src/services/orderNotesStore')
-    const { updateOrderNoteInCache } = require('@/src/services/ordersCache')
+    const { updateOrderNoteInCache } = OrderRepository
 
     storeNote(id, note)
     updateOrderNoteInCache(id, note)
