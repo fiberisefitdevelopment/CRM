@@ -96,7 +96,7 @@ export function CallDetailsDrawer({ call, onClose }: CallDetailsDrawerProps) {
                 }
               />
               <DetailRow
-                label="Customer Number"
+                label="Phone Number"
                 value={
                   <button
                     type="button"
@@ -112,7 +112,27 @@ export function CallDetailsDrawer({ call, onClose }: CallDetailsDrawerProps) {
                   </button>
                 }
               />
-              <DetailRow label="Formatted Number" value={call.formattedNumber} />
+              <DetailRow label="Customer Name" value={call.customerName || '—'} />
+              <DetailRow
+                label="Order ID"
+                value={
+                  call.orderName || call.orderId ? (
+                    call.orderId ? (
+                      <a
+                        href={`/orders/${call.orderId}`}
+                        className="text-purple-300 hover:text-purple-200"
+                      >
+                        {call.orderName || call.orderId}
+                      </a>
+                    ) : (
+                      call.orderName
+                    )
+                  ) : (
+                    '—'
+                  )
+                }
+              />
+              <DetailRow label="Formatted Number" value={call.formattedNumber || '—'} />
               <DetailRow label="Phonebook Name" value={call.phonebookName || '—'} />
               <DetailRow label="Duration" value={formatDuration(call.duration)} />
               <DetailRow

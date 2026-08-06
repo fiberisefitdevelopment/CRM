@@ -119,6 +119,7 @@
 
   /* Text: white → foreground (default) */
   :root:not(.dark) .text-white       { color: var(--foreground) !important; }
+  :root:not(.dark) .text-white\/90   { color: var(--foreground) !important; opacity: 0.9; }
   :root:not(.dark) .text-white\/80   { color: var(--foreground) !important; opacity: 0.9; }
   :root:not(.dark) .text-white\/70   { color: var(--foreground-muted) !important; opacity: 1; }
   :root:not(.dark) .text-white\/60   { color: var(--foreground-muted) !important; opacity: 1; }
@@ -130,6 +131,7 @@
   :root:not(.dark) .text-slate-100   { color: var(--foreground) !important; }
   :root:not(.dark) .text-slate-300   { color: var(--foreground-muted) !important; }
   :root:not(.dark) .text-slate-400   { color: var(--foreground-muted) !important; }
+  :root:not(.dark) .text-sky-100     { color: #0369A1 !important; }
 
   /* Purple tints that are too pale on white backgrounds */
   :root:not(.dark) .text-purple-200 { color: #6D28D9 !important; }
@@ -180,7 +182,8 @@
 
   /* Placeholder text on inputs */
   :root:not(.dark) .placeholder\:text-white\/20::placeholder,
-  :root:not(.dark) .placeholder\:text-white\/30::placeholder {
+  :root:not(.dark) .placeholder\:text-white\/30::placeholder,
+  :root:not(.dark) .placeholder\:text-white\/40::placeholder {
     color: var(--foreground-muted) !important;
     opacity: 0.55 !important;
   }

@@ -9,6 +9,7 @@ import {
   sortCalls,
   summarizeCalls,
 } from '@/src/services/customerService'
+import { enrichCallsWithOrders } from '@/src/services/customerService/enrichCallsWithOrders'
 
 export async function GET(request: NextRequest) {
   try {
@@ -42,9 +43,10 @@ export async function GET(request: NextRequest) {
 
     const sorted = sortCalls(filtered, sortBy, sortDir)
     const pageResult = paginateCalls(sorted, page, pageSize)
+    const enriched = await enrichCallsWithOrders(pageResult.items)
 
     return NextResponse.json({
-      calls: pageResult.items,
+      calls: enriched,
       total: pageResult.total,
       page: pageResult.page,
       pageSize: pageResult.pageSize,

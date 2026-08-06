@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import {
   Columns3,
   Copy,
@@ -65,6 +66,8 @@ async function downloadRecording(callId: string) {
 type ColKey =
   | 'callId'
   | 'number'
+  | 'customerName'
+  | 'orderId'
   | 'formattedNumber'
   | 'phonebookName'
   | 'userName'
@@ -82,8 +85,10 @@ type ColKey =
 
 const ALL_COLUMNS: { key: ColKey; label: string; defaultVisible?: boolean }[] = [
   { key: 'callId', label: 'Call ID' },
-  { key: 'number', label: 'Customer Number', defaultVisible: true },
-  { key: 'formattedNumber', label: 'Formatted Number', defaultVisible: true },
+  { key: 'number', label: 'Phone Number', defaultVisible: true },
+  { key: 'customerName', label: 'Customer Name', defaultVisible: true },
+  { key: 'orderId', label: 'Order ID', defaultVisible: true },
+  { key: 'formattedNumber', label: 'Formatted Number' },
   { key: 'phonebookName', label: 'Phonebook Name' },
   { key: 'userName', label: 'User Name', defaultVisible: true },
   { key: 'userEmail', label: 'User Email' },
@@ -247,6 +252,24 @@ export default function CallHistoryPage() {
         return <span className="font-mono text-xs">{call.callId.slice(0, 8)}…</span>
       case 'number':
         return call.number || '—'
+      case 'customerName':
+        return call.customerName || '—'
+      case 'orderId': {
+        const label = call.orderName || call.orderId
+        if (!label) return '—'
+        if (call.orderId) {
+          return (
+            <Link
+              href={`/orders/${call.orderId}`}
+              className="text-purple-300 hover:text-purple-200 font-medium"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {label}
+            </Link>
+          )
+        }
+        return label
+      }
       case 'formattedNumber':
         return call.formattedNumber || '—'
       case 'phonebookName':

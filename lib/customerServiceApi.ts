@@ -19,6 +19,12 @@ export interface CallData {
   userName: string
   userPhone: string
   userTeams: Record<string, string>[]
+  /** CRM customer name resolved by phone match */
+  customerName?: string
+  /** Shopify/Shiprocket order id resolved by phone match */
+  orderId?: string
+  /** Human-facing order name (e.g. #1128) resolved by phone match */
+  orderName?: string
 }
 
 export interface IntegrationData {

@@ -23,6 +23,12 @@ export interface CallData {
   userName: string
   userPhone: string
   userTeams: Record<string, string>[]
+  /** CRM customer name resolved by phone match */
+  customerName?: string
+  /** Shopify/Shiprocket order id resolved by phone match */
+  orderId?: string
+  /** Human-facing order name (e.g. #1128) resolved by phone match */
+  orderName?: string
 }
 
 export interface IntegrationData {
@@ -131,7 +137,7 @@ function mapHttpError(status: number, bodyText: string): CustomerServiceApiError
   if (status === 401) return new CustomerServiceApiError('Unauthorized — check Salestrail API credentials.', 401)
   if (status === 403) return new CustomerServiceApiError('Forbidden — you do not have access to this Salestrail resource.', 403)
   if (status === 404) return new CustomerServiceApiError('Resource not found.', 404)
-  if (status >= 500) return new CustomerServiceApiError(`Salestrail API error (${status}). ${bodyText.slice(0, 200)}`, 502)
+  if (status >= 500) return new CustomerServiceApiError(`Salestrail API error (${status}). ${bodyText.slice(0, 200)}`, status)
   return new CustomerServiceApiError(bodyText || `Salestrail request failed (${status}).`, status)
 }
 
@@ -311,6 +317,9 @@ export async function getRecordingUrl(callId: string): Promise<string | null> {
   // Some environments return the URL in the body instead of a redirect
   const text = await res.text().catch(() => '')
   if (!res.ok && res.status !== 200) {
+    if (res.status >= 400) {
+      throw mapHttpError(res.status, text)
+    }
     // Fallback: follow redirects and use the final response URL
     try {
       const followed = await salestrailFetch(
@@ -369,7 +378,10 @@ export async function getRecording(callId: string): Promise<{
         }
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof CustomerServiceApiError) {
+      throw error
+    }
     // fall through to direct follow fetch
   }
 

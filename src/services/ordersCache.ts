@@ -189,10 +189,15 @@ function isOrderCancelled(order: any): boolean {
   )
 }
 
-/** COD with no Care confirmed and no AiSensy confirmed tag. */
+/** COD with no Care confirmed, no AiSensy confirmed tag, and no AWB assigned yet. */
 function isCodNotConfirmed(order: any, live?: any): boolean {
   if (!isCodOrder(order)) return false
-  if (isOrderCancelled(live || order)) return false
+  const op = live || order
+  if (isOrderCancelled(op)) return false
+  const awb = String(
+    op.fulfillments?.[0]?.tracking_number || order.fulfillments?.[0]?.tracking_number || '',
+  ).trim()
+  if (awb) return false
   const careTag = order.care_tag || lookupCareOrderTag(order.id, order.name)
   return !hasCodConfirmation({ ...order, care_tag: careTag })
 }
