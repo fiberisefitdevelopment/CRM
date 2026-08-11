@@ -4,6 +4,7 @@ export type CareTaskStatus =
   | 'unreachable'
   | 'rescheduled'
   | 'escalated'
+  | 'not_interested'
 
 export type CareTaskType =
   | 'cod_confirmation'
@@ -171,6 +172,7 @@ export interface CareTaskSummary {
   escalated: number
   rescheduled: number
   unreachable: number
+  notInterested: number
 }
 
 export interface ExecutivePerformance {

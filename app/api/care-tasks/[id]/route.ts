@@ -17,6 +17,11 @@ import {
   type CareTaskStatus,
 } from '@/src/services/careTasks/types'
 import { careActorLabel } from '@/src/services/careTasks/actorLabel'
+import {
+  careExecutiveAssignee,
+  normalizeCareExecutiveEmail,
+} from '@/src/services/careTasks/executiveConfig'
+import { pinCareExecutiveOnTask } from '@/src/services/careTasks/assignmentEngine'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -92,6 +97,12 @@ export async function PATCH(
       if (action === 'confirm_cod') {
         patch.priority = 'medium'
       }
+      const actorEmail = normalizeCareExecutiveEmail(session.email)
+      if (actorEmail) {
+        const assignee = careExecutiveAssignee(actorEmail, session.id, actor)
+        patch.assignedTo = assignee
+        await pinCareExecutiveOnTask(task, assignee)
+      }
     } else if (action === 'complete' || body.status === 'completed') {
       if (!body.outcome || !body.remarks || !body.customerResponse) {
         return NextResponse.json(
@@ -156,6 +167,18 @@ export async function PATCH(
       patch.scheduledAt = String(body.scheduledAt)
       patch.rescheduledAt = nowIso
       if (body.remarks) patch.remarks = String(body.remarks)
+    } else if (action === 'not_interested') {
+      const reason = String(body.remarks || '').trim()
+      if (!reason) {
+        return NextResponse.json({ error: 'Reason is required.' }, { status: 400 })
+      }
+      patch.status = 'not_interested' as CareTaskStatus
+      patch.outcome = 'Not interested'
+      patch.remarks = reason
+      patch.customerResponse = body.customerResponse
+        ? String(body.customerResponse)
+        : 'Customer not interested'
+      patch.completedAt = nowIso
     } else if (action === 'escalate' || body.status === 'escalated') {
       const reason = String(body.remarks || '').trim()
       if (!reason) {
@@ -208,7 +231,9 @@ export async function PATCH(
         ? 'TASK_UNREACHABLE'
         : action === 'call_after'
           ? 'TASK_CALL_AFTER'
-          : `TASK_${String(patch.status || action).toUpperCase()}`
+          : action === 'not_interested'
+            ? 'TASK_NOT_INTERESTED'
+            : `TASK_${String(patch.status || action).toUpperCase()}`
 
     await logCareAction({
       action: logAction,

@@ -157,7 +157,9 @@ async function createTaskIfMissing(params: {
         const existing = await ref.get()
         const prev = existing.data() || {}
         const prevStatus = String(prev.status || '')
-        if (['completed'].includes(prevStatus)) return null
+        const prevTag = String(prev.careOrderTag || '').trim()
+        if (['completed', 'not_interested'].includes(prevStatus)) return null
+        if (prevTag === 'care_confirmed' || prevTag === 'care_cancelled') return null
         const oldTs = new Date(prev.scheduledAt || 0).getTime()
         const newTs = new Date(params.scheduledAt).getTime()
         const orderCreatedTs = new Date(orderCreatedAt).getTime()
@@ -171,11 +173,7 @@ async function createTaskIfMissing(params: {
           patch.scheduledAt = params.scheduledAt
           patch.orderCreatedAt = orderCreatedAt
         }
-        const prevEmail = String(prev.assignedTo?.email || '').toLowerCase()
-        const nextEmail = String(params.assignee?.email || '').toLowerCase()
-        if (params.assignee && nextEmail && prevEmail !== nextEmail) {
-          patch.assignedTo = params.assignee
-        }
+        // Never steal an open task from its current executive during sync/generate.
         if (Object.keys(patch).length > 0) {
           patch.updatedAt = now
           patch.updatedAtTs = admin.firestore.FieldValue.serverTimestamp()

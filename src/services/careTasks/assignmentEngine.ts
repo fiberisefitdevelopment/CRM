@@ -179,6 +179,21 @@ async function lookupCustomerAssignee(phoneKey: string): Promise<CareAssignee | 
   return careExecutiveAssignee(email, String(data.userId || email.split('@')[0]), data.name)
 }
 
+/** Sticky per-order assignment — survives sync / generate runs. */
+async function lookupOrderAssignee(orderId: string): Promise<CareAssignee | null> {
+  const id = String(orderId || '').trim()
+  if (!id) return null
+  const snap = await getDb().collection('careOrderAssignments').doc(id).get()
+  if (!snap.exists) return null
+  const data = snap.data() || {}
+  const email = normalizeCareExecutiveEmail(data.email)
+  if (!email) return null
+  const pool = await resolveCareExecutivePool()
+  const fromPool = pool.find((e) => e.email === email)
+  if (fromPool) return fromPool
+  return careExecutiveAssignee(email, String(data.userId || email.split('@')[0]), data.name)
+}
+
 async function persistCustomerAssignment(phoneKey: string, assignee: CareAssignee, orderId?: string): Promise<void> {
   if (!phoneKey) return
   await getDb()
@@ -222,6 +237,18 @@ export async function persistOrderAssignment(
     )
 }
 
+/** Lock order + customer to the executive who acted on the task. */
+export async function pinCareExecutiveOnTask(
+  task: { orderId: string; orderName?: string | null; phone?: string | null },
+  assignee: CareAssignee,
+): Promise<void> {
+  await persistOrderAssignment(task.orderId, task.orderName, assignee)
+  const phoneKey = phoneFromOrder({ phone: task.phone })
+  if (phoneKey) {
+    await persistCustomerAssignment(phoneKey, assignee, task.orderId)
+  }
+}
+
 /**
  * Assign a care executive for an order.
  * Repeat customers (same phone) always keep their original executive.
@@ -239,11 +266,17 @@ export async function assignCareExecutiveForOrder(order?: {
   const pool = await resolveCareExecutivePool()
   if (!pool.length) return null
 
+  const orderId = String(order?.id ?? order?.order_id ?? '').trim()
+
+  if (orderId) {
+    const fromOrder = await lookupOrderAssignee(orderId)
+    if (fromOrder) return fromOrder
+  }
+
   const phoneKey = phoneFromOrder(order)
   if (phoneKey) {
     const existing = await lookupCustomerAssignee(phoneKey)
     if (existing) {
-      const orderId = String(order?.id ?? order?.order_id ?? '')
       if (orderId) {
         await persistOrderAssignment(orderId, order?.name, existing)
       }
@@ -251,15 +284,13 @@ export async function assignCareExecutiveForOrder(order?: {
     }
   }
 
-  const assignee = await pickLeastLoadedExecutive(pool)
+  const assignee = await activeStrategy.pickNext(pool)
   if (!assignee) return null
 
   if (phoneKey) {
-    const orderId = String(order?.id ?? order?.order_id ?? '')
     await persistCustomerAssignment(phoneKey, assignee, orderId || undefined)
   }
 
-  const orderId = String(order?.id ?? order?.order_id ?? '')
   if (orderId) {
     await persistOrderAssignment(orderId, order?.name, assignee)
   }
@@ -412,7 +443,15 @@ export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
   }
 
   for (const [phoneKey, tasks] of customerGroups) {
-    const assignee = pickLeastLoaded()
+    const currentEmails = new Set(
+      tasks
+        .map((t) => normalizeEmail(t.data.assignedTo?.email))
+        .filter((email) => email && pool.some((e) => e.email === email)),
+    )
+    const assignee =
+      currentEmails.size === 1
+        ? pool.find((e) => e.email === [...currentEmails][0]) || pickLeastLoaded()
+        : pickLeastLoaded()
     loads.set(assignee.email, (loads.get(assignee.email) || 0) + tasks.length)
     await queueAssignee(assignee, tasks, phoneKey)
   }

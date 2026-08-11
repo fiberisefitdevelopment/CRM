@@ -289,7 +289,7 @@ async function fetchActiveTaskDocs(): Promise<admin.firestore.QueryDocumentSnaps
 
 function needsFullHistory(params: ListCareTasksParams): boolean {
   const s = params.status
-  return !s || s === 'all' || s === 'completed' || s === 'unreachable'
+  return !s || s === 'all' || s === 'completed' || s === 'unreachable' || s === 'not_interested'
 }
 
 async function docsToEnrichedTasks(
@@ -420,6 +420,8 @@ function filterTasksClient(
       )
     } else if (params.status === 'escalated') {
       list = list.filter((t) => t.status === 'escalated')
+    } else if (params.status === 'not_interested') {
+      list = list.filter((t) => t.status === 'not_interested')
     } else {
       list = list.filter((t) => t.status === params.status)
     }
@@ -570,6 +572,7 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
     escalated: 0,
     rescheduled: 0,
     unreachable: 0,
+    notInterested: 0,
   }
 
   for (const t of tasks) {
@@ -583,6 +586,7 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
     }
     if (t.status === 'escalated') summary.escalated += 1
     if (t.status === 'unreachable') summary.unreachable += 1
+    if (t.status === 'not_interested') summary.notInterested += 1
     if (t.status === 'pending' && isOverdue(t)) {
       summary.overdue += 1
       summary.missed += 1

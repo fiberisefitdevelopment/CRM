@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const redistribute = body?.redistribute !== false
+    const redistribute = body?.redistribute === true
     let tasksRedistributed = 0
     if (redistribute) {
       tasksRedistributed = await redistributeOpenTasksAmongExecutives()

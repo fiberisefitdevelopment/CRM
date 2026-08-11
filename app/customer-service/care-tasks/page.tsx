@@ -55,6 +55,7 @@ type StatusFilter =
   | 'upcoming'
   | 'rescheduled'
   | 'escalated'
+  | 'not_interested'
   | 'completed'
   | 'all'
 type PageSize = 20 | 50 | 100
@@ -190,6 +191,7 @@ function isTaskOverdue(task: CareTask) {
 
 function statusBadge(task: CareTask) {
   if (task.status === 'completed') return { label: 'Done', tone: 'emerald' as const }
+  if (task.status === 'not_interested') return { label: 'Not interested', tone: 'muted' as const }
   if (task.status === 'escalated') return { label: 'Escalated', tone: 'red' as const }
   if (task.status === 'unreachable') return { label: 'Unreachable', tone: 'amber' as const }
   if (isTaskOverdue(task)) return { label: 'Overdue', tone: 'red' as const }
@@ -248,8 +250,10 @@ export default function CareTasksPage() {
   const [generating, setGenerating] = useState(false)
   const [showMoreTools, setShowMoreTools] = useState(false)
   const [orderCtx, setOrderCtx] = useState<OrderContext | null>(null)
+  const [orderCtxTaskId, setOrderCtxTaskId] = useState<string | null>(null)
   const [orderCtxLoading, setOrderCtxLoading] = useState(false)
   const [orderCtxError, setOrderCtxError] = useState<string | null>(null)
+  const orderCtxFetchSeq = useRef(0)
   const autoGenerateTried = useRef(false)
   const loadSeq = useRef(0)
   const execDefaultsApplied = useRef(false)
@@ -269,6 +273,8 @@ export default function CareTasksPage() {
   const [unreachableConfirmTask, setUnreachableConfirmTask] = useState<CareTask | null>(null)
   const [escalateConfirmTask, setEscalateConfirmTask] = useState<CareTask | null>(null)
   const [callAfterConfirmTask, setCallAfterConfirmTask] = useState<CareTask | null>(null)
+  const [notInterestedConfirmTask, setNotInterestedConfirmTask] = useState<CareTask | null>(null)
+  const [notInterestedReason, setNotInterestedReason] = useState('')
   const [reminderTask, setReminderTask] = useState<CareTask | null>(null)
   const [panelEscalatedTasks, setPanelEscalatedTasks] = useState<CareTask[]>([])
   const [escalatedPanelOpen, setEscalatedPanelOpen] = useState(false)
@@ -464,7 +470,17 @@ export default function CareTasksPage() {
     }
   }
 
-  useEffect(() => {
+  const expandedTask = useMemo(
+    () => (expandedId ? tasks.find((t) => t.id === expandedId) ?? null : null),
+    [expandedId, tasks],
+  )
+
+  const clearExpandedTaskUi = useCallback(() => {
+    orderCtxFetchSeq.current += 1
+    setOrderCtx(null)
+    setOrderCtxTaskId(null)
+    setOrderCtxError(null)
+    setOrderCtxLoading(false)
     setOutcome('')
     setRemarks('')
     setCustomerResponse('')
@@ -473,30 +489,42 @@ export default function CareTasksPage() {
     setRescheduleAt('')
     setCallAfterAt('')
     setEscalateReason('')
-    setOrderCtx(null)
-    setOrderCtxError(null)
+  }, [])
 
-    if (!expandedId) return
-    const task = tasks.find((t) => t.id === expandedId)
-    if (!task) return
+  useEffect(() => {
+    if (!expandedId) {
+      clearExpandedTaskUi()
+      return
+    }
+    if (!expandedTask) return
 
-    let cancelled = false
+    clearExpandedTaskUi()
+    const seq = ++orderCtxFetchSeq.current
+    const taskId = expandedTask.id
+    const { orderId, orderName } = expandedTask
+
     ;(async () => {
       setOrderCtxLoading(true)
       try {
-        const ctx = await getCareOrderContext(task.orderId, task.orderName)
-        if (!cancelled) setOrderCtx(ctx)
+        const ctx = await getCareOrderContext(orderId, orderName)
+        if (seq !== orderCtxFetchSeq.current) return
+        setOrderCtx(ctx)
+        setOrderCtxTaskId(taskId)
       } catch (err: any) {
-        if (!cancelled) setOrderCtxError(err?.message || 'Could not load order trail')
+        if (seq !== orderCtxFetchSeq.current) return
+        setOrderCtxError(err?.message || 'Could not load order trail')
       } finally {
-        if (!cancelled) setOrderCtxLoading(false)
+        if (seq === orderCtxFetchSeq.current) setOrderCtxLoading(false)
       }
     })()
-    return () => {
-      cancelled = true
+  }, [expandedId, expandedTask?.id, expandedTask?.orderId, expandedTask?.orderName, clearExpandedTaskUi])
+
+  useEffect(() => {
+    if (expandedId && !tasks.some((t) => t.id === expandedId)) {
+      setExpandedId(null)
+      clearExpandedTaskUi()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [expandedId])
+  }, [tasks, expandedId, clearExpandedTaskUi])
 
   // Reminder popup when a previously-unreachable task becomes due again
   useEffect(() => {
@@ -531,58 +559,64 @@ export default function CareTasksPage() {
   }, [summary])
 
   const onAction = async (task: CareTask, action: string) => {
+    const form = {
+      outcome,
+      remarks,
+      customerResponse,
+      customerRating,
+      rescheduleAt,
+      callAfterAt,
+      escalateReason,
+      escalateTargetEmail,
+      notInterestedReason,
+    }
     try {
       setSavingId(task.id)
       setError(null)
       setSuccess(null)
+      setExpandedId(null)
+      clearExpandedTaskUi()
       if (action === 'confirm_cod') {
         await updateCareTask(task.id, { action: 'confirm_cod' })
         setSuccess(`Tagged ${task.orderName} as Care confirmed (Orders / Order Status)`)
-        setExpandedId(null)
       } else if (action === 'cancel_cod') {
         await updateCareTask(task.id, { action: 'cancel_cod' })
         setSuccess(`Tagged ${task.orderName} as Care cancelled (display only — order not cancelled)`)
-        setExpandedId(null)
       } else if (action === 'complete') {
-        if (requiresCustomerRating(task) && (customerRating < 1 || customerRating > 5)) {
+        if (requiresCustomerRating(task) && (form.customerRating < 1 || form.customerRating > 5)) {
           throw new Error('Please rate the customer (1–5 stars) before completing')
         }
         await updateCareTask(task.id, {
           action: 'complete',
-          outcome,
-          remarks,
-          customerResponse,
-          ...(requiresCustomerRating(task) ? { customerRating } : {}),
+          outcome: form.outcome,
+          remarks: form.remarks,
+          customerResponse: form.customerResponse,
+          ...(requiresCustomerRating(task) ? { customerRating: form.customerRating } : {}),
         })
         setSuccess('Task completed')
-        setExpandedId(null)
       } else if (action === 'unreachable') {
         await updateCareTask(task.id, {
           action: 'unreachable',
-          remarks: remarks || 'Customer unreachable',
+          remarks: form.remarks || 'Customer unreachable',
         })
         setUnreachableConfirmTask(null)
         setSuccess('Marked unreachable — task will return in 1 hour')
-        setExpandedId(null)
       } else if (action === 'escalate') {
-        const reason = escalateReason.trim()
+        const reason = form.escalateReason.trim()
         if (!reason) throw new Error('Escalate reason is required')
-        const target = escalationTargets.find((t) => t.email === escalateTargetEmail)
+        const target = escalationTargets.find((t) => t.email === form.escalateTargetEmail)
         if (!target) throw new Error('Select who to escalate this task to')
         await updateCareTask(task.id, { action: 'escalate', remarks: reason, escalatedTo: target })
         setEscalateConfirmTask(null)
-        setEscalateReason('')
-        setEscalateTargetEmail('')
         setSuccess(`Escalated to ${target.name || target.email}`)
         pushLocalNotif(
           'Care task escalated',
           `${task.orderName} — ${task.taskLabel} → ${target.name || target.email}`,
           'alert',
         )
-        setExpandedId(null)
       } else if (action === 'call_after') {
-        if (!callAfterAt) throw new Error('Pick a call-after date & time first')
-        const when = new Date(callAfterAt).getTime()
+        if (!form.callAfterAt) throw new Error('Pick a call-after date & time first')
+        const when = new Date(form.callAfterAt).getTime()
         if (Number.isNaN(when)) throw new Error('Invalid call-after date')
         if (when > Date.now() + CALL_AFTER_MAX_MS) {
           throw new Error('Call After can be at most 3 days from now')
@@ -591,18 +625,26 @@ export default function CareTasksPage() {
         await updateCareTask(task.id, {
           action: 'call_after',
           scheduledAt: new Date(when).toISOString(),
-          remarks,
+          remarks: form.remarks,
         })
         setCallAfterConfirmTask(null)
-        setCallAfterAt('')
         setSuccess('Scheduled call after')
-        setExpandedId(null)
+      } else if (action === 'not_interested') {
+        const reason = form.notInterestedReason.trim()
+        if (!reason) throw new Error('Please enter a reason')
+        await updateCareTask(task.id, {
+          action: 'not_interested',
+          remarks: reason,
+          customerResponse: form.customerResponse || 'Customer not interested',
+        })
+        setNotInterestedConfirmTask(null)
+        setSuccess('Moved to Not interested')
       } else if (action === 'reschedule') {
-        if (!rescheduleAt) throw new Error('Pick a new date & time first')
+        if (!form.rescheduleAt) throw new Error('Pick a new date & time first')
         await updateCareTask(task.id, {
           action: 'reschedule',
-          scheduledAt: new Date(rescheduleAt).toISOString(),
-          remarks,
+          scheduledAt: new Date(form.rescheduleAt).toISOString(),
+          remarks: form.remarks,
         })
         setSuccess('Rescheduled')
       }
@@ -634,6 +676,7 @@ export default function CareTasksPage() {
     ['overdue', 'Overdue'],
     ['rescheduled', 'Rescheduled'],
     ['escalated', 'Escalated'],
+    ['not_interested', 'Not interested'],
     ['completed', 'Done'],
     ['all', 'All'],
   ]
@@ -644,6 +687,7 @@ export default function CareTasksPage() {
         overdue: summary.overdue,
         rescheduled: summary.rescheduled,
         escalated: summary.escalated,
+        not_interested: summary.notInterested,
         completed: summary.completed,
         all: summary.total,
       }
@@ -1110,11 +1154,14 @@ export default function CareTasksPage() {
                     ? 'No Call After / unreachable reschedules right now.'
                     : statusFilter === 'escalated'
                       ? 'No escalated tasks right now.'
-                      : 'Nothing for this status yet. Try Generate tasks from COD orders.'}
+                      : statusFilter === 'not_interested'
+                        ? 'No not-interested tasks yet.'
+                        : 'Nothing for this status yet. Try Generate tasks from COD orders.'}
               </p>
               {!debouncedSearch &&
                 statusFilter !== 'rescheduled' &&
                 statusFilter !== 'escalated' &&
+                statusFilter !== 'not_interested' &&
                 statusFilter !== 'completed' && (
                 <button
                   onClick={() => runGenerate(false)}
@@ -1169,6 +1216,9 @@ export default function CareTasksPage() {
                 const busy = savingId === task.id
                 const isCodConfirm =
                   getCareTaskKind(task) === 'cod_confirmation' && task.status !== 'completed'
+                const taskOrderCtx = orderCtxTaskId === task.id ? orderCtx : null
+                const taskOrderCtxLoading = expanded && orderCtxTaskId !== task.id && orderCtxLoading
+                const taskOrderCtxError = orderCtxTaskId === task.id ? orderCtxError : null
 
                 return (
                   <div
@@ -1300,6 +1350,7 @@ export default function CareTasksPage() {
 
                     {expanded && (
                       <div
+                        key={`expanded-${task.id}`}
                         className="border-t px-4 lg:px-5 py-4 space-y-5"
                         style={{ borderColor: 'var(--border)' }}
                       >
@@ -1345,15 +1396,15 @@ export default function CareTasksPage() {
                               ? fmtWhen(task.lastCall.startTime || task.lastCall.createdAt)
                               : 'None'}
                           </span>
-                          {orderCtx?.operational && (
+                          {taskOrderCtx?.operational && (
                             <span>
                               <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
                                 Fulfillment
                               </span>{' '}
-                              {orderCtx.statusLabel}
-                              {orderCtx.operational.awb ? ` · ${orderCtx.operational.awb}` : ''}
-                              {orderCtx.operational.courier
-                                ? ` · ${orderCtx.operational.courier}`
+                              {taskOrderCtx.statusLabel}
+                              {taskOrderCtx.operational.awb ? ` · ${taskOrderCtx.operational.awb}` : ''}
+                              {taskOrderCtx.operational.courier
+                                ? ` · ${taskOrderCtx.operational.courier}`
                                 : ''}
                             </span>
                           )}
@@ -1367,7 +1418,7 @@ export default function CareTasksPage() {
                           >
                             Order trail
                           </p>
-                          {orderCtxLoading && (
+                          {taskOrderCtxLoading && (
                             <p
                               className="text-sm flex items-center gap-2"
                               style={{ color: 'var(--foreground-muted)' }}
@@ -1375,10 +1426,10 @@ export default function CareTasksPage() {
                               <Loader2 className="w-4 h-4 animate-spin" /> Loading shipment trail…
                             </p>
                           )}
-                          {orderCtxError && (
-                            <p className="text-sm text-red-500">{orderCtxError}</p>
+                          {taskOrderCtxError && (
+                            <p className="text-sm text-red-500">{taskOrderCtxError}</p>
                           )}
-                          {!orderCtxLoading && orderCtx && (
+                          {!taskOrderCtxLoading && taskOrderCtx && (
                             <div className="space-y-4">
                               <div>
                                 <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
@@ -1386,19 +1437,19 @@ export default function CareTasksPage() {
                                     className="text-xs font-semibold"
                                     style={{ color: 'var(--foreground)' }}
                                   >
-                                    {orderCtx.delivered ? 'Order timeline' : 'Shipment timeline'}
+                                    {taskOrderCtx.delivered ? 'Order timeline' : 'Shipment timeline'}
                                   </p>
-                                  {!orderCtx.delivered && (
+                                  {!taskOrderCtx.delivered && (
                                     <span className={badge('amber')}>
-                                      {orderCtx.statusLabel}
-                                      {orderCtx.operational?.etd
-                                        ? ` · ETD ${fmtDay(orderCtx.operational.etd)}`
+                                      {taskOrderCtx.statusLabel}
+                                      {taskOrderCtx.operational?.etd
+                                        ? ` · ETD ${fmtDay(taskOrderCtx.operational.etd)}`
                                         : ''}
                                     </span>
                                   )}
                                 </div>
-                                {orderCtx.timeline?.length ? (
-                                  <TimelineRail steps={orderCtx.timeline} />
+                                {taskOrderCtx.timeline?.length ? (
+                                  <TimelineRail steps={taskOrderCtx.timeline} />
                                 ) : (
                                   <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>
                                     No timeline steps yet.
@@ -1406,7 +1457,7 @@ export default function CareTasksPage() {
                                 )}
                               </div>
 
-                              {(orderCtx.clones?.length > 0 || orderCtx.parent) && (
+                              {(taskOrderCtx.clones?.length > 0 || taskOrderCtx.parent) && (
                                 <div>
                                   <p
                                     className="text-xs font-semibold mb-2"
@@ -1421,21 +1472,21 @@ export default function CareTasksPage() {
                                           {
                                             key: 'original',
                                             title: 'Original',
-                                            name: (orderCtx.parent || orderCtx.order)?.name,
-                                            sub: (orderCtx.parent || orderCtx.order)?.statusLabel,
-                                            awb: (orderCtx.parent || orderCtx.order)?.awb,
+                                            name: (taskOrderCtx.parent || taskOrderCtx.order)?.name,
+                                            sub: (taskOrderCtx.parent || taskOrderCtx.order)?.statusLabel,
+                                            awb: (taskOrderCtx.parent || taskOrderCtx.order)?.awb,
                                             active: false,
                                           },
-                                          ...(orderCtx.clones || []).map(
+                                          ...(taskOrderCtx.clones || []).map(
                                             (clone: any, idx: number) => ({
                                               key: String(clone.id),
-                                              title: `Clone${orderCtx.clones.length > 1 ? ` ${idx + 1}` : ''}${
-                                                idx === orderCtx.clones.length - 1 ? ' · active' : ''
+                                              title: `Clone${taskOrderCtx.clones.length > 1 ? ` ${idx + 1}` : ''}${
+                                                idx === taskOrderCtx.clones.length - 1 ? ' · active' : ''
                                               }`,
                                               name: clone.name,
                                               sub: `${fmtDay(clone.created_at)} · ${clone.statusLabel}`,
                                               awb: clone.awb,
-                                              active: idx === orderCtx.clones.length - 1,
+                                              active: idx === taskOrderCtx.clones.length - 1,
                                             }),
                                           ),
                                         ]
@@ -1577,7 +1628,7 @@ export default function CareTasksPage() {
                         </div>
 
                         {/* Complete / update — clear single form */}
-                        {task.status !== 'completed' ? (
+                        {task.status !== 'completed' && task.status !== 'not_interested' ? (
                           <div
                             className="pt-4 border-t space-y-3"
                             style={{ borderColor: 'var(--border)' }}
@@ -1712,9 +1763,19 @@ export default function CareTasksPage() {
                                 <Clock className="w-4 h-4" />
                                 Call After
                               </button>
+                              <button
+                                disabled={busy}
+                                onClick={() => {
+                                  setNotInterestedReason('')
+                                  setNotInterestedConfirmTask(task)
+                                }}
+                                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
+                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                              >
+                                Not interested
+                              </button>
                             </div>
 
-                            {!isExec && (
                             <div className="flex flex-wrap items-end gap-2 pt-1">
                               <label className="block">
                                 <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
@@ -1741,7 +1802,6 @@ export default function CareTasksPage() {
                                 Save new time
                               </button>
                             </div>
-                            )}
 
                             <div className="flex gap-2 pt-1">
                               <input
@@ -1770,6 +1830,22 @@ export default function CareTasksPage() {
                             className="pt-3 border-t text-sm space-y-1"
                             style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
                           >
+                            {task.status === 'not_interested' ? (
+                              <>
+                                <p className="font-semibold flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
+                                  Not interested
+                                </p>
+                                <p style={{ color: 'var(--foreground-muted)' }}>
+                                  Reason: {task.remarks || '—'}
+                                </p>
+                                {task.completedAt && (
+                                  <p style={{ color: 'var(--foreground-muted)' }}>
+                                    Marked on: {fmtWhen(task.completedAt)}
+                                  </p>
+                                )}
+                              </>
+                            ) : (
+                              <>
                             <p className="font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
                               <CheckCircle2 className="w-4 h-4" /> Completed
                             </p>
@@ -1792,6 +1868,8 @@ export default function CareTasksPage() {
                                   />
                                 ))}
                               </p>
+                            )}
+                              </>
                             )}
                           </div>
                         )}
@@ -2067,6 +2145,74 @@ export default function CareTasksPage() {
                 className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white disabled:opacity-50"
               >
                 Escalate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Not interested reason popup */}
+      {notInterestedConfirmTask && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
+          <div
+            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
+            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
+                Not interested
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setNotInterestedConfirmTask(null)
+                  setNotInterestedReason('')
+                }}
+                className="p-1 rounded-lg"
+                style={{ color: 'var(--foreground-muted)' }}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
+              {notInterestedConfirmTask.orderName} — {notInterestedConfirmTask.taskLabel}
+            </p>
+            <label className="block mb-4">
+              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
+                Reason *
+              </span>
+              <textarea
+                value={notInterestedReason}
+                onChange={(e) => setNotInterestedReason(e.target.value)}
+                placeholder="Why is the customer not interested?"
+                rows={4}
+                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30 resize-y"
+                style={{
+                  background: 'var(--background)',
+                  borderColor: 'var(--border)',
+                  color: 'var(--foreground)',
+                }}
+              />
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setNotInterestedConfirmTask(null)
+                  setNotInterestedReason('')
+                }}
+                className="px-3 py-2 rounded-lg text-sm border"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={savingId === notInterestedConfirmTask.id || !notInterestedReason.trim()}
+                onClick={() => onAction(notInterestedConfirmTask, 'not_interested')}
+                className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-700 text-white disabled:opacity-50"
+              >
+                Move to Not interested
               </button>
             </div>
           </div>

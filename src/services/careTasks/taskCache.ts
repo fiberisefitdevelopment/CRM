@@ -83,13 +83,9 @@ export function setCachedCareTasks(tasks: CareTask[]): void {
 }
 
 export function invalidateCareTasksCache(): void {
-  // Mark stale so callers still SWR-serve memory/disk and refresh in background.
-  // Clearing to null would force a cold Firestore scan on the next request.
-  for (const key of ['active', 'full'] as BucketKey[]) {
-    if (memory[key]?.tasks?.length) {
-      memory[key] = { tasks: memory[key]!.tasks, fetchedAt: 0 }
-    }
-  }
+  // Drop cached snapshots after mutations so list views never serve stale assignees/status.
+  memory.active = null
+  memory.full = null
 }
 
 function getBucket(key: BucketKey, allowStale: boolean): CareTask[] | null {
