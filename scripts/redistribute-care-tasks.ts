@@ -1,5 +1,5 @@
 /**
- * Split open care tasks evenly across support@, executive1@, executive2@.
+ * Split open care tasks evenly across support@, Shubham, and Kawalnain.
  */
 import dotenv from 'dotenv'
 import path from 'path'

@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { listCareTasks } from '@/src/services/careTasks/queries'
 import {
   canAccessCareTasksApi,
-  canViewAllCareTasks,
+  resolveCareTaskAssigneeFilter,
   requireSession,
 } from '@/src/services/careTasks/session'
 
@@ -22,12 +22,8 @@ export async function GET(req: NextRequest) {
     const page = Number(searchParams.get('page') || 1)
     const pageSize = Number(searchParams.get('pageSize') || 20)
 
-    // Same org-wide dataset for admin and care executives.
-    // Only an explicit ?assignee= (admin filter) narrows the list.
-    const isAdmin = canViewAllCareTasks(session.role)
     const assigneeParam = searchParams.get('assignee')
-    const assigneeEmail =
-      isAdmin && assigneeParam ? assigneeParam.toLowerCase() : undefined
+    const assigneeEmail = resolveCareTaskAssigneeFilter(session, assigneeParam)
 
     const result = await listCareTasks({
       status,

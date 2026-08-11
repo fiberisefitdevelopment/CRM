@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { summarizeCareTasks } from '@/src/services/careTasks/queries'
 import {
   canAccessCareTasksApi,
-  canViewAllCareTasks,
+  resolveCareTaskAssigneeFilter,
   requireSession,
 } from '@/src/services/careTasks/session'
 
@@ -15,10 +15,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
     }
 
-    // Same org-wide totals for admin and executives (optional admin assignee filter).
-    const isAdmin = canViewAllCareTasks(session.role)
     const assigneeParam = new URL(req.url).searchParams.get('assignee')
-    const assignee = isAdmin && assigneeParam ? assigneeParam.toLowerCase() : undefined
+    const assignee = resolveCareTaskAssigneeFilter(session, assigneeParam)
 
     const summary = await summarizeCareTasks(assignee)
     return NextResponse.json({ summary })

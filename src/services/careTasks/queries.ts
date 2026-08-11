@@ -12,6 +12,8 @@ import {
   createdDate,
   serializeCareTask,
 } from './generator'
+import { resolveCareExecutivePool } from './assignmentEngine'
+import { careExecutiveDisplayName, normalizeCareExecutiveEmail } from './executiveConfig'
 import { invalidateCareTasksCache, loadCareTasksCached } from './taskCache'
 import {
   getCareTaskKind,
@@ -85,7 +87,7 @@ export type CarePageSize = 20 | 50 | 100
 export interface ListCareTasksParams {
   status?: CareTaskStatus | 'all' | 'overdue' | 'today' | 'upcoming' | 'inbox'
   kind?: CareTaskKind | 'all'
-  /** Optional filter — when set, only that assignee’s tasks. Omit for org-wide (admin + exec parity). */
+  /** Optional filter — when set, only that assignee’s tasks. Care executives are always scoped to self. */
   assigneeEmail?: string | null
   /** @deprecated ignored — list is always org-wide unless assigneeEmail is set */
   includeUnassigned?: boolean
@@ -370,7 +372,9 @@ async function resolveTaskUniverse(params: ListCareTasksParams): Promise<CareTas
   const tasks = needsFullHistory(params) ? await loadOrgTasks() : await loadActiveTasks()
   if (params.assigneeEmail) {
     const email = params.assigneeEmail.toLowerCase()
-    return tasks.filter((t) => t.assignedTo?.email?.toLowerCase() === email)
+    return tasks.filter(
+      (t) => normalizeCareExecutiveEmail(t.assignedTo?.email) === email,
+    )
   }
   return tasks
 }
@@ -605,9 +609,6 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
     byEmail.get(email)!.push(t)
   }
 
-  const { resolveCareExecutivePool } = require('@/src/services/careTasks/assignmentEngine') as {
-    resolveCareExecutivePool: () => Promise<Array<{ email: string; name: string }>>
-  }
   const pool = await resolveCareExecutivePool()
   const poolByEmail = new Map(pool.map((e) => [e.email, e]))
   const emails = new Set<string>([
@@ -647,7 +648,7 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
 
     rows.push({
       email,
-      name: list[0]?.assignedTo?.name || poolExec?.name || email.split('@')[0] || email,
+      name: careExecutiveDisplayName(email, list[0]?.assignedTo?.name || poolExec?.name),
       assigned: list.length,
       completed: completed.length,
       pending: pending.length,

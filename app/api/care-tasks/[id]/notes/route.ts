@@ -6,8 +6,8 @@ import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { getCareTaskById, invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { logCareAction } from '@/src/services/careTasks/logger'
 import {
+  assertCanAccessCareTask,
   canAccessCareTasksApi,
-  canViewAllCareTasks,
   requireSession,
 } from '@/src/services/careTasks/session'
 import type { CareTaskNote } from '@/src/services/careTasks/types'
@@ -29,11 +29,7 @@ export async function POST(
     const params = await ctx.params
     const task = await getCareTaskById(params.id)
     if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-
-    // Same org-wide access as the task list (admin + care executives)
-    if (!canViewAllCareTasks(session.role) && !canAccessCareTasksApi(session.role)) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
-    }
+    assertCanAccessCareTask(session, task)
 
     const body = await req.json().catch(() => ({}))
     const text = String(body.text || body.note || '').trim()

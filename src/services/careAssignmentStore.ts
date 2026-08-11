@@ -6,6 +6,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { CareAssignee } from '@/src/services/careTasks/types'
+import { careExecutiveDisplayName } from '@/src/services/careTasks/executiveConfig'
 
 export interface CareOrderAssignmentEntry {
   orderId: string
@@ -26,10 +27,7 @@ let hydrateExpiresAt = 0
 let hydrateInflight: Promise<void> | null = null
 
 function assignmentLabel(assignee: Pick<CareAssignee, 'name' | 'email'>): string {
-  const name = String(assignee.name || '').trim()
-  if (name && !name.toLowerCase().includes('customer care executive')) return name
-  const local = assignee.email.split('@')[0] || 'Executive'
-  return local.replace(/([a-z])(\d)/i, '$1 $2')
+  return careExecutiveDisplayName(assignee.email, assignee.name)
 }
 
 function loadStore(): AssignmentStore {

@@ -2,8 +2,14 @@ import crypto from 'crypto'
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { hashPassword } from './passwords'
+import { careExecutiveDisplayName } from '@/src/services/careTasks/executiveConfig'
+import { migrateLegacyCareExecutiveEmails } from '@/src/services/careTasks/assignmentEngine'
 
 let isSeeded = false
+
+function careExecutiveName(email: string): string {
+  return careExecutiveDisplayName(email)
+}
 
 /** Ensure default role accounts exist in Firestore. */
 export async function seedAdminUser(): Promise<void> {
@@ -24,9 +30,7 @@ export async function seedAdminUser(): Promise<void> {
       if (opts?.careExecutive) {
         extras.careExecutive = true
         extras.active = true
-        if (normalized.includes('executive1')) extras.name = 'Executive 1'
-        else if (normalized.includes('executive2')) extras.name = 'Executive 2'
-        else extras.name = 'Customer Care Executive'
+        extras.name = careExecutiveName(normalized)
       }
       if (query.empty) {
         console.log(`🌱 Seeding default ${role} user: ${email}`)
@@ -50,11 +54,8 @@ export async function seedAdminUser(): Promise<void> {
         if (opts.careExecutive) {
           if (current.careExecutive !== true) patch.careExecutive = true
           if (current.active === false || current.active == null) patch.active = true
-          if (normalized.includes('executive1')) patch.name = 'Executive 1'
-          else if (normalized.includes('executive2')) patch.name = 'Executive 2'
-          else if (!current.name || current.name === 'Customer Care Executive') {
-            patch.name = 'Customer Care Executive'
-          }
+          const nextName = careExecutiveName(normalized)
+          if (current.name !== nextName) patch.name = nextName
         }
         if (Object.keys(patch).length > 0) {
           await query.docs[0].ref.update(patch)
@@ -72,14 +73,19 @@ export async function seedAdminUser(): Promise<void> {
       syncRole: true,
       careExecutive: true,
     })
-    await seedUserIfMissing('executive1@fiberisefit.com', '12345', 'care_executive', {
+    await seedUserIfMissing('shubham.kumar@fiberisefit.com', '12345', 'care_executive', {
       syncRole: true,
       careExecutive: true,
     })
-    await seedUserIfMissing('executive2@fiberisefit.com', '12345', 'care_executive', {
+    await seedUserIfMissing('kawalnain.singh@fiberisefit.com', '12345', 'care_executive', {
       syncRole: true,
       careExecutive: true,
     })
+
+    const migrated = await migrateLegacyCareExecutiveEmails()
+    if (migrated > 0) {
+      console.log(`🔄 Migrated ${migrated} care records to new executive emails`)
+    }
 
     isSeeded = true
   } catch (error) {

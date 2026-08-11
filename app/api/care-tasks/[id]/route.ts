@@ -6,11 +6,10 @@ import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { getCareTaskById, invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { logCareAction } from '@/src/services/careTasks/logger'
 import {
+  assertCanAccessCareTask,
   canAccessCareTasksApi,
-  canViewAllCareTasks,
   requireSession,
 } from '@/src/services/careTasks/session'
-import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import {
   CALL_AFTER_MAX_MS,
   UNREACHABLE_RETRY_MS,
@@ -21,15 +20,6 @@ import { careActorLabel } from '@/src/services/careTasks/actorLabel'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
-}
-
-/** Admin + care executives share the same org-wide task pool. */
-function assertCanAccessTask(session: { email: string; role: string }) {
-  if (canViewAllCareTasks(session.role) || isCareExecutiveRole(session.role)) return
-  if (canAccessCareTasksApi(session.role)) return
-  const err = new Error('Forbidden') as Error & { status: number }
-  err.status = 403
-  throw err
 }
 
 export async function GET(
@@ -44,7 +34,7 @@ export async function GET(
     const params = await ctx.params
     const task = await getCareTaskById(params.id)
     if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    assertCanAccessTask(session)
+    assertCanAccessCareTask(session, task)
     return NextResponse.json({ task })
   } catch (error: any) {
     const status = error?.status || 500
@@ -64,7 +54,7 @@ export async function PATCH(
     const params = await ctx.params
     const task = await getCareTaskById(params.id)
     if (!task) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-    assertCanAccessTask(session)
+    assertCanAccessCareTask(session, task)
 
     const body = await req.json().catch(() => ({}))
     const action = String(body.action || '').toLowerCase()
@@ -72,19 +62,6 @@ export async function PATCH(
     const patch: Record<string, unknown> = {
       updatedAt: nowIso,
       updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
-    }
-
-    // Claim for the acting executive so ownership stays consistent
-    if (
-      isCareExecutiveRole(session.role) &&
-      task.assignedTo?.email?.toLowerCase() !== session.email.toLowerCase()
-    ) {
-      const actor = careActorLabel(session)
-      patch.assignedTo = {
-        userId: session.id || session.email.split('@')[0] || 'executive',
-        email: session.email.toLowerCase(),
-        name: actor,
-      }
     }
 
     if (action === 'confirm_cod' || action === 'cancel_cod') {

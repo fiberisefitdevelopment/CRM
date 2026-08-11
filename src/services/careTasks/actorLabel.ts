@@ -1,18 +1,9 @@
 import type { AuthUser } from '@/src/services/auth'
+import { careExecutiveDisplayName } from '@/src/services/careTasks/executiveConfig'
 
-const GENERIC_ACTOR_NAMES = new Set([
-  'customer care executive',
-  'executive',
-  'care',
-  'support',
-])
-
-/** Display label for the logged-in care user (e.g. executive1 → executive 1). */
+/** Display label for the logged-in care user (e.g. shubham.kumar → Shubham). */
 export function careActorLabel(session: Pick<AuthUser, 'name' | 'email'>): string {
-  const name = session.name?.trim()
-  if (name && !GENERIC_ACTOR_NAMES.has(name.toLowerCase())) return name
-  const local = (session.email.split('@')[0] || 'care').replace(/[_.-]+/g, ' ')
-  return local.replace(/([a-zA-Z])(\d)/g, '$1 $2').trim()
+  return careExecutiveDisplayName(session.email, session.name)
 }
 
 export function isCareConfirmedOutcome(outcome: string): boolean {

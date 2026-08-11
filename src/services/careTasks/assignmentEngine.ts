@@ -1,6 +1,14 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { phoneMatchKey } from '@/src/utils/phoneNormalize'
+import {
+  CARE_EXECUTIVE_EMAILS,
+  FALLBACK_CARE_EXECUTIVES,
+  LEGACY_CARE_EXECUTIVE_EMAILS,
+  careExecutiveAssignee,
+  careExecutiveDisplayName,
+  normalizeCareExecutiveEmail,
+} from './executiveConfig'
 import type { CareAssignee } from './types'
 
 export interface AssignmentStrategy {
@@ -8,12 +16,8 @@ export interface AssignmentStrategy {
   pickNext(executives: CareAssignee[]): Promise<CareAssignee | null>
 }
 
-/** Fixed round-robin order: support → executive1 → executive2. */
-export const CARE_EXECUTIVE_EMAILS = [
-  'support@fiberisefit.com',
-  'executive1@fiberisefit.com',
-  'executive2@fiberisefit.com',
-] as const
+/** Fixed round-robin order: support → Shubham → Kawalnain. */
+export { CARE_EXECUTIVE_EMAILS } from './executiveConfig'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -119,27 +123,13 @@ export function setAssignmentStrategy(strategy: AssignmentStrategy) {
 }
 
 /** Fallback when Firestore has no flagged executive yet. */
-export const DEFAULT_CARE_EXECUTIVE: CareAssignee = {
-  userId: 'support-fiberisefit',
-  email: 'support@fiberisefit.com',
-  name: 'Customer Care Executive',
-}
-
-const FALLBACK_EXECUTIVES: CareAssignee[] = [
-  DEFAULT_CARE_EXECUTIVE,
-  {
-    userId: 'executive1-fiberisefit',
-    email: 'executive1@fiberisefit.com',
-    name: 'Executive 1',
-  },
-  {
-    userId: 'executive2-fiberisefit',
-    email: 'executive2@fiberisefit.com',
-    name: 'Executive 2',
-  },
-]
+export const DEFAULT_CARE_EXECUTIVE: CareAssignee = FALLBACK_CARE_EXECUTIVES[0]
 
 let cachedExecutivePool: CareAssignee[] | null = null
+
+export function clearCareExecutivePoolCache() {
+  cachedExecutivePool = null
+}
 
 /** Resolve the 3 care executives in fixed assignment order. */
 export async function resolveCareExecutivePool(): Promise<CareAssignee[]> {
@@ -154,15 +144,13 @@ export async function resolveCareExecutivePool(): Promise<CareAssignee[]> {
       const doc = q.docs[0]
       const d = doc.data()
       if (d.active === false) continue
-      byEmail.set(email, {
-        userId: doc.id,
-        email,
-        name: String(d.name || email.split('@')[0] || 'Executive'),
-      })
+      byEmail.set(email, careExecutiveAssignee(email, doc.id, d.name))
     }
   }
 
-  const pool = CARE_EXECUTIVE_EMAILS.map((email) => byEmail.get(email) || FALLBACK_EXECUTIVES.find((e) => e.email === email)!)
+  const pool = CARE_EXECUTIVE_EMAILS.map(
+    (email) => byEmail.get(email) || FALLBACK_CARE_EXECUTIVES.find((e) => e.email === email)!,
+  )
   cachedExecutivePool = pool.filter(Boolean)
   return cachedExecutivePool
 }
@@ -183,16 +171,12 @@ async function lookupCustomerAssignee(phoneKey: string): Promise<CareAssignee | 
   const snap = await getDb().collection('careCustomerAssignments').doc(phoneKey).get()
   if (!snap.exists) return null
   const data = snap.data() || {}
-  const email = normalizeEmail(data.email)
+  const email = normalizeCareExecutiveEmail(data.email)
   if (!email) return null
   const pool = await resolveCareExecutivePool()
   const fromPool = pool.find((e) => e.email === email)
   if (fromPool) return fromPool
-  return {
-    userId: String(data.userId || email.split('@')[0]),
-    email,
-    name: String(data.name || email.split('@')[0] || 'Executive'),
-  }
+  return careExecutiveAssignee(email, String(data.userId || email.split('@')[0]), data.name)
 }
 
 async function persistCustomerAssignment(phoneKey: string, assignee: CareAssignee, orderId?: string): Promise<void> {
@@ -241,7 +225,7 @@ export async function persistOrderAssignment(
 /**
  * Assign a care executive for an order.
  * Repeat customers (same phone) always keep their original executive.
- * New customers rotate: support@ → executive1 → executive2 → …
+ * New customers rotate: support@ → Shubham → Kawalnain → …
  */
 export async function assignCareExecutiveForOrder(order?: {
   id?: string | number
@@ -440,5 +424,95 @@ export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
   }
 
   ;({ batch, batchCount } = await commitBatch(db, batch, batchCount))
+  return updated
+}
+
+/** Migrate legacy executive1/2 emails + display names across Firestore. */
+export async function migrateLegacyCareExecutiveEmails(): Promise<number> {
+  const ref = getDb().collection('careAssignmentState').doc('executive_email_migration_v1')
+  const snap = await ref.get()
+  if (snap.exists) return 0
+
+  const db = getDb()
+  let updated = 0
+  let batch = db.batch()
+  let batchCount = 0
+  const now = new Date().toISOString()
+
+  const queueUpdate = async (docRef: admin.firestore.DocumentReference, patch: Record<string, unknown>) => {
+    batch.update(docRef, patch)
+    batchCount += 1
+    updated += 1
+    if (batchCount >= 400) {
+      await batch.commit()
+      batch = db.batch()
+      batchCount = 0
+    }
+  }
+
+  for (const [legacyEmail, newEmail] of Object.entries(LEGACY_CARE_EXECUTIVE_EMAILS)) {
+    const assignee = careExecutiveAssignee(newEmail)
+    const userSnap = await db.collection('users').where('email', '==', legacyEmail).limit(1).get()
+    for (const doc of userSnap.docs) {
+      await queueUpdate(doc.ref, {
+        email: newEmail,
+        name: assignee.name,
+        careExecutive: true,
+        active: true,
+        updatedAt: now,
+      })
+    }
+  }
+
+  const taskSnap = await db.collection('careTasks').get()
+  for (const doc of taskSnap.docs) {
+    const data = doc.data() || {}
+    const raw = normalizeEmail(data.assignedTo?.email)
+    const newEmail = LEGACY_CARE_EXECUTIVE_EMAILS[raw]
+    if (!newEmail) continue
+    await queueUpdate(doc.ref, {
+      assignedTo: careExecutiveAssignee(newEmail),
+      updatedAt: now,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+
+  const custSnap = await db.collection('careCustomerAssignments').get()
+  for (const doc of custSnap.docs) {
+    const data = doc.data() || {}
+    const newEmail = LEGACY_CARE_EXECUTIVE_EMAILS[normalizeEmail(data.email)]
+    if (!newEmail) continue
+    const assignee = careExecutiveAssignee(newEmail)
+    await queueUpdate(doc.ref, {
+      email: newEmail,
+      name: assignee.name,
+      userId: assignee.userId,
+      updatedAt: now,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+
+  const orderSnap = await db.collection('careOrderAssignments').get()
+  for (const doc of orderSnap.docs) {
+    const data = doc.data() || {}
+    const newEmail = LEGACY_CARE_EXECUTIVE_EMAILS[normalizeEmail(data.email)]
+    if (!newEmail) continue
+    const assignee = careExecutiveAssignee(newEmail)
+    await queueUpdate(doc.ref, {
+      email: newEmail,
+      name: assignee.name,
+      userId: assignee.userId,
+      updatedAt: now,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+
+  if (batchCount > 0) await batch.commit()
+  clearCareExecutivePoolCache()
+  await ref.set({
+    completedAt: now,
+    recordsUpdated: updated,
+    updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+  })
   return updated
 }
