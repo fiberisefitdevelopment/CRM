@@ -605,8 +605,21 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
     byEmail.get(email)!.push(t)
   }
 
+  const { resolveCareExecutivePool } = require('@/src/services/careTasks/assignmentEngine') as {
+    resolveCareExecutivePool: () => Promise<Array<{ email: string; name: string }>>
+  }
+  const pool = await resolveCareExecutivePool()
+  const poolByEmail = new Map(pool.map((e) => [e.email, e]))
+  const emails = new Set<string>([
+    ...pool.map((e) => e.email),
+    ...byEmail.keys(),
+  ])
+  emails.delete('unassigned')
+
   const rows: ExecutivePerformance[] = []
-  for (const [email, list] of byEmail) {
+  for (const email of emails) {
+    const list = byEmail.get(email) || []
+    const poolExec = poolByEmail.get(email)
     const completed = list.filter((t) => t.status === 'completed')
     const pending = list.filter(
       (t) => t.status === 'pending' || t.status === 'rescheduled' || t.status === 'escalated',
@@ -634,7 +647,7 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
 
     rows.push({
       email,
-      name: list[0]?.assignedTo?.name || email.split('@')[0] || email,
+      name: list[0]?.assignedTo?.name || poolExec?.name || email.split('@')[0] || email,
       assigned: list.length,
       completed: completed.length,
       pending: pending.length,
@@ -646,5 +659,14 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
     })
   }
 
-  return rows.sort((a, b) => b.assigned - a.assigned)
+  return rows.sort((a, b) => {
+    const order = (email: string) => {
+      const idx = pool.findIndex((e) => e.email === email)
+      return idx >= 0 ? idx : 99
+    }
+    const oa = order(a.email)
+    const ob = order(b.email)
+    if (oa !== ob) return oa - ob
+    return b.assigned - a.assigned
+  })
 }

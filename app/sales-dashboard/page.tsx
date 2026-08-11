@@ -1,10 +1,9 @@
 'use client'
 
 import { apiFetch } from '@/lib/auth'
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
-import { isCodOrder, getPaymentLabel } from '@/src/utils/orderPayment'
 import {
   TrendingUp, ShoppingBag, DollarSign, CreditCard, Truck, RefreshCw,
   Loader2, AlertCircle, Award, ChevronRight, Sparkles, TrendingDown,
@@ -15,58 +14,52 @@ import {
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend, LineChart, Line, Area, AreaChart } from 'recharts'
 
 // ─── Interfaces ───────────────────────────────────────────────────────────────
-interface LineItem {
-  id: number; title: string; variant_title: string | null
-  sku: string | null; quantity: number; price: string
-  total_discount: string; fulfillment_status: string | null
-}
-interface Address {
-  first_name?: string; last_name?: string; address1?: string
-  city?: string; province?: string; country?: string; zip?: string; phone?: string
-}
-interface ShopifyOrder {
-  id: number; name: string; created_at: string
-  financial_status: string; payment_method?: string | null
-  fulfillment_status: string | null
-  total_price: string; currency: string; cancelled_at?: string | null
-  customer?: { first_name?: string; last_name?: string; email?: string; phone?: string } | null
-  shipping_address?: Address | null; billing_address?: Address | null
-  line_items: LineItem[]
-  fulfillments?: Array<{ id: number; status: string; tracking_number: string | null
-    tracking_company: string | null; tracking_url: string | null
-    shipment_status: string | null; created_at: string
-    dispatch_date?: string | null; delivery_date?: string | null }>
+interface SalesAnalytics {
+  overview: {
+    totalOrders: number; cancelledCount: number; deliveredCount: number
+    inTransitCount: number; unfulfilledCount: number; scheduledCount: number
+    rtoCount: number; deliveryRate: number; dispatchRate: number; rtoRate: number
+  }
+  payment: {
+    prepaidCount: number; prepaidRevenue: number; codCount: number; codRevenue: number
+    prepaidPct: number; codPct: number
+  }
+  deliveryFunnel: {
+    unfulfilled: number; scheduled: number; inTransit: number; delivered: number; rto: number
+  }
+  revenue: {
+    totalRevenue: number; aov: number; prepaidRevenue: number; codRevenue: number
+    dailyRevenue: Array<{ date: string; revenue: number }>
+  }
+  cod: {
+    totalVolume: number; settledCount: number; settledRevenue: number
+    pendingCount: number; pendingRevenue: number; rtoCount: number; rtoRevenue: number; ratio: number
+  }
+  codRemittance: {
+    settledPct: number; pendingPct: number; rtoPct: number
+    grossSales: number; netSales: number; estimatedLogisticsCharges: number
+  }
+  topProducts: Array<{ sku: string; title: string; qty: number; revenue: number }>
+  zones: any[]
+  gender: { summary: any; topProductsByGender: any[]; totalOrders: number } | null
+  pincodes: any[]
+  pincodeSummary: { totalOrders: number; totalRevenue: number; uniquePincodes: number }
+  transactions: Array<{
+    id: number; name: string; customer: string; createdAt: string
+    payment: string; paymentType: string; status: string; value: number; currency: string
+  }>
+  codLedger: Array<{
+    id: number; name: string; customer: string; city: string; state: string; pincode: string
+    amount: number; logisticsStatus: string; remittanceStatus: string
+    dispatchDate: string | null; deliveryDate: string | null
+  }>
+  isOffline?: boolean
+  syncing?: boolean
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmt = (n: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(n)
 const fmtNum = (n: number) => new Intl.NumberFormat('en-IN').format(n)
-
-function isOrderCancelled(o: ShopifyOrder): boolean {
-  return (
-    !!o.cancelled_at ||
-    o.financial_status?.toLowerCase() === 'voided' ||
-    o.financial_status?.toLowerCase() === 'cancelled' ||
-    o.financial_status?.toLowerCase() === 'refunded' ||
-    o.fulfillments?.[0]?.shipment_status === 'cancelled'
-  )
-}
-
-function getShipStatus(o: ShopifyOrder): string {
-  return (o.fulfillments?.[0]?.shipment_status || '').toLowerCase()
-}
-
-/** Local YYYY-MM-DD for an order timestamp (handles ISO + "27 Jul 2026, 11:53 AM"). */
-function toDayKey(dateStr: string | null | undefined): string | null {
-  if (!dateStr) return null
-  if (/^\d{4}-\d{2}-\d{2}/.test(dateStr)) return dateStr.slice(0, 10)
-  const d = new Date(dateStr)
-  if (isNaN(d.getTime())) return null
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
 
 function localTodayKey(): string {
   const d = new Date()
@@ -77,6 +70,90 @@ function localDaysAgoKey(days: number): string {
   const d = new Date()
   d.setDate(d.getDate() - days)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function buildAnalyticsUrl(
+  timeFilter: 'all' | '30days' | '7days' | 'today' | 'custom',
+  customStart: string,
+  customEnd: string,
+  refresh = false,
+): string {
+  const params = new URLSearchParams()
+  if (refresh) params.set('refresh', 'true')
+  const today = localTodayKey()
+  if (timeFilter === 'today') {
+    params.set('start_date', today)
+    params.set('end_date', today)
+  } else if (timeFilter === '7days') {
+    params.set('start_date', localDaysAgoKey(6))
+    params.set('end_date', today)
+  } else if (timeFilter === '30days') {
+    params.set('start_date', localDaysAgoKey(29))
+    params.set('end_date', today)
+  } else if (timeFilter === 'custom') {
+    if (customStart) params.set('start_date', customStart)
+    if (customEnd) params.set('end_date', customEnd)
+  }
+  const qs = params.toString()
+  return `/api/shopify/product-sales${qs ? `?${qs}` : ''}`
+}
+
+function analyticsToMetrics(data: SalesAnalytics | null) {
+  if (!data) {
+    return {
+      totalOrders: 0, cancelledCount: 0, deliveredCount: 0, inTransitCount: 0,
+      unfulfilledCount: 0, scheduledCount: 0, rtoCount: 0, deliveryRate: 0, dispatchRate: 0,
+      prepaidCount: 0, prepaidRevenue: 0, codCount: 0, codRevenue: 0,
+      totalRevenue: 0, aov: 0, dailyRevenue: [],
+      topProducts: [] as SalesAnalytics['topProducts'],
+      codTotalVolume: 0, codSettledCount: 0, codSettledRevenue: 0,
+      codPendingCount: 0, codPendingRevenue: 0, codRtoCount: 0, codRtoRevenue: 0,
+    }
+  }
+  return {
+    totalOrders: data.overview.totalOrders,
+    cancelledCount: data.overview.cancelledCount,
+    deliveredCount: data.overview.deliveredCount,
+    inTransitCount: data.overview.inTransitCount,
+    unfulfilledCount: data.overview.unfulfilledCount,
+    scheduledCount: data.overview.scheduledCount,
+    rtoCount: data.overview.rtoCount,
+    deliveryRate: data.overview.deliveryRate,
+    dispatchRate: data.overview.dispatchRate,
+    prepaidCount: data.payment.prepaidCount,
+    prepaidRevenue: data.payment.prepaidRevenue,
+    codCount: data.payment.codCount,
+    codRevenue: data.payment.codRevenue,
+    totalRevenue: data.revenue.totalRevenue,
+    aov: data.revenue.aov,
+    dailyRevenue: data.revenue.dailyRevenue,
+    topProducts: data.topProducts,
+    codTotalVolume: data.cod.totalVolume,
+    codSettledCount: data.cod.settledCount,
+    codSettledRevenue: data.cod.settledRevenue,
+    codPendingCount: data.cod.pendingCount,
+    codPendingRevenue: data.cod.pendingRevenue,
+    codRtoCount: data.cod.rtoCount,
+    codRtoRevenue: data.cod.rtoRevenue,
+  }
+}
+
+const TX_STATUS_LABELS: Record<string, string> = {
+  cancelled: 'Cancelled',
+  unfulfilled: 'Unfulfilled',
+  scheduled: 'Pickup Scheduled',
+  transit: 'In Transit',
+  delivered: 'Delivered',
+  rto: 'RTO',
+}
+
+const TX_STATUS_CLASSES: Record<string, string> = {
+  cancelled: 'bg-gray-500/10 text-gray-500 border-gray-500/20',
+  unfulfilled: 'badge-info',
+  scheduled: 'badge-warning',
+  transit: 'badge-warning',
+  delivered: 'badge-success',
+  rto: 'badge-danger',
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
@@ -119,60 +196,54 @@ function SkeletonCard() {
 }
 
 // ─── COD Remittance Table ─────────────────────────────────────────────────────
-function CODTable({ orders }: { orders: ShopifyOrder[] }) {
+function CODTable({ ledger }: { ledger: SalesAnalytics['codLedger'] }) {
   const [search, setSearch] = useState('')
   const [remittanceFilter, setRemittanceFilter] = useState('all')
   const [logisticsFilter, setLogisticsFilter] = useState('all')
 
   const filtered = useMemo(() => {
-    return orders.filter((o) => {
-      if (isOrderCancelled(o)) return false
-      if (!isCodOrder(o)) return false
+    return ledger.filter((row) => {
       if (search.trim()) {
         const q = search.toLowerCase()
-        const name = (o.name || '').toLowerCase()
-        const cust = o.customer ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.toLowerCase() : ''
-        if (!name.includes(q) && !cust.includes(q)) return false
+        if (!row.name.toLowerCase().includes(q) && !row.customer.toLowerCase().includes(q)) return false
       }
-      const status = getShipStatus(o)
-      if (remittanceFilter !== 'all') {
-        if (!o.fulfillment_status && remittanceFilter !== 'pending') return false
-        if (o.fulfillment_status) {
-          if (status === 'delivered' && remittanceFilter !== 'settled') return false
-          if (['failure','rto','returned'].includes(status) && remittanceFilter !== 'rto') return false
-          if (!['delivered','failure','rto','returned'].includes(status) && remittanceFilter !== 'pending') return false
-        }
-      }
+      if (remittanceFilter !== 'all' && row.remittanceStatus !== remittanceFilter) return false
       if (logisticsFilter !== 'all') {
-        if (!o.fulfillment_status && logisticsFilter !== 'unfulfilled') return false
-        if (o.fulfillment_status) {
-          if (status === 'delivered' && logisticsFilter !== 'delivered') return false
-          if (['failure','rto','returned'].includes(status) && logisticsFilter !== 'rto') return false
-          if (['in_transit','out_for_delivery','attempted_delivery'].includes(status) && logisticsFilter !== 'transit') return false
-          if (!['delivered','failure','rto','returned','in_transit','out_for_delivery','attempted_delivery'].includes(status) && logisticsFilter !== 'scheduled') return false
-        }
+        const status = row.logisticsStatus
+        if (logisticsFilter === 'unfulfilled' && status !== 'unfulfilled') return false
+        if (logisticsFilter === 'delivered' && status !== 'delivered') return false
+        if (logisticsFilter === 'rto' && !['failure', 'rto', 'returned'].includes(status)) return false
+        if (logisticsFilter === 'transit' && !['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) return false
+        if (logisticsFilter === 'scheduled' && ['delivered', 'failure', 'rto', 'returned', 'in_transit', 'out_for_delivery', 'attempted_delivery', 'unfulfilled'].includes(status)) return false
       }
       return true
     })
-  }, [orders, search, remittanceFilter, logisticsFilter])
+  }, [ledger, search, remittanceFilter, logisticsFilter])
 
   const exportCSV = () => {
     const header = 'Order,Customer,City,State,Pincode,Amount,Logistics,Remittance,Dispatch Date,Delivery Date'
-    const rows = filtered.map((o) => {
-      const cust = o.customer ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.trim() : 'Guest'
-      const status = getShipStatus(o)
-      const remit = !o.fulfillment_status ? 'Pending' : status === 'delivered' ? 'Settled' : ['failure','rto','returned'].includes(status) ? 'RTO Unrealized' : 'Pending'
-      
-      const latestFulfillment = (o.fulfillments?.[0] || {}) as any
-      const dispatchDate = o.fulfillment_status ? (latestFulfillment.dispatch_date || latestFulfillment.created_at || '') : ''
-      const deliveryDate = status === 'delivered' ? (latestFulfillment.delivery_date || latestFulfillment.created_at || '') : ''
-      
-      return `${o.name},"${cust}","${o.shipping_address?.city||''}","${o.shipping_address?.province||''}","${o.shipping_address?.zip||''}",${o.total_price},${status||'Unfulfilled'},${remit},"${dispatchDate}","${deliveryDate}"`
+    const rows = filtered.map((row) => {
+      const remit = row.remittanceStatus === 'settled' ? 'Settled' : row.remittanceStatus === 'rto' ? 'RTO Unrealized' : 'Pending'
+      return `${row.name},"${row.customer}","${row.city}","${row.state}","${row.pincode}",${row.amount},${row.logisticsStatus},${remit},"${row.dispatchDate || ''}","${row.deliveryDate || ''}"`
     })
     const csv = [header, ...rows].join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url; a.download = 'cod_remittance.csv'; a.click()
+  }
+
+  const logLabel = (status: string) => {
+    if (status === 'delivered') return { label: 'Delivered', class: 'badge-success' }
+    if (['failure', 'rto', 'returned'].includes(status)) return { label: 'RTO', class: 'badge-danger' }
+    if (status === 'unfulfilled') return { label: 'Unfulfilled', class: 'badge-info' }
+    if (['in_transit', 'out_for_delivery', 'attempted_delivery'].includes(status)) return { label: 'In Transit', class: 'badge-warning' }
+    return { label: status ? status.replace('_', ' ') : 'Pickup Scheduled', class: 'badge-warning' }
+  }
+
+  const remLabel = (status: string) => {
+    if (status === 'settled') return { label: 'Settled', class: 'badge-success' }
+    if (status === 'rto') return { label: 'RTO Unrealized', class: 'badge-danger' }
+    return { label: 'Pending', class: 'badge-warning' }
   }
 
   return (
@@ -227,27 +298,20 @@ function CODTable({ orders }: { orders: ShopifyOrder[] }) {
           <tbody>
             {filtered.length === 0 ? (
               <tr><td colSpan={6} className="px-4 py-10 text-center text-sm" style={{ color: 'var(--foreground-muted)' }}>No COD orders match the selected filters.</td></tr>
-            ) : filtered.map((o) => {
-              const cust = o.customer ? `${o.customer.first_name||''} ${o.customer.last_name||''}`.trim() : 'Guest Checkout'
-              const status = getShipStatus(o)
-              let logLabel = 'Unfulfilled', logClass = 'badge-info'
-              let remLabel = 'Pending', remClass = 'badge-warning'
-              if (o.fulfillment_status) {
-                if (status === 'delivered') { logLabel = 'Delivered'; logClass = 'badge-success'; remLabel = 'Settled'; remClass = 'badge-success' }
-                else if (['failure','rto','returned'].includes(status)) { logLabel = 'RTO'; logClass = 'badge-danger'; remLabel = 'RTO Unrealized'; remClass = 'badge-danger' }
-                else { logLabel = status ? status.replace('_',' ') : 'In Transit'; logClass = 'badge-warning' }
-              }
+            ) : filtered.map((row) => {
+              const log = logLabel(row.logisticsStatus)
+              const rem = remLabel(row.remittanceStatus)
               return (
-                <tr key={o.id} className="transition-colors hover:bg-purple-500/5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                  <td className="px-4 py-3 font-bold text-purple-500">{o.name}</td>
-                  <td className="px-4 py-3 font-medium" style={{ color: 'var(--foreground)' }}>{cust}</td>
+                <tr key={row.id} className="transition-colors hover:bg-purple-500/5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                  <td className="px-4 py-3 font-bold text-purple-500">{row.name}</td>
+                  <td className="px-4 py-3 font-medium" style={{ color: 'var(--foreground)' }}>{row.customer}</td>
                   <td className="px-4 py-3" style={{ color: 'var(--foreground-muted)' }}>
-                    <div className="text-xs">{o.shipping_address?.city || '–'}</div>
-                    <div className="text-[10px] opacity-60">{o.shipping_address?.province || ''} {o.shipping_address?.zip ? `· ${o.shipping_address.zip}` : ''}</div>
+                    <div className="text-xs">{row.city || '–'}</div>
+                    <div className="text-[10px] opacity-60">{row.state || ''}{row.pincode ? ` · ${row.pincode}` : ''}</div>
                   </td>
-                  <td className="px-4 py-3 font-extrabold" style={{ color: 'var(--foreground)' }}>₹{parseFloat(o.total_price||'0').toLocaleString('en-IN')}</td>
-                  <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${logClass}`}>{logLabel}</span></td>
-                  <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${remClass}`}>{remLabel}</span></td>
+                  <td className="px-4 py-3 font-extrabold" style={{ color: 'var(--foreground)' }}>₹{row.amount.toLocaleString('en-IN')}</td>
+                  <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${log.class}`}>{log.label}</span></td>
+                  <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${rem.class}`}>{rem.label}</span></td>
                 </tr>
               )
             })}
@@ -259,18 +323,8 @@ function CODTable({ orders }: { orders: ShopifyOrder[] }) {
 }
 
 // ─── Zone Map Component ───────────────────────────────────────────────────────
-function ZoneAnalyticsSection() {
-  const [zones, setZones] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
+function ZoneAnalyticsSection({ zones }: { zones: any[] }) {
   const [activeZone, setActiveZone] = useState<string | null>(null)
-  const [tooltip, setTooltip] = useState<{ x: number; y: number; zone: any } | null>(null)
-
-  useEffect(() => {
-    apiFetch('/api/shopify/zone-analytics')
-      .then(r => r.json())
-      .then(d => { setZones(d.zones || []); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
 
   const maxOrders = Math.max(...zones.map(z => z.orderCount), 1)
 
@@ -278,7 +332,7 @@ function ZoneAnalyticsSection() {
     'North': '🏔️', 'South': '🌴', 'East': '🌊', 'West': '🏜️', 'Central': '🌾', 'North-East': '🍃'
   }
 
-  if (loading) {
+  if (zones.length === 0) {
     return (
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
         {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
@@ -383,74 +437,10 @@ function ZoneAnalyticsSection() {
 }
 
 // ─── Gender Analytics ─────────────────────────────────────────────────────────
-function GenderAnalyticsSection({ orders, refreshTrigger }: { orders: ShopifyOrder[], refreshTrigger: number }) {
-  const [data, setData] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-  const [syncing, setSyncing] = useState(false)
-  const syncTimeoutRef = useRef<any>(null)
+function GenderAnalyticsSection({ gender }: { gender: SalesAnalytics['gender'] }) {
+  if (!gender?.summary) return null
 
-  const fetchGenderAnalytics = useCallback(async (isRefresh = false) => {
-    if (syncTimeoutRef.current) {
-      clearTimeout(syncTimeoutRef.current)
-      syncTimeoutRef.current = null
-    }
-
-    try {
-      setLoading(true)
-      const url = isRefresh
-        ? '/api/shopify/gender-analytics?refresh=true'
-        : '/api/shopify/gender-analytics'
-
-      const res = await apiFetch(url)
-      const d = await res.json()
-
-      if (d.syncing) {
-        setSyncing(true)
-        syncTimeoutRef.current = setTimeout(() => {
-          fetchGenderAnalytics(isRefresh)
-        }, 2000)
-        return
-      }
-
-      setSyncing(false)
-      setData(d)
-    } catch {
-      setSyncing(false)
-    } finally {
-      if (!syncTimeoutRef.current) {
-        setLoading(false)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    if (orders.length === 0) return
-
-    fetchGenderAnalytics(refreshTrigger > 0)
-
-    return () => {
-      if (syncTimeoutRef.current) {
-        clearTimeout(syncTimeoutRef.current)
-      }
-    }
-  }, [orders, refreshTrigger, fetchGenderAnalytics])
-
-  if (loading) {
-    return (
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="crm-card p-6 h-64 flex items-center justify-center">
-          <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
-        </div>
-        <div className="grid grid-cols-2 gap-4">
-          {[...Array(4)].map((_, i) => <SkeletonCard key={i} />)}
-        </div>
-      </div>
-    )
-  }
-
-  if (!data?.summary) return null
-
-  const { male, female } = data.summary
+  const { male, female } = gender.summary
   const pieData = [
     { name: 'Male', value: male.orderCount, color: '#2563EB' },
     { name: 'Female', value: female.orderCount, color: '#EC4899' },
@@ -505,7 +495,10 @@ function GenderAnalyticsSection({ orders, refreshTrigger }: { orders: ShopifyOrd
 }
 
 // ─── Pincode Filter Section ───────────────────────────────────────────────────
-function PincodeSection() {
+function PincodeSection({ defaultPincodes, defaultSummary }: {
+  defaultPincodes?: SalesAnalytics['pincodes']
+  defaultSummary?: SalesAnalytics['pincodeSummary']
+}) {
   const [input, setInput] = useState('')
   const [tags, setTags] = useState<string[]>([])
   const [results, setResults] = useState<any>(null)
@@ -560,6 +553,51 @@ function PincodeSection() {
           Analyze
         </button>
       </div>
+
+      {/* Default top pincodes from analytics API */}
+      {defaultPincodes && defaultPincodes.length > 0 && !results && (
+        <div className="mb-6">
+          <p className="text-xs font-bold mb-3" style={{ color: 'var(--foreground-muted)' }}>Top Pincodes (current range)</p>
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            {[
+              { label: 'Total Orders', val: defaultSummary?.totalOrders || 0 },
+              { label: 'Total Revenue', val: fmt(defaultSummary?.totalRevenue || 0) },
+              { label: 'Unique Pincodes', val: defaultSummary?.uniquePincodes || 0 },
+            ].map(({ label, val }) => (
+              <div key={label} className="crm-card p-4 text-center">
+                <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>{label}</p>
+                <p className="text-lg font-extrabold mt-1" style={{ color: 'var(--foreground)' }}>{val}</p>
+              </div>
+            ))}
+          </div>
+          <div className="overflow-x-auto rounded-xl border" style={{ borderColor: 'var(--border)', maxHeight: '300px', overflowY: 'auto' }}>
+            <table className="min-w-full text-xs">
+              <thead className="sticky top-0" style={{ backgroundColor: 'var(--card-elevated)' }}>
+                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                  {['Pincode','City','State','Zone','Orders','Revenue','COD%','Delivery%','RTO%'].map(h => (
+                    <th key={h} className="px-3 py-2.5 text-[10px] font-bold uppercase tracking-wider whitespace-nowrap" style={{ color: 'var(--foreground-muted)' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {defaultPincodes.slice(0, 20).map((p: any) => (
+                  <tr key={p.pincode} className="transition-colors hover:bg-purple-500/5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                    <td className="px-3 py-2.5 font-bold text-purple-500">{p.pincode}</td>
+                    <td className="px-3 py-2.5" style={{ color: 'var(--foreground)' }}>{p.city}</td>
+                    <td className="px-3 py-2.5" style={{ color: 'var(--foreground-muted)' }}>{p.state}</td>
+                    <td className="px-3 py-2.5" style={{ color: 'var(--foreground-muted)' }}>{p.zone || '–'}</td>
+                    <td className="px-3 py-2.5 font-bold" style={{ color: 'var(--foreground)' }}>{p.orderCount}</td>
+                    <td className="px-3 py-2.5 font-bold text-emerald-600">{fmt(p.revenue)}</td>
+                    <td className="px-3 py-2.5 text-amber-500 font-semibold">{p.codPct}%</td>
+                    <td className="px-3 py-2.5 font-semibold" style={{ color: p.deliveryRate > 60 ? '#059669' : '#D97706' }}>{p.deliveryRate}%</td>
+                    <td className="px-3 py-2.5 text-red-500 font-semibold">{p.rtoPct}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Pincode tags */}
       {tags.length > 0 && (
@@ -629,7 +667,7 @@ function PincodeSection() {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function SalesDashboardPage() {
-  const [orders, setOrders] = useState<ShopifyOrder[]>([])
+  const [analytics, setAnalytics] = useState<SalesAnalytics | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isOffline, setIsOffline] = useState(false)
@@ -637,32 +675,27 @@ export default function SalesDashboardPage() {
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
   const [activeTab, setActiveTab] = useState<'orders' | 'remittance'>('orders')
-  const [refreshTrigger, setRefreshTrigger] = useState(0)
 
   // Transactions table filter state
   const [txSearch, setTxSearch] = useState('')
   const [txPaymentFilter, setTxPaymentFilter] = useState('all')
   const [txStatusFilter, setTxStatusFilter] = useState('all')
 
-  const fetchOrders = async (forceRefresh = false) => {
+  const fetchAnalytics = async (forceRefresh = false) => {
     try {
       setLoading(true)
-      if (forceRefresh) {
-        setRefreshTrigger(prev => prev + 1)
-      }
-      const url = forceRefresh ? '/api/shopify/orders?all=true&refresh=true' : '/api/shopify/orders?all=true'
+      const url = buildAnalyticsUrl(timeFilter, customStart, customEnd, forceRefresh)
       const res = await apiFetch(url)
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to fetch sales database')
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch sales analytics')
 
-      // Cold start: cache still building — keep polling until orders arrive
-      if (data.syncing && (!data.orders || data.orders.length === 0)) {
+      if (data.syncing && !data.overview) {
         setError(null)
-        setTimeout(() => fetchOrders(false), 2000)
+        setTimeout(() => fetchAnalytics(false), 2000)
         return
       }
 
-      setOrders(data.orders || [])
+      setAnalytics(data as SalesAnalytics)
       setIsOffline(!!data.isOffline)
       setError(null)
     } catch (err: any) {
@@ -672,125 +705,28 @@ export default function SalesDashboardPage() {
     }
   }
 
-  useEffect(() => { fetchOrders(false) }, [])
+  useEffect(() => { fetchAnalytics(false) }, [timeFilter, customStart, customEnd])
 
-  const processedOrders = useMemo(() => {
-    return orders.filter((order) => {
-      if (timeFilter === 'all') return true
+  const metrics = useMemo(() => analyticsToMetrics(analytics), [analytics])
 
-      const orderDay = toDayKey(order.created_at)
-      if (!orderDay) return false
-
-      if (timeFilter === 'custom') {
-        if (!customStart && !customEnd) return true
-        if (customStart && orderDay < customStart) return false
-        if (customEnd && orderDay > customEnd) return false
-        return true
-      }
-
-      const today = localTodayKey()
-      if (timeFilter === 'today') return orderDay === today
-      if (timeFilter === '7days') return orderDay >= localDaysAgoKey(6) && orderDay <= today
-      if (timeFilter === '30days') return orderDay >= localDaysAgoKey(29) && orderDay <= today
-      return true
-    })
-  }, [orders, timeFilter, customStart, customEnd])
-
-  const metrics = useMemo(() => {
-    const activeOrders = processedOrders.filter(o => !isOrderCancelled(o))
-    const cancelledCount = processedOrders.filter(isOrderCancelled).length
-    let totalRevenue = 0, prepaidCount = 0, codCount = 0, prepaidRevenue = 0, codRevenue = 0
-    let codTotalVolume = 0, codSettledCount = 0, codSettledRevenue = 0
-    let codPendingCount = 0, codPendingRevenue = 0, codRtoCount = 0, codRtoRevenue = 0
-    let unfulfilledCount = 0, scheduledCount = 0, inTransitCount = 0, deliveredCount = 0, rtoCount = 0
-    const skuMap: Record<string, { title: string; qty: number; revenue: number }> = {}
-    const dailyMap: Record<string, number> = {}
-
-    activeOrders.forEach((o) => {
-      const price = parseFloat(o.total_price) || 0
-      totalRevenue += price
-      const isPaid = !isCodOrder(o)
-      const dateKey = new Date(o.created_at).toLocaleDateString('en-IN', { day:'2-digit', month:'short' })
-      dailyMap[dateKey] = (dailyMap[dateKey] || 0) + price
-
-      if (isPaid) { prepaidCount++; prepaidRevenue += price }
-      else {
-        codCount++; codRevenue += price; codTotalVolume += price
-        const status = getShipStatus(o)
-        if (status === 'delivered') { codSettledCount++; codSettledRevenue += price }
-        else if (['failure','rto','returned'].includes(status)) { codRtoCount++; codRtoRevenue += price }
-        else { codPendingCount++; codPendingRevenue += price }
-      }
-
-      if (!o.fulfillment_status) { unfulfilledCount++ }
-      else {
-        const status = getShipStatus(o)
-        if (status === 'delivered') deliveredCount++
-        else if (['failure','rto','returned'].includes(status)) rtoCount++
-        else if (['in_transit','out_for_delivery','attempted_delivery'].includes(status)) inTransitCount++
-        else scheduledCount++
-      }
-
-      o.line_items?.forEach((item) => {
-        const sku = item.sku || 'N/A'; const qty = Number(item.quantity) || 1
-        const itemVal = (parseFloat(item.price) || 0) * qty
-        if (!skuMap[sku]) skuMap[sku] = { title: item.title || 'Product', qty: 0, revenue: 0 }
-        skuMap[sku].qty += qty; skuMap[sku].revenue += itemVal
-      })
-    })
-
-    const topProducts = Object.entries(skuMap)
-      .map(([sku, d]) => ({ sku, ...d })).sort((a, b) => b.qty - a.qty).slice(0, 5)
-
-    const totalOrdersCount = activeOrders.length
-    const aov = totalOrdersCount > 0 ? totalRevenue / totalOrdersCount : 0
-    const deliveryRate = totalOrdersCount > 0 ? (deliveredCount / totalOrdersCount) * 100 : 0
-    const dispatchRate = totalOrdersCount > 0 ? ((totalOrdersCount - unfulfilledCount) / totalOrdersCount) * 100 : 0
-
-    const dailyRevenue = Object.entries(dailyMap)
-      .map(([date, revenue]) => ({ date, revenue }))
-      .slice(-14)
-
-    return {
-      totalRevenue, totalOrders: totalOrdersCount, cancelledCount, aov,
-      prepaidCount, prepaidRevenue, codCount, codRevenue,
-      unfulfilledCount, scheduledCount, inTransitCount, deliveredCount, rtoCount,
-      topProducts, codTotalVolume, codSettledCount, codSettledRevenue,
-      codPendingCount, codPendingRevenue, codRtoCount, codRtoRevenue,
-      deliveryRate, dispatchRate, dailyRevenue,
-    }
-  }, [processedOrders])
-
-  const filteredTxOrders = useMemo(() => {
-    return processedOrders.filter((o) => {
+  const filteredTransactions = useMemo(() => {
+    const rows = analytics?.transactions || []
+    return rows.filter((tx) => {
       if (txSearch.trim()) {
         const q = txSearch.toLowerCase()
-        const name = (o.name || '').toLowerCase()
-        const cust = o.customer ? `${o.customer.first_name||''} ${o.customer.last_name||''}`.toLowerCase() : ''
-        if (!name.includes(q) && !cust.includes(q)) return false
+        if (!tx.name.toLowerCase().includes(q) && !tx.customer.toLowerCase().includes(q)) return false
       }
-      if (txPaymentFilter !== 'all') {
-        const isPaid = !isCodOrder(o)
-        if (txPaymentFilter === 'prepaid' && !isPaid) return false
-        if (txPaymentFilter === 'cod' && isPaid) return false
-      }
+      if (txPaymentFilter !== 'all' && tx.paymentType !== txPaymentFilter) return false
       if (txStatusFilter !== 'all') {
-        const isCancelled = isOrderCancelled(o)
-        if (isCancelled) return txStatusFilter === 'cancelled'
-        if (!o.fulfillment_status) return txStatusFilter === 'unfulfilled'
-        const status = getShipStatus(o)
-        if (status === 'delivered') return txStatusFilter === 'delivered'
-        if (['failure','rto','returned'].includes(status)) return txStatusFilter === 'rto'
-        if (['in_transit','out_for_delivery','attempted_delivery'].includes(status)) return txStatusFilter === 'transit'
-        return txStatusFilter === 'scheduled'
-      } else {
-        if (isOrderCancelled(o)) return false
+        if (tx.status !== txStatusFilter) return false
+      } else if (tx.status === 'cancelled') {
+        return false
       }
       return true
     })
-  }, [processedOrders, txSearch, txPaymentFilter, txStatusFilter])
+  }, [analytics, txSearch, txPaymentFilter, txStatusFilter])
 
-  const codOrders = useMemo(() => processedOrders.filter(o => !isOrderCancelled(o) && isCodOrder(o)), [processedOrders])
+  const codRemittance = analytics?.codRemittance
 
   const TABS = [
     { id: 'orders', label: '📦 Prepaid & COD Orders', desc: 'Order analytics, payment split, delivery funnel' },
@@ -856,7 +792,7 @@ export default function SalesDashboardPage() {
                     </button>
                   ))}
                 </div>
-                <button onClick={() => fetchOrders(true)} disabled={loading}
+                <button onClick={() => fetchAnalytics(true)} disabled={loading}
                   className="p-2.5 rounded-xl border transition-all hover:border-purple-500/40 active:scale-95"
                   style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)', color: 'var(--foreground-muted)' }}
                   title="Refresh Data">
@@ -933,7 +869,7 @@ export default function SalesDashboardPage() {
             ))}
           </div>
 
-          {loading && orders.length === 0 ? (
+          {loading && !analytics ? (
             <div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">{[...Array(8)].map((_,i) => <SkeletonCard key={i} />)}</div>
             </div>
@@ -1121,7 +1057,7 @@ export default function SalesDashboardPage() {
                     <div className="w-1 h-5 bg-pink-500 rounded-full" />
                     <h2 className="text-base font-extrabold uppercase tracking-wide" style={{ color: 'var(--foreground)' }}>Gender Sales Analytics</h2>
                   </div>
-                  <GenderAnalyticsSection orders={orders} refreshTrigger={refreshTrigger} />
+                  <GenderAnalyticsSection gender={analytics?.gender ?? null} />
                 </section>
 
                 {/* SECTION 6 — Zone-wise Sales */}
@@ -1130,7 +1066,7 @@ export default function SalesDashboardPage() {
                     <div className="w-1 h-5 bg-cyan-500 rounded-full" />
                     <h2 className="text-base font-extrabold uppercase tracking-wide" style={{ color: 'var(--foreground)' }}>Zone-wise Sales Intelligence</h2>
                   </div>
-                  <ZoneAnalyticsSection />
+                  <ZoneAnalyticsSection zones={analytics?.zones || []} />
                 </section>
 
                 {/* SECTION 7 — Pincode Intelligence */}
@@ -1140,7 +1076,10 @@ export default function SalesDashboardPage() {
                     <h2 className="text-base font-extrabold uppercase tracking-wide" style={{ color: 'var(--foreground)' }}>Pincode Intelligence</h2>
                   </div>
                   <div className="crm-card p-6">
-                    <PincodeSection />
+                    <PincodeSection
+                      defaultPincodes={analytics?.pincodes}
+                      defaultSummary={analytics?.pincodeSummary}
+                    />
                   </div>
                 </section>
 
@@ -1157,7 +1096,7 @@ export default function SalesDashboardPage() {
                         <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 text-[10px] font-bold uppercase flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-ping" />Live Feed
                         </span>
-                        <span className="text-xs" style={{ color: 'var(--foreground-muted)' }}>{filteredTxOrders.length} transactions</span>
+                        <span className="text-xs" style={{ color: 'var(--foreground-muted)' }}>{filteredTransactions.length} transactions</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <div className="relative">
@@ -1192,34 +1131,25 @@ export default function SalesDashboardPage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {filteredTxOrders.length === 0 ? (
+                          {filteredTransactions.length === 0 ? (
                             <tr><td colSpan={6} className="px-4 py-10 text-center text-sm" style={{ color: 'var(--foreground-muted)' }}>No transactions match the selected filters.</td></tr>
-                          ) : filteredTxOrders.map((o) => {
-                            const isCancelled = isOrderCancelled(o)
-                            const cust = o.customer ? `${o.customer.first_name||''} ${o.customer.last_name||''}`.trim() : 'Guest Checkout'
-                            let dispStatus = 'Unfulfilled', statusClass = 'badge-info'
-                            if (isCancelled) { dispStatus = 'Cancelled'; statusClass = 'bg-gray-500/10 text-gray-500 border-gray-500/20' }
-                            else if (o.fulfillment_status) {
-                              const s = getShipStatus(o)
-                              if (s === 'delivered') { dispStatus = 'Delivered'; statusClass = 'badge-success' }
-                              else if (['failure','rto','returned'].includes(s)) { dispStatus = 'RTO'; statusClass = 'badge-danger' }
-                              else if (['in_transit','out_for_delivery'].includes(s)) { dispStatus = 'In Transit'; statusClass = 'badge-warning' }
-                              else { dispStatus = 'Pickup Scheduled'; statusClass = 'badge-warning' }
-                            }
+                          ) : filteredTransactions.map((tx) => {
+                            const dispStatus = TX_STATUS_LABELS[tx.status] || tx.status
+                            const statusClass = TX_STATUS_CLASSES[tx.status] || 'badge-info'
                             return (
-                              <tr key={o.id} className="transition-colors hover:bg-purple-500/5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                                <td className="px-4 py-3 font-bold text-purple-500">{o.name}</td>
-                                <td className="px-4 py-3 font-medium" style={{ color: 'var(--foreground)' }}>{cust}</td>
+                              <tr key={tx.id} className="transition-colors hover:bg-purple-500/5" style={{ borderBottom: '1px solid var(--border-subtle)' }}>
+                                <td className="px-4 py-3 font-bold text-purple-500">{tx.name}</td>
+                                <td className="px-4 py-3 font-medium" style={{ color: 'var(--foreground)' }}>{tx.customer}</td>
                                 <td className="px-4 py-3" style={{ color: 'var(--foreground-muted)' }}>
-                                  {new Date(o.created_at).toLocaleDateString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}
+                                  {new Date(tx.createdAt).toLocaleDateString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}
                                 </td>
                                 <td className="px-4 py-3">
-                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isCodOrder(o) ? 'badge-warning' : 'badge-success'}`}>
-                                    {getPaymentLabel(o)}
+                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${tx.paymentType === 'cod' ? 'badge-warning' : 'badge-success'}`}>
+                                    {tx.payment}
                                   </span>
                                 </td>
                                 <td className="px-4 py-3"><span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${statusClass}`}>{dispStatus}</span></td>
-                                <td className="px-4 py-3 font-extrabold" style={{ color: 'var(--foreground)' }}>₹{parseFloat(o.total_price||'0').toLocaleString('en-IN')}</td>
+                                <td className="px-4 py-3 font-extrabold" style={{ color: 'var(--foreground)' }}>₹{tx.value.toLocaleString('en-IN')}</td>
                               </tr>
                             )
                           })}
@@ -1245,7 +1175,7 @@ export default function SalesDashboardPage() {
                   </div>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
                     <StatCard label="Total COD Collection" value={fmt(metrics.codTotalVolume)} icon={Coins} color="bg-amber-500/10 text-amber-500" sub={`${metrics.codCount} orders`} />
-                    <StatCard label="Settled & Received" value={fmt(metrics.codSettledRevenue)} icon={CheckCircle} color="bg-emerald-500/10 text-emerald-500" trend={{ dir: 'up', text: `${metrics.codTotalVolume > 0 ? ((metrics.codSettledRevenue/metrics.codTotalVolume)*100).toFixed(1) : 0}% settled` }} />
+                    <StatCard label="Settled & Received" value={fmt(metrics.codSettledRevenue)} icon={CheckCircle} color="bg-emerald-500/10 text-emerald-500" trend={{ dir: 'up', text: `${codRemittance?.settledPct ?? 0}% settled` }} />
                     <StatCard label="Pending Collection" value={fmt(metrics.codPendingRevenue)} icon={Clock} color="bg-yellow-500/10 text-yellow-500" sub={`${metrics.codPendingCount} in transit`} />
                     <StatCard label="RTO Unrealized" value={fmt(metrics.codRtoRevenue)} icon={XCircle} color="bg-red-500/10 text-red-500" trend={{ dir: 'down', text: `${metrics.codRtoCount} RTO orders` }} />
                   </div>
@@ -1255,17 +1185,17 @@ export default function SalesDashboardPage() {
                     <p className="text-xs font-bold mb-3" style={{ color: 'var(--foreground-muted)' }}>Remittance Allocation Breakdown</p>
                     <div className="w-full h-3 rounded-full overflow-hidden flex" style={{ backgroundColor: 'var(--border)' }}>
                       <div className="bg-emerald-500 h-full transition-all duration-1000" title="Settled"
-                        style={{ width: `${metrics.codTotalVolume > 0 ? (metrics.codSettledRevenue/metrics.codTotalVolume)*100 : 0}%` }} />
+                        style={{ width: `${codRemittance?.settledPct ?? 0}%` }} />
                       <div className="bg-amber-400 h-full transition-all duration-1000" title="Pending"
-                        style={{ width: `${metrics.codTotalVolume > 0 ? (metrics.codPendingRevenue/metrics.codTotalVolume)*100 : 0}%` }} />
+                        style={{ width: `${codRemittance?.pendingPct ?? 0}%` }} />
                       <div className="bg-red-500 h-full transition-all duration-1000" title="RTO"
-                        style={{ width: `${metrics.codTotalVolume > 0 ? (metrics.codRtoRevenue/metrics.codTotalVolume)*100 : 0}%` }} />
+                        style={{ width: `${codRemittance?.rtoPct ?? 0}%` }} />
                     </div>
                     <div className="flex gap-4 mt-2 text-[10px]">
                       {[
-                        { label: 'Settled', color: 'bg-emerald-500', val: `${metrics.codTotalVolume > 0 ? ((metrics.codSettledRevenue/metrics.codTotalVolume)*100).toFixed(1) : 0}%` },
-                        { label: 'Pending', color: 'bg-amber-400', val: `${metrics.codTotalVolume > 0 ? ((metrics.codPendingRevenue/metrics.codTotalVolume)*100).toFixed(1) : 0}%` },
-                        { label: 'RTO Unrealized', color: 'bg-red-500', val: `${metrics.codTotalVolume > 0 ? ((metrics.codRtoRevenue/metrics.codTotalVolume)*100).toFixed(1) : 0}%` },
+                        { label: 'Settled', color: 'bg-emerald-500', val: `${codRemittance?.settledPct ?? 0}%` },
+                        { label: 'Pending', color: 'bg-amber-400', val: `${codRemittance?.pendingPct ?? 0}%` },
+                        { label: 'RTO Unrealized', color: 'bg-red-500', val: `${codRemittance?.rtoPct ?? 0}%` },
                       ].map(({ label, color, val }) => (
                         <div key={label} className="flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
                           <div className={`w-2 h-2 rounded-full ${color}`} />{label}: <span className="font-bold" style={{ color: 'var(--foreground)' }}>{val}</span>
@@ -1291,7 +1221,7 @@ export default function SalesDashboardPage() {
                         <span>🚚 Est. Logistics Charges</span>
                       </p>
                       <p className="text-2xl font-extrabold text-orange-500">
-                        {fmt((metrics.deliveredCount + metrics.inTransitCount + metrics.scheduledCount) * 65)}
+                        {fmt(codRemittance?.estimatedLogisticsCharges ?? 0)}
                       </p>
                       <p className="text-[10px] mt-1.5" style={{ color: 'var(--foreground-muted)' }}>~₹65 per shipment (Shiprocket estimate)</p>
                     </div>
@@ -1305,7 +1235,7 @@ export default function SalesDashboardPage() {
                     <h2 className="text-base font-extrabold uppercase tracking-wide" style={{ color: 'var(--foreground)' }}>COD Remittance Ledger</h2>
                   </div>
                   <div className="crm-card p-6">
-                    <CODTable orders={codOrders} />
+                    <CODTable ledger={analytics?.codLedger || []} />
                   </div>
                 </section>
               </div>

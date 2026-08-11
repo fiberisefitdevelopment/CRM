@@ -6,7 +6,12 @@ import {
   parseFlexibleDate,
 } from '@/src/utils/orderTimeline'
 import { phoneMatchKey } from '@/src/utils/phoneNormalize'
-import { assignCareExecutive } from './assignmentEngine'
+import {
+  assignCareExecutiveForOrder,
+  persistOrderAssignment,
+} from './assignmentEngine'
+import { isCareConfirmedOutcome, isCareCancelledOutcome } from './actorLabel'
+import { invalidateCareTasksCache } from './taskCache'
 import { ensureCareTaskConfigSeeded, getCareTaskConfig } from './followupPlans'
 import { logCareAction } from './logger'
 import { resolvePackFromOrder } from './packResolver'
@@ -161,16 +166,23 @@ async function createTaskIfMissing(params: {
           Number.isFinite(newTs) &&
           (Math.abs(oldTs - newTs) > 12 * 3600 * 1000 ||
             (Number.isFinite(orderCreatedTs) && oldTs < orderCreatedTs - 24 * 3600 * 1000))
+        const patch: Record<string, unknown> = {}
         if (clearlyWrong) {
-          await ref.update({
-            scheduledAt: params.scheduledAt,
-            orderCreatedAt,
-            updatedAt: now,
-            updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
-          })
+          patch.scheduledAt = params.scheduledAt
+          patch.orderCreatedAt = orderCreatedAt
+        }
+        const prevEmail = String(prev.assignedTo?.email || '').toLowerCase()
+        const nextEmail = String(params.assignee?.email || '').toLowerCase()
+        if (params.assignee && nextEmail && prevEmail !== nextEmail) {
+          patch.assignedTo = params.assignee
+        }
+        if (Object.keys(patch).length > 0) {
+          patch.updatedAt = now
+          patch.updatedAtTs = admin.firestore.FieldValue.serverTimestamp()
+          await ref.update(patch)
         }
       } catch (repairErr) {
-        console.warn('careTasks: failed to repair scheduledAt', dedupeKey, repairErr)
+        console.warn('careTasks: failed to repair existing task', dedupeKey, repairErr)
       }
       return null
     }
@@ -254,7 +266,12 @@ export async function ensureCodConfirmationTask(
   // Confirmation is only for pre-delivery COD — skip once delivered
   if (isShiprocketDeliveredStatus(order)) return null
 
-  const assignee = assigneeOverride === undefined ? await assignCareExecutive() : assigneeOverride
+  const assignee =
+    assigneeOverride === undefined ? await assignCareExecutiveForOrder(order) : assigneeOverride
+  const { orderId, orderName } = orderIdentity(order)
+  if (assignee && orderId) {
+    await persistOrderAssignment(orderId, orderName, assignee)
+  }
   const pack = resolvePackFromOrder(order, await getCareTaskConfig())
   return createTaskIfMissing({
     order,
@@ -286,22 +303,10 @@ export async function ensureDeliveredFollowupTasks(
   const created: CareTask[] = []
 
   let assignee: CareAssignee | null =
-    assigneeOverride === undefined ? null : assigneeOverride ?? null
-
-  if (assigneeOverride === undefined) {
-    const existing = await getDb()
-      .collection(COL)
-      .where('orderId', '==', String(order.id))
-      .limit(5)
-      .get()
-    for (const doc of existing.docs) {
-      const a = doc.data()?.assignedTo
-      if (a?.email) {
-        assignee = a as CareAssignee
-        break
-      }
-    }
-    if (!assignee) assignee = await assignCareExecutive()
+    assigneeOverride === undefined ? await assignCareExecutiveForOrder(order) : assigneeOverride ?? null
+  const { orderId, orderName } = orderIdentity(order)
+  if (assignee && orderId) {
+    await persistOrderAssignment(orderId, orderName, assignee)
   }
 
   for (const step of pack.plan.steps) {
@@ -344,7 +349,6 @@ export async function processOrdersForCareTasks(
   await ensureCareTaskConfigSeeded()
 
   const maxOrders = Math.max(1, Math.min(opts.maxOrders ?? 150, 400))
-  const assignee = await assignCareExecutive()
   const config = await getCareTaskConfig()
 
   const codOrders = orders
@@ -361,16 +365,21 @@ export async function processOrdersForCareTasks(
     confirmationCreated: 0,
     followupsCreated: 0,
     errors: 0,
-    assigneeEmail: assignee?.email || null,
+    assigneeEmail: null,
   }
 
-  console.log(
-    `careTasks: processing ${codOrders.length} COD orders → assign ${assignee?.email || 'none'}`,
-  )
+  console.log(`careTasks: processing ${codOrders.length} COD orders with per-order executive assignment`)
 
   for (const order of codOrders) {
     result.scanned += 1
     try {
+      const assignee = await assignCareExecutiveForOrder(order)
+      if (!result.assigneeEmail && assignee?.email) result.assigneeEmail = assignee.email
+      const { orderId, orderName } = orderIdentity(order)
+      if (assignee && orderId) {
+        await persistOrderAssignment(orderId, orderName, assignee)
+      }
+
       const pack = resolvePackFromOrder(order, config)
       const delivered = isShiprocketDeliveredStatus(order)
 
@@ -432,8 +441,8 @@ function inferCareOrderTag(
   }
   // Recover tags when Firestore field was dropped but outcome text remains
   const outcome = String(data.outcome || '').toLowerCase()
-  if (outcome.includes('cod confirmed by customer care')) return 'care_confirmed'
-  if (outcome.includes('cancel requested by customer care')) return 'care_cancelled'
+  if (isCareConfirmedOutcome(outcome)) return 'care_confirmed'
+  if (isCareCancelledOutcome(outcome)) return 'care_cancelled'
   return null
 }
 
@@ -456,6 +465,7 @@ export function serializeCareTask(id: string, data: Record<string, any>): CareTa
     priority: data.priority || 'medium',
     status: data.status || 'pending',
     assignedTo: data.assignedTo || null,
+    escalatedTo: data.escalatedTo || null,
     outcome: data.outcome,
     remarks: data.remarks,
     customerResponse: data.customerResponse,

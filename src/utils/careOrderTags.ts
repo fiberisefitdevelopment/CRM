@@ -36,6 +36,21 @@ export function careOrderTagTone(kind: CareOrderTagKind): 'emerald' | 'amber' | 
   }
 }
 
+/** True when a care task reflects a confirmed COD order (care or AiSensy). */
+export function isCareTaskCodConfirmed(task: {
+  careOrderTag?: CareOrderTagKind | string | null
+  outcome?: string | null
+  remarks?: string | null
+}): boolean {
+  const raw = String(task.careOrderTag || '').trim()
+  if (raw === 'care_confirmed' || raw === 'aisensy_confirmed') return true
+  const outcome = String(task.outcome || '').toLowerCase()
+  if (outcome.includes('cod confirmed') || /^confirmed by /.test(outcome)) return true
+  const remarks = String(task.remarks || '').toLowerCase()
+  if (remarks.includes('order confirmed')) return true
+  return false
+}
+
 /** True if Customer Care or AiSensy already confirmed the COD order. */
 export function hasCodConfirmation(order: {
   tags?: string | null

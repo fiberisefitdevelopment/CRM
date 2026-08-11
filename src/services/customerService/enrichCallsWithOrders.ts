@@ -6,7 +6,10 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import type { CallData } from '@/src/services/customerService'
+import { loadCareTasksCached } from '@/src/services/careTasks/taskCache'
+import type { CareTask } from '@/src/services/careTasks/types'
 import { OrderRepository } from '@/src/repositories/orderRepository'
+import { lookupPhone, lookupPhoneByChannel } from '@/src/services/phoneStore'
 import { phoneMatchKey } from '@/src/utils/phoneNormalize'
 
 export interface CallOrderMatch {
@@ -16,62 +19,16 @@ export interface CallOrderMatch {
 }
 
 const PREFERRED_STATUSES = new Set(['pending', 'rescheduled', 'escalated', 'unreachable'])
+const INDEX_TTL_MS = 2 * 60 * 1000
+
+type IndexedMatch = CallOrderMatch & { createdMs: number }
+
+let orderPhoneIndex: Map<string, IndexedMatch> | null = null
+let orderPhoneIndexBuiltAt = 0
+let orderPhoneIndexSize = 0
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
-}
-
-function chunk<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = []
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
-  return out
-}
-
-function pickBestCareTask(docs: { data: Record<string, any> }[]): CallOrderMatch | null {
-  if (!docs.length) return null
-  const sorted = [...docs].sort((a, b) => {
-    const aPref = PREFERRED_STATUSES.has(String(a.data.status || '')) ? 0 : 1
-    const bPref = PREFERRED_STATUSES.has(String(b.data.status || '')) ? 0 : 1
-    if (aPref !== bPref) return aPref - bPref
-    return String(b.data.scheduledAt || '').localeCompare(String(a.data.scheduledAt || ''))
-  })
-  const best = sorted[0]?.data
-  if (!best) return null
-  const orderId = String(best.orderId || '')
-  const orderName = String(best.orderName || '')
-  const customerName = String(best.customerName || '').trim()
-  if (!orderId && !orderName && !customerName) return null
-  return { customerName, orderId, orderName }
-}
-
-async function lookupCareTasksByPhones(
-  phones: string[],
-): Promise<Map<string, CallOrderMatch>> {
-  const map = new Map<string, CallOrderMatch>()
-  if (!phones.length) return map
-
-  const byPhone = new Map<string, { data: Record<string, any> }[]>()
-  for (const phone of phones) byPhone.set(phone, [])
-
-  for (const group of chunk(phones, 10)) {
-    const snap = await getDb()
-      .collection('careTasks')
-      .where('phone', 'in', group)
-      .limit(200)
-      .get()
-    for (const doc of snap.docs) {
-      const data = doc.data() || {}
-      const key = String(data.phone || '')
-      if (!key || !byPhone.has(key)) continue
-      byPhone.get(key)!.push({ data })
-    }
-  }
-
-  for (const [phone, docs] of byPhone) {
-    const match = pickBestCareTask(docs)
-    if (match) map.set(phone, match)
-  }
-  return map
 }
 
 function orderCreatedMs(order: any): number {
@@ -105,40 +62,130 @@ function customerNameFromOrder(order: any): string {
 }
 
 function phoneFromOrder(order: any): string {
-  return phoneMatchKey(
-    order?.customer?.phone ||
-      order?.shipping_address?.phone ||
-      order?.phone ||
-      order?.shiprocket_meta?.customer_phone ||
-      '',
-  )
-}
-
-function lookupOrdersByPhones(phones: string[], orders: any[]): Map<string, CallOrderMatch> {
-  const map = new Map<string, CallOrderMatch>()
-  if (!phones.length) return map
-
-  const needed = new Set(phones)
-  const bestByPhone = new Map<string, { match: CallOrderMatch; createdMs: number }>()
-
-  for (const order of orders) {
-    const key = phoneFromOrder(order)
-    if (!key || !needed.has(key)) continue
-    const createdMs = orderCreatedMs(order)
-    const prev = bestByPhone.get(key)
-    if (prev && prev.createdMs >= createdMs) continue
-    bestByPhone.set(key, {
-      createdMs,
-      match: {
-        customerName: customerNameFromOrder(order),
-        orderId: String(order?.id || ''),
-        orderName: String(order?.name || ''),
-      },
-    })
+  const candidates = [
+    order?.customer?.phone,
+    order?.shipping_address?.phone,
+    order?.phone,
+    order?.customer?.default_address?.phone,
+    order?.billing_address?.phone,
+    order?.shiprocket_meta?.customer_phone_unmasked,
+    order?.shiprocket_meta?.customer_phone,
+    order?.shiprocket_meta?.billing_phone,
+  ]
+  for (const raw of candidates) {
+    const s = String(raw || '')
+    if (s && s !== 'xxxxxxxxxx') {
+      const key = phoneMatchKey(s)
+      if (key) return key
+    }
   }
 
-  for (const [phone, entry] of bestByPhone) {
-    map.set(phone, entry.match)
+  const channelId = String(order?.name || order?.shiprocket_meta?.channel_order_id || '')
+    .replace(/^#/, '')
+    .trim()
+  const srId = order?.shiprocket_meta?.id || order?.id
+  const stored = lookupPhone(srId) || lookupPhoneByChannel(channelId)
+  return stored ? phoneMatchKey(stored) : ''
+}
+
+function pickBestCareTask(
+  docs: { data: Record<string, any> }[],
+): CallOrderMatch | null {
+  if (!docs.length) return null
+  const sorted = [...docs].sort((a, b) => {
+    const aPref = PREFERRED_STATUSES.has(String(a.data.status || '')) ? 0 : 1
+    const bPref = PREFERRED_STATUSES.has(String(b.data.status || '')) ? 0 : 1
+    if (aPref !== bPref) return aPref - bPref
+    return String(b.data.scheduledAt || '').localeCompare(String(a.data.scheduledAt || ''))
+  })
+  const best = sorted[0]?.data
+  if (!best) return null
+  const orderId = String(best.orderId || '')
+  const orderName = String(best.orderName || '')
+  const customerName = String(best.customerName || '').trim()
+  if (!orderId && !orderName && !customerName) return null
+  return { customerName, orderId, orderName }
+}
+
+async function loadCareTasksSnapshot(): Promise<CareTask[]> {
+  return loadCareTasksCached(async () => {
+    const snap = await getDb().collection('careTasks').get()
+    return snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }) as CareTask)
+  }, 'full')
+}
+
+function lookupCareTasksByPhones(
+  tasks: CareTask[],
+  phones: string[],
+): Map<string, CallOrderMatch> {
+  const map = new Map<string, CallOrderMatch>()
+  if (!phones.length || !tasks.length) return map
+
+  const needed = new Set(phones)
+  const byPhone = new Map<string, CareTask[]>()
+
+  for (const task of tasks) {
+    const key = phoneMatchKey(task.phone)
+    if (!key || !needed.has(key)) continue
+    const list = byPhone.get(key) || []
+    list.push(task)
+    byPhone.set(key, list)
+  }
+
+  for (const [phone, docs] of byPhone) {
+    const match = pickBestCareTask(docs.map((task) => ({ data: task as unknown as Record<string, any> })))
+    if (match) map.set(phone, match)
+  }
+  return map
+}
+
+function buildOrderPhoneIndex(orders: any[]): Map<string, IndexedMatch> {
+  const index = new Map<string, IndexedMatch>()
+  for (const order of orders) {
+    const key = phoneFromOrder(order)
+    if (!key) continue
+    const createdMs = orderCreatedMs(order)
+    const prev = index.get(key)
+    if (prev && prev.createdMs >= createdMs) continue
+    index.set(key, {
+      createdMs,
+      customerName: customerNameFromOrder(order),
+      orderId: String(order?.id || ''),
+      orderName: String(order?.name || ''),
+    })
+  }
+  return index
+}
+
+async function getOrderPhoneIndex(): Promise<Map<string, IndexedMatch>> {
+  const orders = (await OrderRepository.getCachedOrders()) || []
+  const fresh =
+    orderPhoneIndex &&
+    Date.now() - orderPhoneIndexBuiltAt < INDEX_TTL_MS &&
+    orderPhoneIndexSize === orders.length
+
+  if (fresh && orderPhoneIndex) return orderPhoneIndex
+
+  orderPhoneIndex = buildOrderPhoneIndex(orders)
+  orderPhoneIndexBuiltAt = Date.now()
+  orderPhoneIndexSize = orders.length
+  return orderPhoneIndex
+}
+
+function lookupOrdersByPhones(
+  phones: string[],
+  index: Map<string, IndexedMatch>,
+): Map<string, CallOrderMatch> {
+  const map = new Map<string, CallOrderMatch>()
+  for (const phone of phones) {
+    const match = index.get(phone)
+    if (match) {
+      map.set(phone, {
+        customerName: match.customerName,
+        orderId: match.orderId,
+        orderName: match.orderName,
+      })
+    }
   }
   return map
 }
@@ -157,14 +204,15 @@ export async function enrichCallsWithOrders(calls: CallData[]): Promise<CallData
 
   let careMap = new Map<string, CallOrderMatch>()
   try {
-    careMap = await lookupCareTasksByPhones(uniquePhones)
+    const tasks = await loadCareTasksSnapshot()
+    careMap = lookupCareTasksByPhones(tasks, uniquePhones)
   } catch (err) {
     console.warn('enrichCallsWithOrders: careTasks lookup failed', err)
   }
 
   const missing = uniquePhones.filter((p) => !careMap.has(p))
-  const orders = missing.length ? (await OrderRepository.getCachedOrders()) || [] : []
-  const orderMap = missing.length ? lookupOrdersByPhones(missing, orders) : new Map<string, CallOrderMatch>()
+  const orderIndex = await getOrderPhoneIndex()
+  const orderMap = missing.length ? lookupOrdersByPhones(missing, orderIndex) : new Map<string, CallOrderMatch>()
 
   return calls.map((call) => {
     const key = phoneMatchKey(call.number || call.formattedNumber)

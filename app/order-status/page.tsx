@@ -48,7 +48,9 @@ import {
   type TimelineStep,
 } from '@/src/utils/orderTimeline'
 import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
+import { CareExecutiveBadge } from '@/components/orders/CareExecutiveBadge'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
+import type { CareOrderAssignmentEntry } from '@/src/services/careAssignmentStore'
 
 /** Default Order Status window: last 30 calendar days in IST (inclusive). */
 function getDefaultDateRange(): { start: string; end: string } {
@@ -68,6 +70,7 @@ interface OrderRow {
   total_price: string
   cancelled_at?: string | null
   care_tag?: CareOrderTagEntry | null
+  care_executive?: CareOrderAssignmentEntry | null
   customer?: { first_name?: string; last_name?: string; email?: string; phone?: string } | null
   shipping_address?: {
     first_name?: string
@@ -470,6 +473,7 @@ function OrderStatusCard({
                   {payMethod}
                 </span>
                 <CareOrderTagBadge tag={(order as OrderRow).care_tag} />
+                <CareExecutiveBadge assignment={(order as OrderRow).care_executive} />
               </div>
               <p className="text-sm font-bold mt-1" style={{ color: 'var(--foreground)' }}>
                 ₹{order.total_price}

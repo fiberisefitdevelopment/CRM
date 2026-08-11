@@ -9,6 +9,10 @@
 import fs from 'fs'
 import path from 'path'
 import {
+  isCareConfirmedOutcome,
+  isCareCancelledOutcome,
+} from '@/src/services/careTasks/actorLabel'
+import {
   careOrderTagLabel,
   type CareOrderTagEntry,
   type CareOrderTagKind,
@@ -137,8 +141,8 @@ function kindFromTask(task: CareTagSourceTask): CareOrderTagKind | null {
     return raw
   }
   const outcome = String(task.outcome || '').toLowerCase()
-  if (outcome.includes('cod confirmed by customer care')) return 'care_confirmed'
-  if (outcome.includes('cancel requested by customer care')) return 'care_cancelled'
+  if (isCareConfirmedOutcome(outcome)) return 'care_confirmed'
+  if (isCareCancelledOutcome(outcome)) return 'care_cancelled'
   return null
 }
 

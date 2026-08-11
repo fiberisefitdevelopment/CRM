@@ -139,9 +139,18 @@ export async function GET(_req: NextRequest) {
         applyCareTagsToOrders: (list: any[]) => any[]
         ensureCareTagsHydrated: () => Promise<void>
       }
+      const {
+        applyCareAssignmentsToOrders,
+        ensureCareAssignmentsHydrated,
+      } = require('@/src/services/careAssignmentStore') as {
+        applyCareAssignmentsToOrders: (list: any[]) => any[]
+        ensureCareAssignmentsHydrated: () => Promise<void>
+      }
       // Pull Care confirmed / cancelled from Firestore care tasks into local cache
       await ensureCareTagsHydrated()
-      const decorate = (list: any[]) => applyCareTagsToOrders(applyNotesToOrders(list))
+      await ensureCareAssignmentsHydrated()
+      const decorate = (list: any[]) =>
+        applyCareAssignmentsToOrders(applyCareTagsToOrders(applyNotesToOrders(list)))
 
       if (orderStatusView && !returnAll) {
         const result = await OrderRepository.getOrderStatusPaginated(page, perPage, {

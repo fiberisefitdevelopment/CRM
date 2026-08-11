@@ -66,6 +66,8 @@ export interface CareTask {
   priority: CareTaskPriority
   status: CareTaskStatus
   assignedTo: CareAssignee | null
+  /** Who the task was escalated to (when status is escalated). */
+  escalatedTo?: CareAssignee | null
   outcome?: string
   remarks?: string
   customerResponse?: string

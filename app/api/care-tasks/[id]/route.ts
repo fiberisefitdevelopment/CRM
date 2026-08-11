@@ -17,6 +17,7 @@ import {
   requiresCustomerRating,
   type CareTaskStatus,
 } from '@/src/services/careTasks/types'
+import { careActorLabel } from '@/src/services/careTasks/actorLabel'
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -78,10 +79,11 @@ export async function PATCH(
       isCareExecutiveRole(session.role) &&
       task.assignedTo?.email?.toLowerCase() !== session.email.toLowerCase()
     ) {
+      const actor = careActorLabel(session)
       patch.assignedTo = {
-        userId: session.email.split('@')[0] || 'executive',
+        userId: session.id || session.email.split('@')[0] || 'executive',
         email: session.email.toLowerCase(),
-        name: session.email.split('@')[0] || 'Executive',
+        name: actor,
       }
     }
 
@@ -89,18 +91,19 @@ export async function PATCH(
       // Display-only tag on Orders / Order Status — does NOT cancel or edit Shopify
       const { storeCareOrderTag } = require('@/src/services/careOrderTagStore')
       const kind = action === 'confirm_cod' ? 'care_confirmed' : 'care_cancelled'
+      const actor = careActorLabel(session)
       const tag = storeCareOrderTag({
         orderId: task.orderId,
         orderName: task.orderName,
         kind,
         byEmail: session.email,
-        byName: session.email.split('@')[0] || 'Care',
+        byName: actor,
       })
       patch.status = 'completed' as CareTaskStatus
       patch.outcome =
         action === 'confirm_cod'
-          ? 'COD confirmed by customer care executive'
-          : 'Cancel requested by customer care executive (tag only)'
+          ? `Confirmed by ${actor}`
+          : `Cancel requested by ${actor} (tag only)`
       patch.remarks =
         action === 'confirm_cod'
           ? 'Order confirmed — tag set for Orders / Order Status'
@@ -109,6 +112,9 @@ export async function PATCH(
         action === 'confirm_cod' ? 'Customer confirmed COD order' : 'Customer requested cancellation'
       patch.completedAt = nowIso
       patch.careOrderTag = tag.kind
+      if (action === 'confirm_cod') {
+        patch.priority = 'medium'
+      }
     } else if (action === 'complete' || body.status === 'completed') {
       if (!body.outcome || !body.remarks || !body.customerResponse) {
         return NextResponse.json(
@@ -181,8 +187,35 @@ export async function PATCH(
           { status: 400 },
         )
       }
+      const rawTarget = body.escalatedTo
+      const targetEmail = String(
+        rawTarget && typeof rawTarget === 'object' ? rawTarget.email : body.escalatedToEmail || '',
+      )
+        .toLowerCase()
+        .trim()
+      if (!targetEmail) {
+        return NextResponse.json(
+          { error: 'Select who to escalate this task to.' },
+          { status: 400 },
+        )
+      }
+      const escalatedTo = {
+        userId: String(
+          rawTarget && typeof rawTarget === 'object' && rawTarget.userId
+            ? rawTarget.userId
+            : targetEmail.split('@')[0],
+        ),
+        email: targetEmail,
+        name: String(
+          rawTarget && typeof rawTarget === 'object' && rawTarget.name
+            ? rawTarget.name
+            : targetEmail.split('@')[0] || 'User',
+        ),
+      }
       patch.status = 'escalated'
       patch.remarks = reason
+      patch.escalatedTo = escalatedTo
+      patch.assignedTo = escalatedTo
       if (body.outcome) patch.outcome = String(body.outcome)
     } else if (body.status) {
       patch.status = body.status

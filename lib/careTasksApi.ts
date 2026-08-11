@@ -58,6 +58,14 @@ export async function getCarePerformance(): Promise<ExecutivePerformance[]> {
   return data.executives || []
 }
 
+export async function getEscalationTargets(): Promise<
+  Array<{ userId: string; email: string; name: string }>
+> {
+  const res = await apiFetch('/api/care-tasks/escalation-targets', { cache: 'no-store' })
+  const data = await parseJson(res)
+  return data.users || []
+}
+
 export async function getCareTask(id: string): Promise<CareTask> {
   const res = await apiFetch(`/api/care-tasks/${encodeURIComponent(id)}`, { cache: 'no-store' })
   const data = await parseJson(res)

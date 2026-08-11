@@ -112,6 +112,24 @@ export async function POST(req: NextRequest) {
 
     console.log(`✅ Webhook processed: Journey ${result.journeyId} created`)
 
+    // Assign care executive + create COD confirmation task for new orders
+    try {
+      const { assignCareExecutiveForOrder } = require('@/src/services/careTasks/assignmentEngine')
+      const { ensureCodConfirmationTask } = require('@/src/services/careTasks/generator')
+      const { storeCareOrderAssignment } = require('@/src/services/careAssignmentStore')
+      const assignee = await assignCareExecutiveForOrder(orderData)
+      if (assignee) {
+        storeCareOrderAssignment({
+          orderId: orderData.id,
+          orderName: orderData.name,
+          assignee,
+        })
+        await ensureCodConfirmationTask(orderData, assignee)
+      }
+    } catch (e) {
+      console.warn('Failed to assign care executive / create COD task:', e)
+    }
+
     // Display-only tag on Orders / Order Status when AiSensy confirmation is sent
     if (result.confirmationSent) {
       try {

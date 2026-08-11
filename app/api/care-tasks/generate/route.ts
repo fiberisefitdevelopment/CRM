@@ -3,6 +3,7 @@ export const maxDuration = 120
 
 import { NextRequest, NextResponse } from 'next/server'
 import { OrderRepository } from '@/src/repositories/orderRepository'
+import { redistributeOpenTasksAmongExecutives } from '@/src/services/careTasks/assignmentEngine'
 import { processOrdersForCareTasks } from '@/src/services/careTasks/generator'
 import { invalidateCareTasksCache } from '@/src/services/careTasks/queries'
 import { seedAdminUser } from '@/src/services/auth'
@@ -110,12 +111,20 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    const redistribute = body?.redistribute !== false
+    let tasksRedistributed = 0
+    if (redistribute) {
+      tasksRedistributed = await redistributeOpenTasksAmongExecutives()
+      console.log(`careTasks: redistributed ${tasksRedistributed} open tasks across executives`)
+    }
+
     const result = await processOrdersForCareTasks(orders, { maxOrders })
     invalidateCareTasksCache()
     return NextResponse.json({
       success: true,
       cacheSize: orders.length,
       shopifyPulled: pulled,
+      tasksRedistributed,
       result,
     })
   } catch (error: any) {

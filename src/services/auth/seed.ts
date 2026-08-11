@@ -24,7 +24,9 @@ export async function seedAdminUser(): Promise<void> {
       if (opts?.careExecutive) {
         extras.careExecutive = true
         extras.active = true
-        extras.name = 'Customer Care Executive'
+        if (normalized.includes('executive1')) extras.name = 'Executive 1'
+        else if (normalized.includes('executive2')) extras.name = 'Executive 2'
+        else extras.name = 'Customer Care Executive'
       }
       if (query.empty) {
         console.log(`🌱 Seeding default ${role} user: ${email}`)
@@ -48,6 +50,11 @@ export async function seedAdminUser(): Promise<void> {
         if (opts.careExecutive) {
           if (current.careExecutive !== true) patch.careExecutive = true
           if (current.active === false || current.active == null) patch.active = true
+          if (normalized.includes('executive1')) patch.name = 'Executive 1'
+          else if (normalized.includes('executive2')) patch.name = 'Executive 2'
+          else if (!current.name || current.name === 'Customer Care Executive') {
+            patch.name = 'Customer Care Executive'
+          }
         }
         if (Object.keys(patch).length > 0) {
           await query.docs[0].ref.update(patch)
@@ -62,6 +69,14 @@ export async function seedAdminUser(): Promise<void> {
     await seedUserIfMissing('ceo@fiberisefit.com', '12345', 'admin')
     await seedUserIfMissing('priyanshu@fiberisefit.com', '12345', 'admin')
     await seedUserIfMissing('support@fiberisefit.com', '12345', 'care_executive', {
+      syncRole: true,
+      careExecutive: true,
+    })
+    await seedUserIfMissing('executive1@fiberisefit.com', '12345', 'care_executive', {
+      syncRole: true,
+      careExecutive: true,
+    })
+    await seedUserIfMissing('executive2@fiberisefit.com', '12345', 'care_executive', {
       syncRole: true,
       careExecutive: true,
     })

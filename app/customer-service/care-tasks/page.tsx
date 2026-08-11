@@ -27,6 +27,7 @@ import {
   generateCareTasks,
   getCareOrderContext,
   getCarePerformance,
+  getEscalationTargets,
   getCareTaskSummary,
   listCareTasks,
   syncCareTaskCalls,
@@ -45,6 +46,7 @@ import {
   type CareTaskKind,
 } from '@/src/services/careTasks/types'
 import type { TimelineStep } from '@/src/utils/orderTimeline'
+import { isCareTaskCodConfirmed } from '@/src/utils/careOrderTags'
 
 type StatusFilter =
   | 'inbox'
@@ -195,6 +197,10 @@ function statusBadge(task: CareTask) {
   return { label: 'Pending', tone: 'amber' as const }
 }
 
+function escalationReason(task: CareTask): string {
+  return String(task.remarks || task.notes?.[0]?.text || '').trim()
+}
+
 function pushLocalNotif(title: string, body: string, type: 'order' | 'system' | 'alert') {
   try {
     const key = 'fiberise_notifications'
@@ -256,10 +262,19 @@ export default function CareTasksPage() {
   const [rescheduleAt, setRescheduleAt] = useState('')
   const [callAfterAt, setCallAfterAt] = useState('')
   const [escalateReason, setEscalateReason] = useState('')
+  const [escalateTargetEmail, setEscalateTargetEmail] = useState('')
+  const [escalationTargets, setEscalationTargets] = useState<
+    Array<{ userId: string; email: string; name: string }>
+  >([])
   const [unreachableConfirmTask, setUnreachableConfirmTask] = useState<CareTask | null>(null)
   const [escalateConfirmTask, setEscalateConfirmTask] = useState<CareTask | null>(null)
   const [callAfterConfirmTask, setCallAfterConfirmTask] = useState<CareTask | null>(null)
   const [reminderTask, setReminderTask] = useState<CareTask | null>(null)
+  const [panelEscalatedTasks, setPanelEscalatedTasks] = useState<CareTask[]>([])
+  const [escalatedPanelOpen, setEscalatedPanelOpen] = useState(false)
+  const [escalatedKindCounts, setEscalatedKindCounts] = useState<Record<string, number>>({})
+  const [executiveFilter, setExecutiveFilter] = useState<string | null>(null)
+  const taskListRef = useRef<HTMLDivElement | null>(null)
 
   const isAdmin = isAdminRole(role)
   const isExec = isCareExecutiveRole(role)
@@ -277,6 +292,35 @@ export default function CareTasksPage() {
     return () => window.clearTimeout(t)
   }, [search])
 
+  useEffect(() => {
+    if (role === null) return
+    void getEscalationTargets()
+      .then((users) => setEscalationTargets(users))
+      .catch(() => setEscalationTargets([]))
+  }, [role])
+
+  const panelKind = isExec || kindFilter === 'all' ? 'all' : kindFilter
+
+  const loadPanelEscalated = useCallback(async () => {
+    if (role === null) return
+    try {
+      const [panelRes, allRes] = await Promise.all([
+        listCareTasks({ status: 'escalated', kind: panelKind, pageSize: 100 }),
+        listCareTasks({ status: 'escalated', kind: 'all', pageSize: 100 }),
+      ])
+      setPanelEscalatedTasks(panelRes.tasks)
+      const counts: Record<string, number> = {}
+      for (const t of allRes.tasks) {
+        const k = getCareTaskKind(t)
+        counts[k] = (counts[k] || 0) + 1
+      }
+      setEscalatedKindCounts(counts)
+    } catch {
+      setPanelEscalatedTasks([])
+      setEscalatedKindCounts({})
+    }
+  }, [role, panelKind])
+
   // Server-paginated list — only the current page is returned.
   const load = useCallback(async () => {
     const seq = ++loadSeq.current
@@ -290,6 +334,7 @@ export default function CareTasksPage() {
         search: debouncedSearch || undefined,
         page,
         pageSize,
+        assignee: isAdmin && executiveFilter ? executiveFilter : undefined,
       })
       if (seq !== loadSeq.current) return null
 
@@ -301,7 +346,7 @@ export default function CareTasksPage() {
       setLoading(false)
 
       // Summary + performance after list paints (shared server cache makes this cheap)
-      void getCareTaskSummary()
+      void getCareTaskSummary(isAdmin && executiveFilter ? executiveFilter : undefined)
         .then((sum) => {
           if (seq === loadSeq.current) setSummary(sum)
         })
@@ -316,6 +361,8 @@ export default function CareTasksPage() {
             if (seq === loadSeq.current) setPerformance([])
           })
       }
+
+      void loadPanelEscalated()
       return listRes.total
     } catch (err: any) {
       if (seq === loadSeq.current) {
@@ -324,7 +371,24 @@ export default function CareTasksPage() {
       }
       return null
     }
-  }, [statusFilter, kindFilter, debouncedSearch, page, pageSize, isAdmin, isExec])
+  }, [statusFilter, kindFilter, debouncedSearch, page, pageSize, isAdmin, isExec, loadPanelEscalated, executiveFilter])
+
+  const selectExecutive = useCallback((email: string, name: string) => {
+    const normalized = email.toLowerCase()
+    if (executiveFilter === normalized) {
+      setExecutiveFilter(null)
+      return
+    }
+    setExecutiveFilter(normalized)
+    setKindFilter('all')
+    setStatusFilter('inbox')
+    setPage(1)
+    setExpandedId(null)
+    setSuccess(`Showing to-do tasks for ${name}`)
+    window.setTimeout(() => {
+      taskListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 80)
+  }, [executiveFilter])
 
   const runGenerate = useCallback(
     async (silent = false) => {
@@ -334,15 +398,19 @@ export default function CareTasksPage() {
         // Pull latest Shopify orders into cache, then create missing COD tasks
         const data = await generateCareTasks(200, true)
         const r = data?.result
+        const redistributed = data?.tasksRedistributed ?? 0
         if (!silent) {
           const created = r?.confirmationCreated ?? 0
           const followups = r?.followupsCreated ?? 0
           const pulled = data?.shopifyPulled ?? 0
-          setSuccess(
+          const parts = [
+            `Synced ${pulled} Shopify orders`,
+            redistributed > 0 ? `${redistributed} tasks redistributed across executives` : null,
             created || followups
-              ? `Synced ${pulled} Shopify orders — ${created} new COD confirmation, ${followups} follow-ups`
-              : `Synced ${pulled} Shopify orders — no new tasks (already up to date)`,
-          )
+              ? `${created} new COD confirmation, ${followups} follow-ups`
+              : 'no new tasks (already up to date)',
+          ].filter(Boolean)
+          setSuccess(parts.join(' — '))
         }
         if (page !== 1) setPage(1)
         else await load()
@@ -370,7 +438,19 @@ export default function CareTasksPage() {
       }
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [role, statusFilter, kindFilter, debouncedSearch, page, pageSize])
+  }, [role, statusFilter, kindFilter, debouncedSearch, page, pageSize, executiveFilter])
+
+  useEffect(() => {
+    if (role === null) return
+    void loadPanelEscalated()
+  }, [role, panelKind, loadPanelEscalated])
+
+  const openEscalatedTask = (task: CareTask) => {
+    setStatusFilter('escalated')
+    setPage(1)
+    setExpandedId(task.id)
+    setEscalatedPanelOpen(false)
+  }
 
   const safePage = Math.min(page, totalPages)
   const pageStart = total === 0 ? 0 : (safePage - 1) * pageSize
@@ -487,11 +567,18 @@ export default function CareTasksPage() {
       } else if (action === 'escalate') {
         const reason = escalateReason.trim()
         if (!reason) throw new Error('Escalate reason is required')
-        await updateCareTask(task.id, { action: 'escalate', remarks: reason })
+        const target = escalationTargets.find((t) => t.email === escalateTargetEmail)
+        if (!target) throw new Error('Select who to escalate this task to')
+        await updateCareTask(task.id, { action: 'escalate', remarks: reason, escalatedTo: target })
         setEscalateConfirmTask(null)
         setEscalateReason('')
-        setSuccess('Escalated to admin')
-        pushLocalNotif('Care task escalated', `${task.orderName} — ${task.taskLabel}`, 'alert')
+        setEscalateTargetEmail('')
+        setSuccess(`Escalated to ${target.name || target.email}`)
+        pushLocalNotif(
+          'Care task escalated',
+          `${task.orderName} — ${task.taskLabel} → ${target.name || target.email}`,
+          'alert',
+        )
         setExpandedId(null)
       } else if (action === 'call_after') {
         if (!callAfterAt) throw new Error('Pick a call-after date & time first')
@@ -561,6 +648,11 @@ export default function CareTasksPage() {
         all: summary.total,
       }
     : {}
+
+  const selectedExecutive = useMemo(
+    () => performance.find((row) => row.email.toLowerCase() === executiveFilter) || null,
+    [performance, executiveFilter],
+  )
 
   const visibleKindTabs = useMemo(() => {
     return CARE_TASK_KIND_TABS.filter((tab) => {
@@ -726,10 +818,27 @@ export default function CareTasksPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {performance.map((row) => (
-                      <tr key={row.email} className="border-t" style={{ borderColor: 'var(--border)' }}>
+                    {performance.map((row) => {
+                      const active = executiveFilter === row.email.toLowerCase()
+                      return (
+                      <tr
+                        key={row.email}
+                        className={`border-t cursor-pointer transition-colors ${
+                          active ? 'bg-purple-500/10' : 'hover:bg-purple-500/[0.04]'
+                        }`}
+                        style={{ borderColor: 'var(--border)' }}
+                        onClick={() => selectExecutive(row.email, row.name)}
+                        title={active ? 'Click to clear filter' : 'Click to view to-do tasks for this executive'}
+                      >
                         <td className="px-4 py-2" style={{ color: 'var(--foreground)' }}>
-                          <div className="font-medium">{row.name}</div>
+                          <div className="font-medium flex items-center gap-2">
+                            {row.name}
+                            {active && (
+                              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-purple-500/40 text-purple-600 dark:text-purple-300">
+                                Viewing
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>{row.email}</div>
                         </td>
                         <td className="px-3 py-2">{row.assigned}</td>
@@ -738,10 +847,30 @@ export default function CareTasksPage() {
                         <td className="px-3 py-2 text-red-500">{row.overdue}</td>
                         <td className="px-3 py-2">{row.completionPct}%</td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>
+            </div>
+          )}
+
+          {isAdmin && executiveFilter && selectedExecutive && (
+            <div
+              className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border px-4 py-2.5"
+              style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+            >
+              <p className="text-sm" style={{ color: 'var(--foreground)' }}>
+                Showing <span className="font-semibold">{selectedExecutive.name}</span>
+                {' '}· {selectedExecutive.assigned} tasks · {selectedExecutive.pending} pending · {selectedExecutive.overdue} overdue
+              </p>
+              <button
+                type="button"
+                onClick={() => setExecutiveFilter(null)}
+                className="text-xs font-semibold px-3 py-1.5 rounded-lg border hover:bg-purple-500/10 transition-colors"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                Clear executive filter
+              </button>
             </div>
           )}
 
@@ -776,6 +905,11 @@ export default function CareTasksPage() {
                   >
                     {count}
                   </span>
+                  {(escalatedKindCounts[tab.key] || 0) > 0 && (
+                    <span className="ml-1 tabular-nums text-red-500 dark:text-red-400">
+                      · {escalatedKindCounts[tab.key]} escalated
+                    </span>
+                  )}
                 </button>
               )
             })}
@@ -787,7 +921,7 @@ export default function CareTasksPage() {
           )}
 
           {/* Status + search */}
-          <div className="mb-4 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
+          <div ref={taskListRef} className="mb-4 flex flex-col sm:flex-row sm:items-center gap-3 justify-between">
             <div className="flex gap-1 overflow-x-auto pb-1">
               {statusFilters.map(([value, label]) => {
                 const active = statusFilter === value
@@ -838,6 +972,91 @@ export default function CareTasksPage() {
               />
             </div>
           </div>
+
+          {/* Escalated tasks panel — available on every call-type tab */}
+          {panelEscalatedTasks.length > 0 && (
+            <div
+              className="mb-4 rounded-xl border overflow-hidden"
+              style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
+            >
+              <button
+                type="button"
+                onClick={() => setEscalatedPanelOpen((o) => !o)}
+                className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-red-500/[0.04] transition-colors"
+              >
+                <div>
+                  <p className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
+                    Escalated tasks
+                    <span className="ml-2 tabular-nums text-red-600 dark:text-red-400">
+                      {panelEscalatedTasks.length}
+                    </span>
+                  </p>
+                  <p className="text-[11px] mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
+                    {statusFilter === 'escalated'
+                      ? 'Full list below — expand any row for details'
+                      : 'View escalation reasons for this panel'}
+                  </p>
+                </div>
+                {escalatedPanelOpen ? (
+                  <ChevronDown className="w-4 h-4 shrink-0" style={{ color: 'var(--foreground-muted)' }} />
+                ) : (
+                  <ChevronRight className="w-4 h-4 shrink-0" style={{ color: 'var(--foreground-muted)' }} />
+                )}
+              </button>
+              {escalatedPanelOpen && (
+                <div className="border-t divide-y" style={{ borderColor: 'var(--border)' }}>
+                  {panelEscalatedTasks.map((task) => {
+                    const reason = escalationReason(task)
+                    return (
+                      <div
+                        key={task.id}
+                        className="px-4 py-3 flex flex-col sm:flex-row sm:items-start gap-3"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                            <span className={badge('red')}>Escalated</span>
+                            <span className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
+                              {task.orderName}
+                            </span>
+                            <span className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+                              {task.taskLabel}
+                            </span>
+                          </div>
+                          <p className="text-[12px]" style={{ color: 'var(--foreground-muted)' }}>
+                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                              Customer:
+                            </span>{' '}
+                            {task.customerName}
+                            {task.phone ? ` · ${task.phone}` : ''}
+                          </p>
+                          {task.escalatedTo?.email && (
+                            <p className="text-[12px] mt-1" style={{ color: 'var(--foreground-muted)' }}>
+                              <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                                Escalated to:
+                              </span>{' '}
+                              {task.escalatedTo.name || task.escalatedTo.email}
+                            </p>
+                          )}
+                          <p className="text-[12px] mt-1.5 leading-relaxed" style={{ color: 'var(--foreground)' }}>
+                            <span className="font-semibold">Reason:</span>{' '}
+                            {reason || 'No reason recorded'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openEscalatedTask(task)}
+                          className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                          style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                        >
+                          Open task
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {loading && tasks.length === 0 ? (
             <div className="space-y-2.5" aria-busy="true" aria-label="Loading tasks">
@@ -980,7 +1199,7 @@ export default function CareTasksPage() {
                                 <span className={badge('purple')}>COD</span>
                               )}
                               <span className={badge(st.tone)}>{st.label}</span>
-                              {task.priority === 'high' && (
+                              {task.priority === 'high' && !isCareTaskCodConfirmed(task) && (
                                 <span className={badge('red')}>High</span>
                               )}
                             </div>
@@ -1031,11 +1250,28 @@ export default function CareTasksPage() {
                               className="text-[10px] font-bold uppercase tracking-wider"
                               style={{ color: 'var(--foreground-muted)' }}
                             >
-                              Last note
+                              {task.status === 'escalated' ? 'Escalation reason' : 'Last note'}
                             </p>
-                            <p className="text-[12px] line-clamp-2" style={{ color: 'var(--foreground-muted)' }}>
-                              {task.notes?.[0]?.text || task.remarks || 'No notes yet'}
+                            <p
+                              className={`text-[12px] line-clamp-2 ${
+                                task.status === 'escalated' ? 'font-medium' : ''
+                              }`}
+                              style={{
+                                color:
+                                  task.status === 'escalated'
+                                    ? 'var(--foreground)'
+                                    : 'var(--foreground-muted)',
+                              }}
+                            >
+                              {task.status === 'escalated'
+                                ? escalationReason(task) || 'No reason recorded'
+                                : task.notes?.[0]?.text || task.remarks || 'No notes yet'}
                             </p>
+                            {task.status === 'escalated' && task.escalatedTo?.email && (
+                              <p className="text-[11px] mt-1" style={{ color: 'var(--foreground-muted)' }}>
+                                To {task.escalatedTo.name || task.escalatedTo.email}
+                              </p>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1055,16 +1291,6 @@ export default function CareTasksPage() {
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           Confirm order
-                        </button>
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => onAction(task, 'cancel_cod')}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border border-amber-500/40 text-amber-700 dark:text-amber-300 bg-amber-500/10 disabled:opacity-50"
-                          title="Tag cancel request for ops — does NOT cancel the Shopify order"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                          Cancel request
                         </button>
                         <span className="text-[10px]" style={{ color: 'var(--foreground-muted)' }}>
                           Tags only — shown on Orders & Order Status
@@ -1102,6 +1328,14 @@ export default function CareTasksPage() {
                             <span>
                               <span className="font-semibold" style={{ color: 'var(--foreground)' }}>Assignee</span>{' '}
                               {task.assignedTo?.email || '—'}
+                            </span>
+                          )}
+                          {task.status === 'escalated' && task.escalatedTo?.email && (
+                            <span>
+                              <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                                Escalated to
+                              </span>{' '}
+                              {task.escalatedTo.name || task.escalatedTo.email}
                             </span>
                           )}
                           <span className="inline-flex items-center gap-1">
@@ -1455,6 +1689,10 @@ export default function CareTasksPage() {
                                 disabled={busy}
                                 onClick={() => {
                                   setEscalateReason('')
+                                  const defaultTarget =
+                                    escalationTargets.find((t) => t.email !== user?.email) ||
+                                    escalationTargets[0]
+                                  setEscalateTargetEmail(defaultTarget?.email || '')
                                   setEscalateConfirmTask(task)
                                 }}
                                 className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
@@ -1751,6 +1989,7 @@ export default function CareTasksPage() {
                 onClick={() => {
                   setEscalateConfirmTask(null)
                   setEscalateReason('')
+                  setEscalateTargetEmail('')
                 }}
                 className="p-1 rounded-lg"
                 style={{ color: 'var(--foreground-muted)' }}
@@ -1761,6 +2000,31 @@ export default function CareTasksPage() {
             <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
               {escalateConfirmTask.orderName} — {escalateConfirmTask.taskLabel}
             </p>
+            <label className="block mb-3">
+              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
+                Escalate to *
+              </span>
+              <select
+                value={escalateTargetEmail}
+                onChange={(e) => setEscalateTargetEmail(e.target.value)}
+                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
+                style={{
+                  background: 'var(--background)',
+                  borderColor: 'var(--border)',
+                  color: 'var(--foreground)',
+                }}
+              >
+                {escalationTargets.length === 0 ? (
+                  <option value="">No users available</option>
+                ) : (
+                  escalationTargets.map((t) => (
+                    <option key={t.email} value={t.email}>
+                      {t.name} ({t.email})
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
             <label className="block mb-4">
               <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
                 Reason *
@@ -1785,6 +2049,7 @@ export default function CareTasksPage() {
                 onClick={() => {
                   setEscalateConfirmTask(null)
                   setEscalateReason('')
+                  setEscalateTargetEmail('')
                 }}
                 className="px-3 py-2 rounded-lg text-sm border"
                 style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
@@ -1793,7 +2058,11 @@ export default function CareTasksPage() {
               </button>
               <button
                 type="button"
-                disabled={savingId === escalateConfirmTask.id || !escalateReason.trim()}
+                disabled={
+                  savingId === escalateConfirmTask.id ||
+                  !escalateReason.trim() ||
+                  !escalateTargetEmail
+                }
                 onClick={() => onAction(escalateConfirmTask, 'escalate')}
                 className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white disabled:opacity-50"
               >
