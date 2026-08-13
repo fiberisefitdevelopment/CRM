@@ -152,17 +152,7 @@ export function syncAssignmentsFromCareTasks(tasks: AssignmentSourceTask[]): num
 }
 
 export async function ensureCareAssignmentsHydrated(): Promise<void> {
-  reloadStoreFromDisk()
-
-  try {
-    const { getCachedCareTasks } = require('@/src/services/careTasks/taskCache') as {
-      getCachedCareTasks: () => AssignmentSourceTask[] | null
-    }
-    const cached = getCachedCareTasks()
-    if (cached?.length) syncAssignmentsFromCareTasks(cached)
-  } catch {
-    // care tasks module unavailable
-  }
+  hydrateCareAssignmentsFromLocalSources()
 
   if (Date.now() < hydrateExpiresAt) return
   if (hydrateInflight) return hydrateInflight
@@ -228,6 +218,21 @@ export async function ensureCareAssignmentsHydrated(): Promise<void> {
   })()
 
   return hydrateInflight
+}
+
+/** Disk + in-memory care-task sync only — safe for instant list APIs. */
+export function hydrateCareAssignmentsFromLocalSources(): void {
+  reloadStoreFromDisk()
+
+  try {
+    const { getCachedCareTasks } = require('@/src/services/careTasks/taskCache') as {
+      getCachedCareTasks: () => AssignmentSourceTask[] | null
+    }
+    const cached = getCachedCareTasks()
+    if (cached?.length) syncAssignmentsFromCareTasks(cached)
+  } catch {
+    // care tasks module unavailable
+  }
 }
 
 export function applyCareAssignmentsToOrders<

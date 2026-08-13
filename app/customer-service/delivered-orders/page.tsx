@@ -598,7 +598,12 @@ export default function DeliveredOrdersPage() {
               className="px-4 py-2 text-[11px] border-t"
               style={{ color: 'var(--foreground-muted)', borderColor: 'var(--border)' }}
             >
-              Last 30 days · counts update with search
+              Last 30 days
+              {isExec
+                ? ' · your assigned orders (÷2 with the other care executive)'
+                : ' · all care assignments'}
+              {' · '}
+              counts update with search
             </p>
           </div>
 

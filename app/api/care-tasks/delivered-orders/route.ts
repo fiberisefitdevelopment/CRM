@@ -1,41 +1,45 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import admin from 'firebase-admin'
-import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { OrderRepository } from '@/src/repositories/orderRepository'
 import {
   canAccessCareTasksApi,
   requireSession,
+  resolveCareTaskAssigneeFilter,
 } from '@/src/services/careTasks/session'
 import { getCachedCareTasks } from '@/src/services/careTasks/taskCache'
 import {
   isOpenCareTaskStatus,
   makeManualUpsellDedupeKey,
-  serializeCareTask,
 } from '@/src/services/careTasks/generator'
+import {
+  CARE_EXECUTIVE_EMAILS,
+  normalizeCareExecutiveEmail,
+} from '@/src/services/careTasks/executiveConfig'
 import { getCareTaskKind } from '@/src/services/careTasks/types'
 import { cleanOrderName } from '@/src/utils/cloneOrders'
 
-async function loadOpenUpsellByOrderId(): Promise<
-  Map<string, { id: string; status: string; assignedTo: any }>
+/**
+ * Stable ÷N ownership for orders that are not yet in careOrderAssignments.
+ * Avoids Firestore writes on list — same pool order as round-robin (Shubham → Kawalnain).
+ */
+function virtualOwnerEmail(orderId: string): string {
+  const pool = CARE_EXECUTIVE_EMAILS
+  if (!pool.length) return ''
+  const id = String(orderId || '')
+  let hash = 0
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+  }
+  return pool[hash % pool.length]
+}
+
+function loadOpenUpsellByOrderId(): Map<
+  string,
+  { id: string; status: string; assignedTo: any }
 > {
   const map = new Map<string, { id: string; status: string; assignedTo: any }>()
-
-  let tasks = getCachedCareTasks() || []
-  if (!tasks.length) {
-    try {
-      const db = admin.firestore(getFirebaseAdmin())
-      const snaps = await Promise.all(
-        (['pending', 'rescheduled', 'escalated'] as const).map((status) =>
-          db.collection('careTasks').where('status', '==', status).get(),
-        ),
-      )
-      tasks = snaps.flatMap((s) => s.docs.map((d) => serializeCareTask(d.id, d.data() || {})))
-    } catch {
-      tasks = []
-    }
-  }
+  const tasks = getCachedCareTasks() || []
 
   for (const t of tasks) {
     const isUpsell =
@@ -55,8 +59,8 @@ async function loadOpenUpsellByOrderId(): Promise<
 }
 
 /**
- * Paginated delivered orders for the Care Delivered Orders queue,
- * with open-upsell flags attached.
+ * Fast delivered-orders queue for Care.
+ * Uses in-memory Firestore/orders snapshot — no per-order Firestore assigns on GET.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -72,6 +76,10 @@ export async function GET(req: NextRequest) {
       Math.max(1, Number(searchParams.get('pageSize') || searchParams.get('per_page') || 20)),
     )
     const search = searchParams.get('search') || undefined
+    const assigneeFilter = resolveCareTaskAssigneeFilter(
+      session,
+      searchParams.get('assignee'),
+    )
 
     const {
       applyCareTagsToOrders,
@@ -82,26 +90,72 @@ export async function GET(req: NextRequest) {
     }
     const {
       applyCareAssignmentsToOrders,
+      hydrateCareAssignmentsFromLocalSources,
       ensureCareAssignmentsHydrated,
     } = require('@/src/services/careAssignmentStore') as {
       applyCareAssignmentsToOrders: (list: any[]) => any[]
+      hydrateCareAssignmentsFromLocalSources: () => void
       ensureCareAssignmentsHydrated: () => Promise<void>
     }
 
-    await ensureCareTagsHydrated()
-    await ensureCareAssignmentsHydrated()
+    // Instant: disk + in-memory only. Refresh Firestore assignments in background.
+    hydrateCareAssignmentsFromLocalSources()
+    void ensureCareAssignmentsHydrated()
+    void ensureCareTagsHydrated()
 
     const listFilters = {
       deliveryStatus: 'delivered' as const,
       search,
       datePreset: '30days' as const,
     }
-    const result = await OrderRepository.getOrderStatusPaginated(page, pageSize, listFilters)
 
-    const upsellByOrder = await loadOpenUpsellByOrderId()
-    const decorated = applyCareAssignmentsToOrders(applyCareTagsToOrders(result.orders || []))
+    // Single in-memory pass over Firestore orders snapshot (warm from disk)
+    const full = await OrderRepository.getOrderStatusPaginated(1, 5000, listFilters)
 
-    const orders = decorated.map((o: any) => {
+    const upsellByOrder = loadOpenUpsellByOrderId()
+    let decorated = applyCareAssignmentsToOrders(applyCareTagsToOrders(full.orders || []))
+
+    // Resolve owner without Firestore: stored assignment → else stable virtual split
+    decorated = decorated.map((o: any) => {
+      const orderId = String(o.id || '')
+      const email =
+        normalizeCareExecutiveEmail(o.care_executive?.email) ||
+        virtualOwnerEmail(orderId)
+      if (o.care_executive?.email) return o
+      const name = email.split('@')[0] || 'Executive'
+      return {
+        ...o,
+        care_executive: {
+          orderId,
+          orderName: o.name || null,
+          email,
+          name,
+          label: name,
+          virtual: true,
+        },
+      }
+    })
+
+    if (assigneeFilter) {
+      decorated = decorated.filter(
+        (o: any) =>
+          normalizeCareExecutiveEmail(o.care_executive?.email) === assigneeFilter,
+      )
+    }
+
+    const deliveredTotal = decorated.length
+    let openUpsellCount = 0
+    for (const o of decorated) {
+      if (upsellByOrder.has(String(o.id || ''))) openUpsellCount++
+    }
+    const needsUpsellCount = Math.max(0, deliveredTotal - openUpsellCount)
+
+    const totalPages = Math.max(1, Math.ceil(deliveredTotal / pageSize) || 1)
+    const safePage = Math.min(page, totalPages)
+    const start = (safePage - 1) * pageSize
+    const pageOrders = decorated.slice(start, start + pageSize)
+
+    const orders = pageOrders.map((o: any) => {
       const orderId = String(o.id || '')
       const openUpsell = upsellByOrder.get(orderId) || null
       return {
@@ -131,37 +185,19 @@ export async function GET(req: NextRequest) {
       }
     })
 
-    // Counts across the full filtered delivered set (not just this page)
-    let openUpsellCount = 0
-    const deliveredTotal = Number(result.total || 0)
-    if (deliveredTotal > 0) {
-      const forCounts =
-        deliveredTotal <= pageSize
-          ? { orders: result.orders || [] }
-          : await OrderRepository.getOrderStatusPaginated(
-              1,
-              Math.min(deliveredTotal, 5000),
-              listFilters,
-            )
-      for (const o of forCounts.orders || []) {
-        if (upsellByOrder.has(String(o.id || ''))) openUpsellCount++
-      }
-    }
-    const needsUpsellCount = Math.max(0, deliveredTotal - openUpsellCount)
-
     return NextResponse.json({
       orders,
       pagination: {
-        page: result.page,
-        pageSize: result.perPage,
-        total: result.total,
-        totalPages: result.totalPages,
+        page: safePage,
+        pageSize,
+        total: deliveredTotal,
+        totalPages,
       },
       summary: {
         delivered: deliveredTotal,
         openUpsell: openUpsellCount,
         needsUpsell: needsUpsellCount,
-        orderStatus: result.summary,
+        assignee: assigneeFilter || null,
       },
     })
   } catch (error: any) {

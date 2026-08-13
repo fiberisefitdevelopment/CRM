@@ -7,6 +7,12 @@ import {
   canAccessCareTasksApi,
   requireSession,
 } from '@/src/services/careTasks/session'
+import {
+  careExecutiveAssignee,
+  normalizeCareExecutiveEmail,
+} from '@/src/services/careTasks/executiveConfig'
+import { persistOrderAssignment } from '@/src/services/careTasks/assignmentEngine'
+import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import { isShiprocketDeliveredStatus } from '@/src/utils/orderTimeline'
 import { cleanOrderName } from '@/src/utils/cloneOrders'
 
@@ -47,6 +53,38 @@ export async function POST(req: NextRequest) {
     const live = operational || order
     if (!isShiprocketDeliveredStatus(live)) {
       return NextResponse.json({ error: 'Order is not delivered yet' }, { status: 400 })
+    }
+
+    // Care exec creating from their queue: pin ownership once (no list-time Firestore writes)
+    if (isCareExecutiveRole(session.role)) {
+      const {
+        lookupCareOrderAssignment,
+        storeCareOrderAssignment,
+      } = require('@/src/services/careAssignmentStore') as {
+        lookupCareOrderAssignment: (
+          orderId: string | number,
+          orderName?: string | null,
+        ) => { email?: string } | null
+        storeCareOrderAssignment: (params: {
+          orderId: string | number
+          orderName?: string | null
+          assignee: { email: string; name: string }
+        }) => unknown
+      }
+      const existing = lookupCareOrderAssignment(live.id, live.name)
+      if (!existing?.email) {
+        const me = careExecutiveAssignee(
+          normalizeCareExecutiveEmail(session.email),
+          session.id,
+          session.name,
+        )
+        await persistOrderAssignment(live.id, live.name, me)
+        storeCareOrderAssignment({
+          orderId: live.id,
+          orderName: live.name,
+          assignee: me,
+        })
+      }
     }
 
     const result = await createManualUpsellTask(live)
