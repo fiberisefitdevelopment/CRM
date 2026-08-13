@@ -19,6 +19,7 @@ import {
   Megaphone,
   ListTodo,
   BadgeCheck,
+  PackageCheck,
 } from 'lucide-react'
 import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
@@ -35,6 +36,7 @@ const menuItems = [
   { icon: Megaphone,     label: 'Meta Analytics', href: '/meta-analytics' },
   { icon: Bell,          label: 'Advertisements', href: '/notifications' },
   { icon: ListTodo,      label: 'Tasks', href: '/customer-service/care-tasks' },
+  { icon: PackageCheck,  label: 'Delivered Orders', href: '/customer-service/delivered-orders' },
   { icon: ShieldCheck,   label: 'Audit Logs', href: '/audit-logs' },
 ]
 
@@ -75,7 +77,7 @@ export function Sidebar() {
 
   const visibleMenuItems = menuItems.filter((item) => {
     if (isCareExecutiveRole(user?.role)) {
-      return item.label === 'Tasks'
+      return item.label === 'Tasks' || item.label === 'Delivered Orders'
     }
     if (item.label === 'Tasks') {
       // Care Tasks lives under Customer Service for admins

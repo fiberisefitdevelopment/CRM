@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clock,
   Loader2,
+  MapPin,
   Phone,
   RefreshCw,
   Search,
@@ -16,6 +17,7 @@ import {
   MoreHorizontal,
   X,
   Star,
+  Truck,
 } from 'lucide-react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
@@ -182,6 +184,10 @@ type OrderContext = {
   delivered: boolean
   statusLabel: string
   timeline: TimelineStep[]
+  state?: string | null
+  city?: string | null
+  pincode?: string | null
+  etd?: string | null
 }
 
 function isTaskOverdue(task: CareTask) {
@@ -1219,6 +1225,21 @@ export default function CareTasksPage() {
                 const taskOrderCtx = orderCtxTaskId === task.id ? orderCtx : null
                 const taskOrderCtxLoading = expanded && orderCtxTaskId !== task.id && orderCtxLoading
                 const taskOrderCtxError = orderCtxTaskId === task.id ? orderCtxError : null
+                const shipState =
+                  taskOrderCtx?.state ||
+                  taskOrderCtx?.operational?.state ||
+                  taskOrderCtx?.order?.state ||
+                  null
+                const shipCity =
+                  taskOrderCtx?.city ||
+                  taskOrderCtx?.operational?.city ||
+                  taskOrderCtx?.order?.city ||
+                  null
+                const shipEtd =
+                  taskOrderCtx?.etd ||
+                  taskOrderCtx?.operational?.etd ||
+                  taskOrderCtx?.order?.etd ||
+                  null
 
                 return (
                   <div
@@ -1278,6 +1299,23 @@ export default function CareTasksPage() {
                               <Phone className="w-3 h-3" />
                               {task.phone || '—'}
                             </p>
+                            {expanded && (shipState || shipCity) && (
+                              <p className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
+                                <MapPin className="w-3 h-3" />
+                                {[shipCity, shipState].filter(Boolean).join(', ')}
+                              </p>
+                            )}
+                            {expanded && (
+                              <p className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
+                                <Truck className="w-3 h-3" />
+                                ETD{' '}
+                                {taskOrderCtxLoading
+                                  ? '…'
+                                  : shipEtd
+                                    ? fmtDay(shipEtd)
+                                    : '—'}
+                              </p>
+                            )}
                           </div>
 
                           <div className="md:col-span-3">
@@ -1395,6 +1433,26 @@ export default function CareTasksPage() {
                             {task.lastCall
                               ? fmtWhen(task.lastCall.startTime || task.lastCall.createdAt)
                               : 'None'}
+                          </span>
+                          <span>
+                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                              State
+                            </span>{' '}
+                            {shipState || shipCity
+                              ? [shipCity, shipState].filter(Boolean).join(', ')
+                              : taskOrderCtxLoading
+                                ? '…'
+                                : '—'}
+                          </span>
+                          <span>
+                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                              Est. delivery
+                            </span>{' '}
+                            {shipEtd
+                              ? fmtWhen(shipEtd)
+                              : taskOrderCtxLoading
+                                ? '…'
+                                : 'Not available yet'}
                           </span>
                           {taskOrderCtx?.operational && (
                             <span>

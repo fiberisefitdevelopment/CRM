@@ -60,20 +60,32 @@ export async function GET(req: NextRequest) {
     const timeline = buildTimeline(operational, tracking)
     const status = normalizeShipmentStatus(operational)
 
-    const slim = (o: any) =>
-      o
-        ? {
-            id: o.id,
-            name: o.name,
-            created_at: o.created_at,
-            status: normalizeShipmentStatus(o),
-            statusLabel: fulfillmentStageLabel(normalizeShipmentStatus(o)),
-            awb: o.fulfillments?.[0]?.tracking_number || null,
-            courier: o.fulfillments?.[0]?.tracking_company || null,
-            etd: o.shiprocket_meta?.etd_date || null,
-            shipmentStatus: o.fulfillments?.[0]?.shipment_status || null,
-          }
-        : null
+    const slim = (o: any) => {
+      if (!o) return null
+      const addr = o.shipping_address || o.billing_address || {}
+      const meta = o.shiprocket_meta || {}
+      const etd =
+        meta.etd_date ||
+        meta.etd ||
+        meta.estimated_delivery_date ||
+        meta.edd ||
+        o.fulfillments?.[0]?.estimated_delivery_at ||
+        null
+      return {
+        id: o.id,
+        name: o.name,
+        created_at: o.created_at,
+        status: normalizeShipmentStatus(o),
+        statusLabel: fulfillmentStageLabel(normalizeShipmentStatus(o)),
+        awb: o.fulfillments?.[0]?.tracking_number || null,
+        courier: o.fulfillments?.[0]?.tracking_company || null,
+        etd,
+        shipmentStatus: o.fulfillments?.[0]?.shipment_status || null,
+        state: addr.province || addr.province_code || meta.customer_state || null,
+        city: addr.city || meta.customer_city || null,
+        pincode: addr.zip || meta.customer_pincode || null,
+      }
+    }
 
     return NextResponse.json({
       order: slim(order),
@@ -83,6 +95,11 @@ export async function GET(req: NextRequest) {
       delivered,
       status,
       statusLabel: fulfillmentStageLabel(status),
+      // Prefer operational (live clone) address / ETD for care agents
+      state: slim(operational)?.state || slim(order)?.state || null,
+      city: slim(operational)?.city || slim(order)?.city || null,
+      pincode: slim(operational)?.pincode || slim(order)?.pincode || null,
+      etd: slim(operational)?.etd || slim(order)?.etd || null,
       timeline,
       trackingLoaded: Boolean(tracking),
     })

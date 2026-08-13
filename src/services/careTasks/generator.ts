@@ -229,6 +229,116 @@ async function createTaskIfMissing(params: {
   return { id: dedupeKey, ...doc }
 }
 
+/** Manual upsell from Delivered Orders page — one open task per order. */
+export const MANUAL_UPSELL_SCHEDULE_DAY = -2
+
+export function makeManualUpsellDedupeKey(orderId: string): string {
+  return `${String(orderId)}__upsell__manual`.replace(/[\/#\[\]]/g, '_')
+}
+
+export function isOpenCareTaskStatus(status?: string | null): boolean {
+  return ['pending', 'rescheduled', 'escalated', 'unreachable'].includes(String(status || ''))
+}
+
+/**
+ * Create a manual Upsell Call for a delivered order.
+ * Dedupe key: `{orderId}__upsell__manual`. Does not reopen completed / not_interested.
+ */
+export async function createManualUpsellTask(
+  order: any,
+): Promise<{ task: CareTask | null; created: boolean; existing?: CareTask | null }> {
+  const { orderId, orderName } = orderIdentity(order)
+  if (!orderId) return { task: null, created: false }
+
+  if (!isShiprocketDeliveredStatus(order)) {
+    const err = new Error('Order is not delivered yet') as Error & { status: number }
+    err.status = 400
+    throw err
+  }
+
+  const dedupeKey = makeManualUpsellDedupeKey(orderId)
+  const ref = getDb().collection(COL).doc(dedupeKey)
+  const existingSnap = await ref.get()
+  if (existingSnap.exists) {
+    const prev = serializeCareTask(existingSnap.id, existingSnap.data() || {})
+    if (isOpenCareTaskStatus(prev.status)) {
+      return { task: prev, created: false, existing: prev }
+    }
+    if (['completed', 'not_interested'].includes(prev.status)) {
+      return { task: prev, created: false, existing: prev }
+    }
+  }
+
+  const assignee = await assignCareExecutiveForOrder(order)
+  if (assignee && orderId) {
+    await persistOrderAssignment(orderId, orderName, assignee)
+  }
+  const pack = resolvePackFromOrder(order, await getCareTaskConfig())
+  const now = new Date().toISOString()
+  const { customerName, phone } = customerFields(order)
+
+  const doc: Omit<CareTask, 'id'> = {
+    dedupeKey,
+    orderId,
+    orderName,
+    customerName,
+    phone,
+    paymentMethod: isCodOrder(order) ? 'cod' : 'prepaid',
+    packKey: pack.packKey,
+    packLabel: pack.label,
+    taskType: 'upsell',
+    taskLabel: 'Upsell Call',
+    scheduleDay: MANUAL_UPSELL_SCHEDULE_DAY,
+    scheduledAt: now,
+    orderCreatedAt: createdDate(order).toISOString(),
+    priority: 'high',
+    status: 'pending',
+    assignedTo: assignee,
+    notes: [],
+    lastCall: null,
+    calls: [],
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    source: 'manual',
+    overdueNotifiedAt: null,
+  }
+
+  try {
+    await ref.create({
+      ...doc,
+      createdAtTs: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  } catch (err: any) {
+    const code = err?.code
+    const msg = String(err?.message || '')
+    if (code === 6 || code === 'already-exists' || /already exists/i.test(msg)) {
+      const again = await ref.get()
+      const prev = serializeCareTask(again.id, again.data() || {})
+      return { task: prev, created: false, existing: prev }
+    }
+    throw err
+  }
+
+  await logCareAction({
+    action: 'TASK_CREATED',
+    orderId,
+    orderName,
+    taskId: dedupeKey,
+    details: {
+      taskType: 'upsell',
+      scheduleDay: MANUAL_UPSELL_SCHEDULE_DAY,
+      assignedTo: assignee?.email || null,
+      source: 'manual',
+    },
+    status: 'success',
+  })
+
+  invalidateCareTasksCache()
+  return { task: { id: dedupeKey, ...doc }, created: true }
+}
+
 /** Mark open COD confirmation complete once the order is delivered. */
 async function autoCloseCodConfirmation(order: any): Promise<void> {
   const { orderId } = orderIdentity(order)

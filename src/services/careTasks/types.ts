@@ -102,6 +102,7 @@ export type CareTaskKind =
   | 'day_30'
   | 'day_60'
   | 'day_90'
+  | 'upsell'
   | 'other'
 
 export const CARE_TASK_KIND_TABS: Array<{ key: CareTaskKind; label: string }> = [
@@ -114,11 +115,14 @@ export const CARE_TASK_KIND_TABS: Array<{ key: CareTaskKind; label: string }> = 
   { key: 'day_30', label: 'Day 30 Call' },
   { key: 'day_60', label: 'Day 60 Call' },
   { key: 'day_90', label: 'Day 90 Call' },
+  { key: 'upsell', label: 'Upsell Call' },
   { key: 'other', label: 'Other' },
 ]
 
 export function getCareTaskKind(task: Pick<CareTask, 'taskType' | 'scheduleDay'>): CareTaskKind {
   if (task.taskType === 'cod_confirmation' || task.scheduleDay === -1) return 'cod_confirmation'
+  // Manual upsell (and any explicit upsell type) before day-based mapping
+  if (task.taskType === 'upsell') return 'upsell'
   if (task.taskType === 'introduction' || task.scheduleDay === 0) return 'introduction'
   if (task.scheduleDay === 3) return 'day_3'
   if (task.scheduleDay === 5) return 'day_5'

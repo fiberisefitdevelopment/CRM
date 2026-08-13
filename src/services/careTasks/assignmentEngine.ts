@@ -131,7 +131,7 @@ export function clearCareExecutivePoolCache() {
   cachedExecutivePool = null
 }
 
-/** Resolve the 3 care executives in fixed assignment order. */
+/** Resolve active care executives in fixed assignment order (Shubham → Kawalnain). */
 export async function resolveCareExecutivePool(): Promise<CareAssignee[]> {
   if (cachedExecutivePool?.length) return cachedExecutivePool
 
@@ -150,14 +150,14 @@ export async function resolveCareExecutivePool(): Promise<CareAssignee[]> {
 
   const pool = CARE_EXECUTIVE_EMAILS.map(
     (email) => byEmail.get(email) || FALLBACK_CARE_EXECUTIVES.find((e) => e.email === email)!,
-  )
-  cachedExecutivePool = pool.filter(Boolean)
+  ).filter(Boolean)
+  cachedExecutivePool = pool
   return cachedExecutivePool
 }
 
 let cachedDefaultAssignee: CareAssignee | null = null
 
-/** Resolve support@ from Firestore when present; otherwise use the static default. */
+/** Resolve primary care assignee (Shubham) from Firestore when present. */
 export async function resolveDefaultCareAssignee(): Promise<CareAssignee> {
   const pool = await resolveCareExecutivePool()
   if (pool[0]) return pool[0]
@@ -252,7 +252,7 @@ export async function pinCareExecutiveOnTask(
 /**
  * Assign a care executive for an order.
  * Repeat customers (same phone) always keep their original executive.
- * New customers rotate: support@ → Shubham → Kawalnain → …
+ * New customers rotate: Shubham → Kawalnain → …
  */
 export async function assignCareExecutiveForOrder(order?: {
   id?: string | number

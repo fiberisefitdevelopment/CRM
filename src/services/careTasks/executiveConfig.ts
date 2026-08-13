@@ -1,11 +1,13 @@
 import type { CareAssignee } from './types'
 
-/** Fixed assignment order: support → Shubham → Kawalnain. */
+/** Active care assignment order: Shubham → Kawalnain. Support is deactivated. */
 export const CARE_EXECUTIVE_EMAILS = [
-  'support@fiberisefit.com',
   'shubham.kumar@fiberisefit.com',
   'kawalnain.singh@fiberisefit.com',
 ] as const
+
+/** Kept for historical badges / login identity — not in the assignment pool. */
+export const DEACTIVATED_CARE_EXECUTIVE_EMAILS = ['support@fiberisefit.com'] as const
 
 export const LEGACY_CARE_EXECUTIVE_EMAILS: Record<string, string> = {
   'executive1@fiberisefit.com': 'shubham.kumar@fiberisefit.com',
@@ -61,11 +63,6 @@ export function careExecutiveAssignee(
 }
 
 export const FALLBACK_CARE_EXECUTIVES: CareAssignee[] = [
-  {
-    userId: 'support-fiberisefit',
-    email: 'support@fiberisefit.com',
-    name: 'Support',
-  },
   {
     userId: 'shubham-kumar-fiberisefit',
     email: 'shubham.kumar@fiberisefit.com',

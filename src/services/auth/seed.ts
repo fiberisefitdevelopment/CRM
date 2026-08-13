@@ -69,10 +69,22 @@ export async function seedAdminUser(): Promise<void> {
     await seedUserIfMissing('employee@fiberisefit.com', 'employee@1234', 'employee')
     await seedUserIfMissing('ceo@fiberisefit.com', '12345', 'admin')
     await seedUserIfMissing('priyanshu@fiberisefit.com', '12345', 'admin')
-    await seedUserIfMissing('support@fiberisefit.com', '12345', 'care_executive', {
-      syncRole: true,
-      careExecutive: true,
-    })
+    // support@ is deactivated — keep the user doc but force inactive / out of care pool
+    {
+      const supportEmail = 'support@fiberisefit.com'
+      const supportSnap = await usersCol.where('email', '==', supportEmail).limit(1).get()
+      if (!supportSnap.empty) {
+        const doc = supportSnap.docs[0]
+        const d = doc.data() || {}
+        const patch: Record<string, unknown> = {}
+        if (d.active !== false) patch.active = false
+        if (d.careExecutive !== false) patch.careExecutive = false
+        if (Object.keys(patch).length) {
+          await doc.ref.update(patch)
+          console.log(`🚫 Deactivated care executive ${supportEmail}`)
+        }
+      }
+    }
     await seedUserIfMissing('shubham.kumar@fiberisefit.com', '12345', 'care_executive', {
       syncRole: true,
       careExecutive: true,

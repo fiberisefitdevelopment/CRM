@@ -209,14 +209,38 @@ export function isReadyForPickupStatus(order: any): boolean {
 }
 
 /**
+ * True when an AWB / tracking number is already assigned (shipment has left "not shipped").
+ */
+export function hasAssignedTrackingNumber(order: any): boolean {
+  if (!order) return false
+  const fromFulfillment = String(
+    order?.fulfillments?.[0]?.tracking_number ||
+      order?.fulfillments?.[0]?.awb ||
+      '',
+  ).trim()
+  if (fromFulfillment) return true
+  const fromMeta = String(
+    order?.shiprocket_meta?.awb ||
+      order?.shiprocket_meta?.tracking_number ||
+      order?.awb ||
+      order?.tracking_number ||
+      '',
+  ).trim()
+  return Boolean(fromMeta)
+}
+
+/**
  * Not yet handed to courier / left warehouse:
  * unfulfilled, processing, confirmed, label printed (pre-pickup), etc.
  * Excludes ready-for-pickup (own card), in-transit, OFD, delivered, RTO, failed, cancelled.
+ * Also excludes any order that already has an AWB / tracking number.
  */
 export function isNotShippedStatus(order: any): boolean {
   if (order?.cancelled_at) return false
   const financial = String(order?.financial_status || '').toLowerCase()
   if (financial === 'voided' || financial === 'cancelled') return false
+
+  if (hasAssignedTrackingNumber(order)) return false
 
   if (isActiveRtoStatus(order) || isShiprocketDeliveredStatus(order) || isShiprocketInTransitStatus(order)) {
     return false

@@ -1,8 +1,9 @@
-/** Care executive: Customer Care Tasks only. */
+/** Care executive: Tasks + Delivered Orders. */
 export const CARE_EXEC_HOME = '/customer-service/care-tasks'
 
 const CARE_EXEC_ALLOWED_PREFIXES = [
   '/customer-service/care-tasks',
+  '/customer-service/delivered-orders',
   '/api/care-tasks',
   '/api/customer-service',
   '/api/auth',

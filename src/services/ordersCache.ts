@@ -11,6 +11,7 @@ import {
   isActiveRtoStatus,
   isCreatedInDateRange,
   isNotShippedStatus,
+  hasAssignedTrackingNumber,
   isOrderDelayed,
   isReadyForPickupStatus,
   isShiprocketDeliveredStatus,
@@ -201,10 +202,7 @@ function isCodNotConfirmed(order: any, live?: any): boolean {
   if (!isCodOrder(order)) return false
   const op = live || order
   if (isOrderCancelled(op)) return false
-  const awb = String(
-    op.fulfillments?.[0]?.tracking_number || order.fulfillments?.[0]?.tracking_number || '',
-  ).trim()
-  if (awb) return false
+  if (hasAssignedTrackingNumber(op) || hasAssignedTrackingNumber(order)) return false
   const careTag = order.care_tag || lookupCareOrderTag(order.id, order.name)
   return !hasCodConfirmation({ ...order, care_tag: careTag })
 }
@@ -212,10 +210,13 @@ function isCodNotConfirmed(order: any, live?: any): boolean {
 /**
  * Not Shipped bucket: prepaid + not shipped, or COD confirmed via
  * Customer Care / AiSensy + not shipped. Unconfirmed COD stays in COD Not Confirmed.
+ * Orders with an AWB / tracking number never belong here.
  */
 function isNotShippedBucket(order: any, live?: any): boolean {
   const op = live || order
-  if (isOrderCancelled(op) || !isNotShippedStatus(op)) return false
+  if (isOrderCancelled(op)) return false
+  if (hasAssignedTrackingNumber(op) || hasAssignedTrackingNumber(order)) return false
+  if (!isNotShippedStatus(op)) return false
   if (!isCodOrder(order)) return true
   const careTag = order.care_tag || lookupCareOrderTag(order.id, order.name)
   return hasCodConfirmation({ ...order, care_tag: careTag })
