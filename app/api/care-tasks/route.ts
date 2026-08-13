@@ -21,6 +21,14 @@ export async function GET(req: NextRequest) {
     const search = searchParams.get('search') || undefined
     const page = Number(searchParams.get('page') || 1)
     const pageSize = Number(searchParams.get('pageSize') || 20)
+    const sort = (searchParams.get('sort') || undefined) as any
+    const deliveredOnly =
+      searchParams.get('deliveredOnly') === '1' ||
+      searchParams.get('deliveredOnly') === 'true'
+    const dayRaw = (searchParams.get('day') || 'all').toLowerCase()
+    const day = (['all', '5', '28', '90', 'manual'].includes(dayRaw)
+      ? dayRaw
+      : 'all') as 'all' | '5' | '28' | '90' | 'manual'
 
     const assigneeParam = searchParams.get('assignee')
     const assigneeEmail = resolveCareTaskAssigneeFilter(session, assigneeParam)
@@ -32,6 +40,9 @@ export async function GET(req: NextRequest) {
       page,
       pageSize,
       assigneeEmail,
+      sort,
+      deliveredOnly,
+      day,
     })
 
     return NextResponse.json({

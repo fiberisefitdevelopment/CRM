@@ -11,12 +11,14 @@ import {
   BarChart3,
   ListTodo,
   PackageCheck,
+  PackagePlus,
 } from 'lucide-react'
 
 const tabs = [
   { label: 'Dashboard', href: '/customer-service/dashboard', icon: LayoutDashboard },
   { label: 'Customer Care Tasks', href: '/customer-service/care-tasks', icon: ListTodo },
   { label: 'Delivered Orders', href: '/customer-service/delivered-orders', icon: PackageCheck },
+  { label: 'Create Shopify Order', href: '/customer-service/create-order', icon: PackagePlus },
   { label: 'Call History', href: '/customer-service/call-history', icon: Phone },
   { label: 'Recordings', href: '/customer-service/recordings', icon: Headphones },
   { label: 'Integration Logs', href: '/customer-service/integration-logs', icon: ScrollText },

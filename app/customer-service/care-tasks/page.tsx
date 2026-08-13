@@ -47,7 +47,7 @@ import {
   requiresCustomerRating,
   type CareTaskKind,
 } from '@/src/services/careTasks/types'
-import type { TimelineStep } from '@/src/utils/orderTimeline'
+import { parseFlexibleDate, type TimelineStep } from '@/src/utils/orderTimeline'
 import { isCareTaskCodConfirmed } from '@/src/utils/careOrderTags'
 
 type StatusFilter =
@@ -85,7 +85,7 @@ function saveReminderSeen(seen: Set<string>) {
 
 function fmtWhen(value?: string | null) {
   if (!value) return '—'
-  const d = new Date(value)
+  const d = parseFlexibleDate(value) || new Date(value)
   if (isNaN(d.getTime())) return String(value)
   return d.toLocaleString('en-IN', {
     day: '2-digit',
@@ -98,7 +98,7 @@ function fmtWhen(value?: string | null) {
 
 function fmtDay(value?: string | null) {
   if (!value) return '—'
-  const d = new Date(value)
+  const d = parseFlexibleDate(value) || new Date(value)
   if (isNaN(d.getTime())) return String(value)
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
@@ -304,12 +304,17 @@ export default function CareTasksPage() {
     return () => window.clearTimeout(t)
   }, [search])
 
-  useEffect(() => {
-    if (role === null) return
-    void getEscalationTargets()
-      .then((users) => setEscalationTargets(users))
-      .catch(() => setEscalationTargets([]))
-  }, [role])
+  const ensureEscalationTargets = useCallback(async () => {
+    if (escalationTargets.length > 0) return escalationTargets
+    try {
+      const users = await getEscalationTargets()
+      setEscalationTargets(users)
+      return users
+    } catch {
+      setEscalationTargets([])
+      return []
+    }
+  }, [escalationTargets])
 
   const panelKind = isExec || kindFilter === 'all' ? 'all' : kindFilter
 
@@ -647,9 +652,12 @@ export default function CareTasksPage() {
         setSuccess('Moved to Not interested')
       } else if (action === 'reschedule') {
         if (!form.rescheduleAt) throw new Error('Pick a new date & time first')
+        const when = new Date(form.rescheduleAt).getTime()
+        if (Number.isNaN(when)) throw new Error('Invalid reschedule date')
+        if (when < Date.now() - 60_000) throw new Error('Reschedule time must be in the future')
         await updateCareTask(task.id, {
           action: 'reschedule',
-          scheduledAt: new Date(form.rescheduleAt).toISOString(),
+          scheduledAt: new Date(when).toISOString(),
           remarks: form.remarks,
         })
         setSuccess('Rescheduled')
@@ -1818,12 +1826,14 @@ export default function CareTasksPage() {
                               <button
                                 disabled={busy}
                                 onClick={() => {
-                                  setEscalateReason('')
-                                  const defaultTarget =
-                                    escalationTargets.find((t) => t.email !== user?.email) ||
-                                    escalationTargets[0]
-                                  setEscalateTargetEmail(defaultTarget?.email || '')
-                                  setEscalateConfirmTask(task)
+                                  void (async () => {
+                                    setEscalateReason('')
+                                    const users = await ensureEscalationTargets()
+                                    const defaultTarget =
+                                      users.find((t) => t.email !== user?.email) || users[0]
+                                    setEscalateTargetEmail(defaultTarget?.email || '')
+                                    setEscalateConfirmTask(task)
+                                  })()
                                 }}
                                 className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
                                 style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}

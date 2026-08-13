@@ -1,9 +1,10 @@
-/** Care executive: Tasks + Delivered Orders. */
+/** Care executive: Tasks + Delivered Orders + Create Shopify Order. */
 export const CARE_EXEC_HOME = '/customer-service/care-tasks'
 
 const CARE_EXEC_ALLOWED_PREFIXES = [
   '/customer-service/care-tasks',
   '/customer-service/delivered-orders',
+  '/customer-service/create-order',
   '/api/care-tasks',
   '/api/customer-service',
   '/api/auth',

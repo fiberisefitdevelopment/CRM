@@ -29,6 +29,8 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url)
     const orderId = searchParams.get('orderId') || ''
     const orderName = searchParams.get('orderName') || ''
+    // Live Shiprocket is opt-in — default is cache-only so expand feels instant
+    const live = searchParams.get('live') === '1' || searchParams.get('live') === 'true'
 
     const all = (await OrderRepository.getCachedOrders()) || []
     let order =
@@ -45,11 +47,10 @@ export async function GET(req: NextRequest) {
     }
 
     const { parent, clones, operational } = findCloneTrail(order, all)
-    const delivered = isShiprocketDeliveredStatus(operational)
 
     let tracking: any = null
     const awb = operational?.fulfillments?.[0]?.tracking_number
-    if (awb && !delivered) {
+    if (live && awb) {
       try {
         tracking = await getShiprocketTrackingByAwb(String(awb).trim())
       } catch {
@@ -57,8 +58,27 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const timeline = buildTimeline(operational, tracking)
-    const status = normalizeShipmentStatus(operational)
+    const trackStatusRaw = String(
+      tracking?.tracking_data?.shipment_track?.[0]?.current_status ||
+        tracking?.tracking_data?.shipment_status ||
+        tracking?.current_status ||
+        '',
+    ).trim()
+
+    const orderForStatus =
+      trackStatusRaw
+        ? {
+            ...operational,
+            shiprocket_meta: {
+              ...(operational?.shiprocket_meta || {}),
+              status: trackStatusRaw,
+            },
+          }
+        : operational
+
+    const delivered = isShiprocketDeliveredStatus(orderForStatus)
+    const status = normalizeShipmentStatus(orderForStatus)
+    const timeline = buildTimeline(orderForStatus, tracking)
 
     const slim = (o: any) => {
       if (!o) return null
@@ -87,6 +107,23 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    const addrSource = operational || order
+    const ship = addrSource?.shipping_address || addrSource?.billing_address || {}
+    const cust = addrSource?.customer || {}
+    const meta = addrSource?.shiprocket_meta || {}
+    const firstName =
+      String(ship.first_name || cust.first_name || '').trim() ||
+      String(cust.name || '').trim().split(/\s+/)[0] ||
+      ''
+    const lastName =
+      String(ship.last_name || cust.last_name || '').trim() ||
+      String(cust.name || '')
+        .trim()
+        .split(/\s+/)
+        .slice(1)
+        .join(' ') ||
+      ''
+
     return NextResponse.json({
       order: slim(order),
       operational: slim(operational),
@@ -102,6 +139,26 @@ export async function GET(req: NextRequest) {
       etd: slim(operational)?.etd || slim(order)?.etd || null,
       timeline,
       trackingLoaded: Boolean(tracking),
+      customer: {
+        firstName,
+        lastName,
+        email: String(cust.email || addrSource?.email || '').trim() || null,
+        phone: String(
+          ship.phone ||
+            cust.phone ||
+            meta.customer_phone ||
+            addrSource?.phone ||
+            '',
+        ).trim() || null,
+        address1: String(ship.address1 || '').trim() || null,
+        address2: String(ship.address2 || '').trim() || null,
+        city: String(ship.city || meta.customer_city || '').trim() || null,
+        province: String(
+          ship.province || ship.province_code || meta.customer_state || '',
+        ).trim() || null,
+        zip: String(ship.zip || meta.customer_pincode || '').trim() || null,
+        country: String(ship.country || ship.country_code || 'India').trim() || 'India',
+      },
     })
   } catch (error: any) {
     const status = error?.status || 500

@@ -10,6 +10,7 @@ import {
   Loader2,
   MapPin,
   PackageCheck,
+  PackagePlus,
   Phone,
   RefreshCw,
   Search,
@@ -22,6 +23,10 @@ import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { ErrorToast } from '@/components/ErrorToast'
 import {
+  CreateShopifyOrderDialog,
+  type CreateOrderPrefill,
+} from '@/components/customer-service/CreateShopifyOrderDialog'
+import {
   addCareTaskNote,
   createUpsellCareTask,
   getCareOrderContext,
@@ -32,6 +37,10 @@ import {
   type CareTask,
   type DeliveredOrderForCare,
   type DeliveredOrdersCareSummary,
+  type DeliveredOrdersDatePreset,
+  type DeliveredOrdersPaymentFilter,
+  type DeliveredOrdersSort,
+  type DeliveredOrdersUpsellFilter,
 } from '@/lib/careTasksApi'
 import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
@@ -39,6 +48,7 @@ import {
   CALL_AFTER_MAX_MS,
   requiresCustomerRating,
 } from '@/src/services/careTasks/types'
+import { parseFlexibleDate } from '@/src/utils/orderTimeline'
 import type { TimelineStep } from '@/src/utils/orderTimeline'
 
 type MainTab = 'delivered' | 'upsell'
@@ -51,8 +61,36 @@ type StatusFilter =
   | 'completed'
   | 'all'
 type PageSize = 20 | 50 | 100
+type TaskSort = 'due_asc' | 'due_desc' | 'created_desc' | 'priority' | 'name_asc'
+type DayFilter = 'all' | '5' | '28' | '90' | 'manual'
 
 const PAGE_SIZE_OPTIONS: PageSize[] = [20, 50, 100]
+
+const ORDER_SORT_OPTIONS: Array<{ value: DeliveredOrdersSort; label: string }> = [
+  { value: 'delivered_desc', label: 'Delivered · newest' },
+  { value: 'delivered_asc', label: 'Delivered · oldest' },
+  { value: 'ordered_desc', label: 'Ordered · newest' },
+  { value: 'ordered_asc', label: 'Ordered · oldest' },
+  { value: 'total_desc', label: 'Amount · high → low' },
+  { value: 'total_asc', label: 'Amount · low → high' },
+  { value: 'name_asc', label: 'Order # · A–Z' },
+]
+
+const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
+  { value: 'due_asc', label: 'Due · soonest' },
+  { value: 'due_desc', label: 'Due · latest' },
+  { value: 'created_desc', label: 'Created · newest' },
+  { value: 'priority', label: 'Priority · high first' },
+  { value: 'name_asc', label: 'Order # · A–Z' },
+]
+
+const DAY_FILTERS: Array<[DayFilter, string]> = [
+  ['all', 'All days'],
+  ['5', 'Day 5'],
+  ['28', 'Day 28'],
+  ['90', 'Day 90'],
+  ['manual', 'Manual'],
+]
 
 function toDatetimeLocalValue(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -61,7 +99,7 @@ function toDatetimeLocalValue(d: Date): string {
 
 function fmtWhen(value?: string | null) {
   if (!value) return '—'
-  const d = new Date(value)
+  const d = parseFlexibleDate(value) || new Date(value)
   if (isNaN(d.getTime())) return String(value)
   return d.toLocaleString('en-IN', {
     day: '2-digit',
@@ -74,7 +112,7 @@ function fmtWhen(value?: string | null) {
 
 function fmtDay(value?: string | null) {
   if (!value) return '—'
-  const d = new Date(value)
+  const d = parseFlexibleDate(value) || new Date(value)
   if (isNaN(d.getTime())) return String(value)
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
@@ -164,6 +202,18 @@ type OrderContext = {
   city?: string | null
   pincode?: string | null
   etd?: string | null
+  customer?: {
+    firstName?: string | null
+    lastName?: string | null
+    email?: string | null
+    phone?: string | null
+    address1?: string | null
+    address2?: string | null
+    city?: string | null
+    province?: string | null
+    zip?: string | null
+    country?: string | null
+  } | null
 }
 
 function isTaskOverdue(task: CareTask) {
@@ -218,12 +268,18 @@ export default function DeliveredOrdersPage() {
     openUpsell: 0,
     needsUpsell: 0,
   })
+  const [upsellFilter, setUpsellFilter] = useState<DeliveredOrdersUpsellFilter>('all')
+  const [paymentFilter, setPaymentFilter] = useState<DeliveredOrdersPaymentFilter>('all')
+  const [datePreset, setDatePreset] = useState<DeliveredOrdersDatePreset>('30days')
+  const [orderSort, setOrderSort] = useState<DeliveredOrdersSort>('delivered_desc')
   const [creatingId, setCreatingId] = useState<string | null>(null)
 
   // Upsell tasks
   const [tasks, setTasks] = useState<CareTask[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('inbox')
+  const [dayFilter, setDayFilter] = useState<DayFilter>('all')
+  const [taskSort, setTaskSort] = useState<TaskSort>('due_asc')
   const [taskSearch, setTaskSearch] = useState('')
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState('')
   const [taskPage, setTaskPage] = useState(1)
@@ -257,6 +313,9 @@ export default function DeliveredOrdersPage() {
   const [orderCtxError, setOrderCtxError] = useState<string | null>(null)
   const [orderCtxTaskId, setOrderCtxTaskId] = useState<string | null>(null)
 
+  const [createOrderTask, setCreateOrderTask] = useState<CareTask | null>(null)
+  const [createOrderPrefill, setCreateOrderPrefill] = useState<CreateOrderPrefill | null>(null)
+
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedOrderSearch(orderSearch.trim()), 300)
     return () => window.clearTimeout(t)
@@ -269,11 +328,11 @@ export default function DeliveredOrdersPage() {
 
   useEffect(() => {
     setOrderPage(1)
-  }, [debouncedOrderSearch, orderPageSize])
+  }, [debouncedOrderSearch, orderPageSize, upsellFilter, paymentFilter, datePreset, orderSort])
 
   useEffect(() => {
     setTaskPage(1)
-  }, [debouncedTaskSearch, statusFilter, taskPageSize])
+  }, [debouncedTaskSearch, statusFilter, dayFilter, taskPageSize, taskSort])
 
   const clearExpandedTaskUi = useCallback(() => {
     setOutcome('')
@@ -299,6 +358,10 @@ export default function DeliveredOrdersPage() {
         page: orderPage,
         pageSize: orderPageSize,
         search: debouncedOrderSearch || undefined,
+        upsell: upsellFilter,
+        payment: paymentFilter,
+        datePreset,
+        sort: orderSort,
       })
       setOrders(data.orders)
       setOrderTotal(data.pagination.total)
@@ -309,7 +372,15 @@ export default function DeliveredOrdersPage() {
     } finally {
       setOrdersLoading(false)
     }
-  }, [orderPage, orderPageSize, debouncedOrderSearch])
+  }, [
+    orderPage,
+    orderPageSize,
+    debouncedOrderSearch,
+    upsellFilter,
+    paymentFilter,
+    datePreset,
+    orderSort,
+  ])
 
   const loadTasks = useCallback(async () => {
     try {
@@ -321,6 +392,9 @@ export default function DeliveredOrdersPage() {
         search: debouncedTaskSearch || undefined,
         page: taskPage,
         pageSize: taskPageSize,
+        sort: taskSort,
+        deliveredOnly: true,
+        day: dayFilter,
       })
       setTasks(data.tasks)
       setTaskTotal(data.total)
@@ -330,7 +404,7 @@ export default function DeliveredOrdersPage() {
     } finally {
       setTasksLoading(false)
     }
-  }, [statusFilter, debouncedTaskSearch, taskPage, taskPageSize])
+  }, [statusFilter, dayFilter, debouncedTaskSearch, taskPage, taskPageSize, taskSort])
 
   useEffect(() => {
     if (mainTab === 'delivered') void loadOrders()
@@ -340,11 +414,17 @@ export default function DeliveredOrdersPage() {
     if (mainTab === 'upsell') void loadTasks()
   }, [mainTab, loadTasks])
 
-  useEffect(() => {
-    void getEscalationTargets()
-      .then(setEscalationTargets)
-      .catch(() => setEscalationTargets([]))
-  }, [])
+  const ensureEscalationTargets = useCallback(async () => {
+    if (escalationTargets.length > 0) return escalationTargets
+    try {
+      const users = await getEscalationTargets()
+      setEscalationTargets(users)
+      return users
+    } catch {
+      setEscalationTargets([])
+      return []
+    }
+  }, [escalationTargets])
 
   const expandedTask = useMemo(
     () => tasks.find((t) => t.id === expandedId) || null,
@@ -377,6 +457,33 @@ export default function DeliveredOrdersPage() {
       cancelled = true
     }
   }, [expandedId, expandedTask?.id, expandedTask?.orderId, expandedTask?.orderName, clearExpandedTaskUi])
+
+  const openCreateOrderForTask = useCallback(
+    (task: CareTask) => {
+      const ctx = orderCtxTaskId === task.id ? orderCtx : null
+      const c = ctx?.customer
+      const nameParts = String(task.customerName || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+      setCreateOrderPrefill({
+        firstName: c?.firstName || nameParts[0] || '',
+        lastName: c?.lastName || nameParts.slice(1).join(' ') || '',
+        email: c?.email || null,
+        phone: c?.phone || task.phone || null,
+        address1: c?.address1 || null,
+        address2: c?.address2 || null,
+        city: c?.city || ctx?.city || null,
+        province: c?.province || ctx?.state || null,
+        zip: c?.zip || ctx?.pincode || null,
+        country: c?.country || 'India',
+        sourceOrderName: task.orderName || null,
+        note: `Upsell from ${task.taskLabel || 'care task'} · ${task.orderName || task.orderId}`,
+      })
+      setCreateOrderTask(task)
+    },
+    [orderCtx, orderCtxTaskId],
+  )
 
   const onCreateUpsell = async (order: DeliveredOrderForCare) => {
     const id = String(order.id)
@@ -459,7 +566,8 @@ export default function DeliveredOrdersPage() {
           remarks: form.remarks,
         })
         setCallAfterConfirmTask(null)
-        setSuccess('Scheduled call after')
+        setStatusFilter('rescheduled')
+        setSuccess('Scheduled call after — moved to Rescheduled tab')
       } else if (action === 'not_interested') {
         const reason = form.notInterestedReason.trim()
         if (!reason) throw new Error('Please enter a reason')
@@ -472,12 +580,16 @@ export default function DeliveredOrdersPage() {
         setSuccess('Moved to Not interested')
       } else if (action === 'reschedule') {
         if (!form.rescheduleAt) throw new Error('Pick a new date & time first')
+        const when = new Date(form.rescheduleAt).getTime()
+        if (Number.isNaN(when)) throw new Error('Invalid reschedule date')
+        if (when < Date.now() - 60_000) throw new Error('Reschedule time must be in the future')
         await updateCareTask(task.id, {
           action: 'reschedule',
-          scheduledAt: new Date(form.rescheduleAt).toISOString(),
+          scheduledAt: new Date(when).toISOString(),
           remarks: form.remarks,
         })
-        setSuccess('Rescheduled')
+        setStatusFilter('rescheduled')
+        setSuccess('Rescheduled — moved to Rescheduled tab')
       }
       await loadTasks()
     } catch (err: any) {
@@ -576,19 +688,46 @@ export default function DeliveredOrdersPage() {
                 <tbody>
                   <tr>
                     <td className="px-4 py-3">
-                      <span className="text-xl font-bold tabular-nums" style={{ color: 'var(--foreground)' }}>
-                        {orderSummary.delivered.toLocaleString('en-IN')}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMainTab('delivered')
+                          setUpsellFilter('all')
+                        }}
+                        className={`text-left ${upsellFilter === 'all' && mainTab === 'delivered' ? 'underline decoration-2' : ''}`}
+                      >
+                        <span className="text-xl font-bold tabular-nums" style={{ color: 'var(--foreground)' }}>
+                          {orderSummary.delivered.toLocaleString('en-IN')}
+                        </span>
+                      </button>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-xl font-bold tabular-nums text-purple-600 dark:text-purple-300">
-                        {orderSummary.openUpsell.toLocaleString('en-IN')}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMainTab('delivered')
+                          setUpsellFilter('open')
+                        }}
+                        className={`text-left ${upsellFilter === 'open' ? 'underline decoration-2' : ''}`}
+                      >
+                        <span className="text-xl font-bold tabular-nums text-purple-600 dark:text-purple-300">
+                          {orderSummary.openUpsell.toLocaleString('en-IN')}
+                        </span>
+                      </button>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-xl font-bold tabular-nums text-emerald-600 dark:text-emerald-300">
-                        {orderSummary.needsUpsell.toLocaleString('en-IN')}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMainTab('delivered')
+                          setUpsellFilter('needs')
+                        }}
+                        className={`text-left ${upsellFilter === 'needs' ? 'underline decoration-2' : ''}`}
+                      >
+                        <span className="text-xl font-bold tabular-nums text-emerald-600 dark:text-emerald-300">
+                          {orderSummary.needsUpsell.toLocaleString('en-IN')}
+                        </span>
+                      </button>
                     </td>
                   </tr>
                 </tbody>
@@ -598,12 +737,18 @@ export default function DeliveredOrdersPage() {
               className="px-4 py-2 text-[11px] border-t"
               style={{ color: 'var(--foreground-muted)', borderColor: 'var(--border)' }}
             >
-              Last 30 days
+              {datePreset === 'all'
+                ? 'All time'
+                : datePreset === '7days'
+                  ? 'Last 7 days'
+                  : datePreset === '90days'
+                    ? 'Last 90 days'
+                    : 'Last 30 days'}
               {isExec
                 ? ' · your assigned orders (÷2 with the other care executive)'
                 : ' · all care assignments'}
               {' · '}
-              counts update with search
+              click a count to filter · counts update with search / payment
             </p>
           </div>
 
@@ -637,8 +782,8 @@ export default function DeliveredOrdersPage() {
 
           {mainTab === 'delivered' && (
             <>
-              <div className="mb-4 flex flex-col sm:flex-row gap-3 sm:items-center">
-                <div className="relative flex-1">
+              <div className="mb-4 space-y-3">
+                <div className="relative">
                   <Search
                     className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4"
                     style={{ color: 'var(--foreground-muted)' }}
@@ -654,6 +799,132 @@ export default function DeliveredOrdersPage() {
                       color: 'var(--foreground)',
                     }}
                   />
+                </div>
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  {(
+                    [
+                      ['all', 'All'],
+                      ['needs', 'Needs upsell'],
+                      ['open', 'Open upsell'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setUpsellFilter(key)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                        upsellFilter === key ? 'bg-purple-600 text-white border-purple-500' : ''
+                      }`}
+                      style={
+                        upsellFilter === key
+                          ? undefined
+                          : {
+                              borderColor: 'var(--border)',
+                              color: 'var(--foreground)',
+                              background: 'var(--card)',
+                            }
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+
+                  <span className="w-px h-5 mx-1" style={{ background: 'var(--border)' }} />
+
+                  {(
+                    [
+                      ['all', 'All pay'],
+                      ['cod', 'COD'],
+                      ['prepaid', 'Prepaid'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setPaymentFilter(key)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                        paymentFilter === key ? 'bg-purple-600 text-white border-purple-500' : ''
+                      }`}
+                      style={
+                        paymentFilter === key
+                          ? undefined
+                          : {
+                              borderColor: 'var(--border)',
+                              color: 'var(--foreground)',
+                              background: 'var(--card)',
+                            }
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--foreground-muted)' }}>
+                    Period
+                    <select
+                      value={datePreset}
+                      onChange={(e) => setDatePreset(e.target.value as DeliveredOrdersDatePreset)}
+                      className="px-2.5 py-1.5 rounded-lg border text-xs font-semibold"
+                      style={{
+                        background: 'var(--card)',
+                        borderColor: 'var(--border)',
+                        color: 'var(--foreground)',
+                      }}
+                    >
+                      <option value="7days">Last 7 days</option>
+                      <option value="30days">Last 30 days</option>
+                      <option value="90days">Last 90 days</option>
+                      <option value="all">All time</option>
+                    </select>
+                  </label>
+
+                  <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--foreground-muted)' }}>
+                    Sort
+                    <select
+                      value={orderSort}
+                      onChange={(e) => setOrderSort(e.target.value as DeliveredOrdersSort)}
+                      className="px-2.5 py-1.5 rounded-lg border text-xs font-semibold"
+                      style={{
+                        background: 'var(--card)',
+                        borderColor: 'var(--border)',
+                        color: 'var(--foreground)',
+                      }}
+                    >
+                      {ORDER_SORT_OPTIONS.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {(upsellFilter !== 'all' ||
+                    paymentFilter !== 'all' ||
+                    datePreset !== '30days' ||
+                    orderSort !== 'delivered_desc' ||
+                    orderSearch) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUpsellFilter('all')
+                        setPaymentFilter('all')
+                        setDatePreset('30days')
+                        setOrderSort('delivered_desc')
+                        setOrderSearch('')
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold border"
+                      style={{
+                        borderColor: 'var(--border)',
+                        color: 'var(--foreground-muted)',
+                        background: 'var(--card)',
+                      }}
+                    >
+                      Reset filters
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -862,22 +1133,69 @@ export default function DeliveredOrdersPage() {
                 ))}
               </div>
 
-              <div className="mb-4 relative">
-                <Search
-                  className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4"
-                  style={{ color: 'var(--foreground-muted)' }}
-                />
-                <input
-                  value={taskSearch}
-                  onChange={(e) => setTaskSearch(e.target.value)}
-                  placeholder="Search upsell tasks…"
-                  className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                  style={{
-                    background: 'var(--card)',
-                    borderColor: 'var(--border)',
-                    color: 'var(--foreground)',
-                  }}
-                />
+              <div className="mb-3 flex flex-wrap gap-2">
+                {DAY_FILTERS.map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setDayFilter(key)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                      dayFilter === key
+                        ? 'bg-emerald-600 text-white border-emerald-500'
+                        : ''
+                    }`}
+                    style={
+                      dayFilter === key
+                        ? undefined
+                        : {
+                            borderColor: 'var(--border)',
+                            color: 'var(--foreground)',
+                            background: 'var(--card)',
+                          }
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mb-4 flex flex-col sm:flex-row gap-3 sm:items-center">
+                <div className="relative flex-1">
+                  <Search
+                    className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4"
+                    style={{ color: 'var(--foreground-muted)' }}
+                  />
+                  <input
+                    value={taskSearch}
+                    onChange={(e) => setTaskSearch(e.target.value)}
+                    placeholder="Search upsell tasks…"
+                    className="w-full pl-9 pr-3 py-2.5 rounded-xl text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
+                    style={{
+                      background: 'var(--card)',
+                      borderColor: 'var(--border)',
+                      color: 'var(--foreground)',
+                    }}
+                  />
+                </div>
+                <label className="inline-flex items-center gap-2 text-xs shrink-0" style={{ color: 'var(--foreground-muted)' }}>
+                  Sort
+                  <select
+                    value={taskSort}
+                    onChange={(e) => setTaskSort(e.target.value as TaskSort)}
+                    className="px-2.5 py-2 rounded-xl border text-xs font-semibold"
+                    style={{
+                      background: 'var(--card)',
+                      borderColor: 'var(--border)',
+                      color: 'var(--foreground)',
+                    }}
+                  >
+                    {TASK_SORT_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </div>
 
               {tasksLoading && !tasks.length ? (
@@ -890,7 +1208,10 @@ export default function DeliveredOrdersPage() {
                   className="rounded-xl border p-8 text-center text-sm"
                   style={{ borderColor: 'var(--border)', color: 'var(--foreground-muted)', background: 'var(--card)' }}
                 >
-                  No upsell tasks in this filter.
+                  No upsell tasks for delivered orders in this filter.
+                  <span className="block mt-1 text-[11px]">
+                    Only tasks for currently delivered orders are shown here. Undelivered Day 5/28/90 calls stay on Tasks.
+                  </span>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -1020,12 +1341,24 @@ export default function DeliveredOrdersPage() {
                                 className="rounded-xl border p-3"
                                 style={{ borderColor: 'var(--border)', background: 'var(--background)' }}
                               >
-                                <p
-                                  className="text-[10px] font-bold uppercase tracking-wider mb-2"
-                                  style={{ color: 'var(--foreground-muted)' }}
-                                >
-                                  Order trail
-                                </p>
+                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                  <p
+                                    className="text-[10px] font-bold uppercase tracking-wider"
+                                    style={{ color: 'var(--foreground-muted)' }}
+                                  >
+                                    Order trail
+                                  </p>
+                                  {taskOrderCtx && (
+                                    <span
+                                      className={badge(
+                                        taskOrderCtx.delivered ? 'emerald' : 'amber',
+                                      )}
+                                    >
+                                      {taskOrderCtx.statusLabel ||
+                                        (taskOrderCtx.delivered ? 'Delivered' : 'Not delivered')}
+                                    </span>
+                                  )}
+                                </div>
                                 {orderCtxLoading && orderCtxTaskId !== task.id ? (
                                   <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
                                     Loading trail…
@@ -1129,6 +1462,14 @@ export default function DeliveredOrdersPage() {
                                   </button>
                                   <button
                                     disabled={busy}
+                                    onClick={() => openCreateOrderForTask(task)}
+                                    className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white disabled:opacity-50"
+                                  >
+                                    <PackagePlus className="w-4 h-4" />
+                                    Create order
+                                  </button>
+                                  <button
+                                    disabled={busy}
                                     onClick={() => setUnreachableConfirmTask(task)}
                                     className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
                                     style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
@@ -1138,12 +1479,14 @@ export default function DeliveredOrdersPage() {
                                   <button
                                     disabled={busy}
                                     onClick={() => {
-                                      setEscalateReason('')
-                                      const defaultTarget =
-                                        escalationTargets.find((t) => t.email !== user?.email) ||
-                                        escalationTargets[0]
-                                      setEscalateTargetEmail(defaultTarget?.email || '')
-                                      setEscalateConfirmTask(task)
+                                      void (async () => {
+                                        setEscalateReason('')
+                                        const users = await ensureEscalationTargets()
+                                        const defaultTarget =
+                                          users.find((t) => t.email !== user?.email) || users[0]
+                                        setEscalateTargetEmail(defaultTarget?.email || '')
+                                        setEscalateConfirmTask(task)
+                                      })()
                                     }}
                                     className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
                                     style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
@@ -1185,7 +1528,17 @@ export default function DeliveredOrdersPage() {
                                     <input
                                       type="datetime-local"
                                       value={rescheduleAt}
+                                      min={toDatetimeLocalValue(new Date())}
                                       onChange={(e) => setRescheduleAt(e.target.value)}
+                                      onFocus={() => {
+                                        if (!rescheduleAt) {
+                                          setRescheduleAt(
+                                            toDatetimeLocalValue(
+                                              new Date(Date.now() + 60 * 60 * 1000),
+                                            ),
+                                          )
+                                        }
+                                      }}
                                       className="mt-1 block px-3 py-2 rounded-lg text-sm border"
                                       style={{
                                         background: 'var(--background)',
@@ -1520,6 +1873,41 @@ export default function DeliveredOrdersPage() {
           </div>
         </div>
       )}
+
+      <CreateShopifyOrderDialog
+        open={Boolean(createOrderTask)}
+        onClose={() => {
+          setCreateOrderTask(null)
+          setCreateOrderPrefill(null)
+        }}
+        prefill={createOrderPrefill}
+        agent={{ name: user?.name, email: user?.email }}
+        onCreated={async (result) => {
+          const agentName =
+            result.createdBy?.name || user?.name || user?.email?.split('@')[0] || 'Care agent'
+          const agentEmail = result.createdBy?.email || user?.email || ''
+          setSuccess(
+            `${result.orderName || 'Order'} created on Shopify by ${agentName}${
+              agentEmail ? ` (${agentEmail})` : ''
+            }`,
+          )
+          if (createOrderTask?.id && result.orderName) {
+            try {
+              const updated = await addCareTaskNote(
+                createOrderTask.id,
+                `Shopify order ${result.orderName} created by ${agentName}${
+                  agentEmail ? ` (${agentEmail})` : ''
+                }`,
+              )
+              setTasks((prev) =>
+                prev.map((t) => (t.id === createOrderTask.id ? updated : t)),
+              )
+            } catch {
+              // note is best-effort
+            }
+          }
+        }}
+      />
 
       {error && <ErrorToast message={error} onClose={() => setError(null)} />}
       {success && (

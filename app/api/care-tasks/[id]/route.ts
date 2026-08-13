@@ -163,8 +163,15 @@ export async function PATCH(
       if (!body.scheduledAt) {
         return NextResponse.json({ error: 'scheduledAt is required to reschedule.' }, { status: 400 })
       }
+      const when = new Date(String(body.scheduledAt)).getTime()
+      if (Number.isNaN(when)) {
+        return NextResponse.json({ error: 'Invalid reschedule date.' }, { status: 400 })
+      }
+      if (when < Date.now() - 60_000) {
+        return NextResponse.json({ error: 'Reschedule time must be in the future.' }, { status: 400 })
+      }
       patch.status = 'rescheduled'
-      patch.scheduledAt = String(body.scheduledAt)
+      patch.scheduledAt = new Date(when).toISOString()
       patch.rescheduledAt = nowIso
       if (body.remarks) patch.remarks = String(body.remarks)
     } else if (action === 'not_interested') {

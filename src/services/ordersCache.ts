@@ -263,6 +263,9 @@ function resolveIstDateBounds(filters: {
     } else if (filters.datePreset === '30days') {
       start = toIstDateKey(new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString())
       end = endKey
+    } else if (filters.datePreset === '90days') {
+      start = toIstDateKey(new Date(now.getTime() - 89 * 24 * 60 * 60 * 1000).toISOString())
+      end = endKey
     }
   }
 

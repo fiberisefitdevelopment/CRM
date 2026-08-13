@@ -1,7 +1,7 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { OrderRepository } from '@/src/repositories/orderRepository'
-import { findCloneTrail } from '@/src/utils/cloneOrders'
+import { buildCloneOrderIndex, findCloneTrailIndexed } from '@/src/utils/cloneOrders'
 import {
   isActiveRtoStatus,
   isShiprocketDeliveredStatus,
@@ -96,6 +96,12 @@ export interface ListCareTasksParams {
   limit?: number
   page?: number
   pageSize?: CarePageSize | number
+  /** Optional list sort (defaults to recent-order / rescheduled due asc). */
+  sort?: 'due_asc' | 'due_desc' | 'created_desc' | 'priority' | 'name_asc' | 'recent'
+  /** When true, keep only tasks whose linked order is currently delivered. */
+  deliveredOnly?: boolean
+  /** Filter upsell/day-based tasks by schedule day (5 / 28 / 90 / manual). */
+  day?: 'all' | '5' | '28' | '90' | 'manual'
 }
 
 export interface ListCareTasksResult {
@@ -117,6 +123,7 @@ function enrichOrderCreatedAt(tasks: CareTask[], orders: any[]): CareTask[] {
   const byName = new Map(
     orders.map((o: any) => [String(o.name || '').replace(/^#/, '').toLowerCase(), o]),
   )
+  const cloneIndex = buildCloneOrderIndex(orders)
   return tasks.map((t) => {
     const nameKey = String(t.orderName || '')
       .replace(/^#/, '')
@@ -126,20 +133,27 @@ function enrichOrderCreatedAt(tasks: CareTask[], orders: any[]): CareTask[] {
     let scheduledAt = t.scheduledAt
 
     // Repair follow-up due dates corrupted by DD-MM vs MM-DD delivery parse
+    // Never clobber intentional Call After / Reschedule / Unreachable times.
     if (order && typeof t.scheduleDay === 'number' && t.scheduleDay >= 0) {
-      const { operational } = findCloneTrail(order, orders)
-      const live = operational || order
-      if (isShiprocketDeliveredStatus(live)) {
-        const corrected = computeFollowupScheduledAt(live, t.scheduleDay)
-        const oldTs = new Date(t.scheduledAt || 0).getTime()
-        const newTs = new Date(corrected).getTime()
-        const createdTs = new Date(orderCreatedAt || 0).getTime()
-        const clearlyWrong =
-          Number.isFinite(oldTs) &&
-          Number.isFinite(newTs) &&
-          (Math.abs(oldTs - newTs) > 12 * 3600 * 1000 ||
-            (Number.isFinite(createdTs) && oldTs < createdTs - 24 * 3600 * 1000))
-        if (clearlyWrong) scheduledAt = corrected
+      const intentionallyRescheduled =
+        t.status === 'rescheduled' ||
+        Boolean(t.lastUnreachableAt) ||
+        Boolean(t.rescheduledAt)
+      if (!intentionallyRescheduled) {
+        const { operational } = findCloneTrailIndexed(order, cloneIndex)
+        const live = operational || order
+        if (isShiprocketDeliveredStatus(live)) {
+          const corrected = computeFollowupScheduledAt(live, t.scheduleDay)
+          const oldTs = new Date(t.scheduledAt || 0).getTime()
+          const newTs = new Date(corrected).getTime()
+          const createdTs = new Date(orderCreatedAt || 0).getTime()
+          const clearlyWrong =
+            Number.isFinite(oldTs) &&
+            Number.isFinite(newTs) &&
+            (Math.abs(oldTs - newTs) > 12 * 3600 * 1000 ||
+              (Number.isFinite(createdTs) && oldTs < createdTs - 24 * 3600 * 1000))
+          if (clearlyWrong) scheduledAt = corrected
+        }
       }
     } else if (order && getCareTaskKind(t) === 'cod_confirmation') {
       // COD due defaults to order created — but never clobber Call After / Unreachable reschedules.
@@ -181,14 +195,18 @@ function resolveTaskOrder(task: CareTask, orders: any[]): any | null {
  * COD confirmation is only relevant pre-delivery.
  * Hide those tasks once the order (or its live clone) is delivered.
  */
-function excludeDeliveredCodConfirmations(tasks: CareTask[], orders: any[]): CareTask[] {
+function excludeDeliveredCodConfirmations(
+  tasks: CareTask[],
+  orders: any[],
+  index = buildCloneOrderIndex(orders),
+): CareTask[] {
   if (!orders.length) return tasks
 
   return tasks.filter((t) => {
     if (getCareTaskKind(t) !== 'cod_confirmation') return true
     const order = resolveTaskOrder(t, orders)
     if (!order) return true
-    const { operational } = findCloneTrail(order, orders)
+    const { operational } = findCloneTrailIndexed(order, index)
     return !isShiprocketDeliveredStatus(operational || order)
   })
 }
@@ -212,14 +230,18 @@ function isCareOrderRto(order: any): boolean {
  * Hide open care work for cancelled / RTO Initiated / RTO Delivered orders
  * (still keep completed history).
  */
-function excludeNonActionableOrderTasks(tasks: CareTask[], orders: any[]): CareTask[] {
+function excludeNonActionableOrderTasks(
+  tasks: CareTask[],
+  orders: any[],
+  index = buildCloneOrderIndex(orders),
+): CareTask[] {
   if (!orders.length) return tasks
 
   return tasks.filter((t) => {
     if (t.status === 'completed') return true
     const order = resolveTaskOrder(t, orders)
     if (!order) return true
-    const { operational } = findCloneTrail(order, orders)
+    const { operational } = findCloneTrailIndexed(order, index)
     const live = operational || order
     return !isCareOrderCancelled(live) && !isCareOrderRto(live)
   })
@@ -308,7 +330,12 @@ async function docsToEnrichedTasks(
   const enriched = enrichOrderCreatedAt(rawTasks, orders)
   persistScheduledAtRepairs(rawTasks, enriched)
   const promoted = promoteDueReschedules(enriched)
-  return excludeNonActionableOrderTasks(excludeDeliveredCodConfirmations(promoted, orders), orders)
+  const cloneIndex = buildCloneOrderIndex(orders)
+  return excludeNonActionableOrderTasks(
+    excludeDeliveredCodConfirmations(promoted, orders, cloneIndex),
+    orders,
+    cloneIndex,
+  )
 }
 
 /** When Call After time arrives, move task back to To do (pending). */
@@ -392,6 +419,20 @@ function filterTasksClient(
     list = list.filter((t) => getCareTaskKind(t) === params.kind)
   }
 
+  if (params.day && params.day !== 'all') {
+    if (params.day === 'manual') {
+      list = list.filter(
+        (t) =>
+          t.scheduleDay === -2 ||
+          t.source === 'manual' ||
+          String(t.id || '').includes('__upsell__manual'),
+      )
+    } else {
+      const dayNum = Number(params.day)
+      list = list.filter((t) => Number(t.scheduleDay) === dayNum)
+    }
+  }
+
   if (params.status && params.status !== 'all') {
     if (params.status === 'overdue') {
       // Overdue open work only — rescheduled live in their own tab
@@ -453,7 +494,18 @@ function persistScheduledAtRepairs(
     const prev = byId.get(t.id)
     if (!prev) continue
     if (prev.scheduledAt === t.scheduledAt) continue
-    if (['completed'].includes(t.status)) continue
+    if (['completed', 'not_interested'].includes(t.status)) continue
+    // Never persist a "repair" over a user Call After / Reschedule
+    if (
+      t.status === 'rescheduled' ||
+      prev.status === 'rescheduled' ||
+      t.rescheduledAt ||
+      prev.rescheduledAt ||
+      t.lastUnreachableAt ||
+      prev.lastUnreachableAt
+    ) {
+      continue
+    }
     updates.push({
       id: t.id,
       scheduledAt: t.scheduledAt,
@@ -512,18 +564,73 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
     kindCounts[k] = (kindCounts[k] || 0) + 1
   }
 
-  const filtered =
+  const filteredBase =
     params.status === 'rescheduled'
       ? [...(params.kind && params.kind !== 'all'
           ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
-          : statusFiltered)].sort(
-          (a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime(),
-        )
-      : sortByRecentOrder(
-          params.kind && params.kind !== 'all'
-            ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
-            : statusFiltered,
-        )
+          : statusFiltered)]
+      : params.kind && params.kind !== 'all'
+        ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
+        : statusFiltered
+
+  let filteredForSort = filteredBase
+  if (params.deliveredOnly) {
+    const orders = (await OrderRepository.getCachedOrders()) || []
+    const index = buildCloneOrderIndex(orders)
+    const byId = new Map(orders.map((o: any) => [String(o.id), o]))
+    const byName = new Map(
+      orders.map((o: any) => [String(o.name || '').replace(/^#/, '').toLowerCase(), o]),
+    )
+    filteredForSort = filteredBase.filter((t) => {
+      const nameKey = String(t.orderName || '')
+        .replace(/^#/, '')
+        .toLowerCase()
+      const order = byId.get(String(t.orderId)) || byName.get(nameKey) || null
+      if (!order) return false
+      const { operational } = findCloneTrailIndexed(order, index)
+      const live = operational || order
+      if (!isShiprocketDeliveredStatus(live)) return false
+
+      const isManualUpsell =
+        t.source === 'manual' ||
+        String(t.id || '').includes('__upsell__manual') ||
+        t.scheduleDay === -2
+      if (isManualUpsell) return true
+
+      return Boolean(
+        live?.shiprocket_meta?.delivered_date ||
+          live?.shiprocket_meta?.delivery_date ||
+          live?.fulfillments?.[0]?.delivery_date,
+      )
+    })
+  }
+
+  const filtered = (() => {
+    const sort = params.sort || (params.status === 'rescheduled' ? 'due_asc' : 'recent')
+    if (sort === 'recent') return sortByRecentOrder(filteredForSort)
+    const pri = (p?: string) => (p === 'high' ? 0 : p === 'medium' ? 1 : 2)
+    return [...filteredForSort].sort((a, b) => {
+      switch (sort) {
+        case 'due_desc':
+          return new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime()
+        case 'created_desc':
+          return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+        case 'priority': {
+          const d = pri(a.priority) - pri(b.priority)
+          if (d !== 0) return d
+          return new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime()
+        }
+        case 'name_asc':
+          return String(a.orderName || '').localeCompare(String(b.orderName || ''), undefined, {
+            numeric: true,
+            sensitivity: 'base',
+          })
+        case 'due_asc':
+        default:
+          return new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime()
+      }
+    })
+  })()
 
   const total = filtered.length
   if (wantAll) {

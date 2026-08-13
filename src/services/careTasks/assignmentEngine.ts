@@ -57,8 +57,19 @@ const ESCALATION_TARGET_ROLES = [
   'employee',
 ] as const
 
+let escalationTargetsCache: { at: number; users: CareAssignee[] } | null = null
+const ESCALATION_TARGETS_TTL_MS = 5 * 60 * 1000
+
 /** Active users an escalated task can be assigned to (admins + care team). */
 export async function listEscalationTargets(): Promise<CareAssignee[]> {
+  const now = Date.now()
+  if (
+    escalationTargetsCache &&
+    now - escalationTargetsCache.at < ESCALATION_TARGETS_TTL_MS
+  ) {
+    return escalationTargetsCache.users
+  }
+
   const db = getDb()
   const seen = new Set<string>()
   const results: CareAssignee[] = []
@@ -76,15 +87,20 @@ export async function listEscalationTargets(): Promise<CareAssignee[]> {
     })
   }
 
-  const flagged = await db.collection('users').where('careExecutive', '==', true).get()
+  const [flagged, ...roleSnaps] = await Promise.all([
+    db.collection('users').where('careExecutive', '==', true).get(),
+    ...ESCALATION_TARGET_ROLES.map((role) =>
+      db.collection('users').where('role', '==', role).get(),
+    ),
+  ])
   flagged.docs.forEach(addDoc)
+  for (const q of roleSnaps) q.docs.forEach(addDoc)
 
-  for (const role of ESCALATION_TARGET_ROLES) {
-    const q = await db.collection('users').where('role', '==', role).get()
-    q.docs.forEach(addDoc)
-  }
-
-  return results.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  const users = results.sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+  )
+  escalationTargetsCache = { at: now, users }
+  return users
 }
 
 export class RoundRobinStrategy implements AssignmentStrategy {

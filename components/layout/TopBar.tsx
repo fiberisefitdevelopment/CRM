@@ -354,9 +354,15 @@ export function TopBar() {
       }
     }
 
-    pollCare()
+    // Defer first poll so page list APIs get the CPU/network first
+    const start = window.setTimeout(() => {
+      void pollCare()
+    }, 2500)
     const interval = setInterval(pollCare, 60000)
-    return () => clearInterval(interval)
+    return () => {
+      window.clearTimeout(start)
+      clearInterval(interval)
+    }
   }, [user])
 
   // ── 3c. External localStorage notification updates (care page escalations) ─

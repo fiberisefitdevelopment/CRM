@@ -37,6 +37,7 @@ const menuItems = [
   { icon: Bell,          label: 'Advertisements', href: '/notifications' },
   { icon: ListTodo,      label: 'Tasks', href: '/customer-service/care-tasks' },
   { icon: PackageCheck,  label: 'Delivered Orders', href: '/customer-service/delivered-orders' },
+  { icon: PackagePlus,   label: 'Create Shopify Order', href: '/customer-service/create-order' },
   { icon: ShieldCheck,   label: 'Audit Logs', href: '/audit-logs' },
 ]
 
@@ -77,10 +78,14 @@ export function Sidebar() {
 
   const visibleMenuItems = menuItems.filter((item) => {
     if (isCareExecutiveRole(user?.role)) {
-      return item.label === 'Tasks' || item.label === 'Delivered Orders'
+      return (
+        item.label === 'Tasks' ||
+        item.label === 'Delivered Orders' ||
+        item.label === 'Create Shopify Order'
+      )
     }
-    if (item.label === 'Tasks') {
-      // Care Tasks lives under Customer Service for admins
+    if (item.label === 'Tasks' || item.label === 'Create Shopify Order') {
+      // Care routes live under Customer Service for admins (SubNav)
       return false
     }
     if (item.label === 'Audit Logs') {

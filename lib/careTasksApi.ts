@@ -18,6 +18,9 @@ export async function listCareTasks(params?: {
   page?: number
   pageSize?: 20 | 50 | 100 | number
   assignee?: string
+  sort?: string
+  deliveredOnly?: boolean
+  day?: 'all' | '5' | '28' | '90' | 'manual'
 }): Promise<{
   tasks: CareTask[]
   total: number
@@ -33,6 +36,9 @@ export async function listCareTasks(params?: {
   if (params?.page) qs.set('page', String(params.page))
   if (params?.pageSize) qs.set('pageSize', String(params.pageSize))
   if (params?.assignee) qs.set('assignee', params.assignee)
+  if (params?.sort) qs.set('sort', params.sort)
+  if (params?.deliveredOnly) qs.set('deliveredOnly', '1')
+  if (params?.day && params.day !== 'all') qs.set('day', params.day)
   const res = await apiFetch(`/api/care-tasks?${qs.toString()}`, { cache: 'no-store' })
   const data = await parseJson(res)
   return {
@@ -157,10 +163,26 @@ export type DeliveredOrdersCareSummary = {
   needsUpsell: number
 }
 
+export type DeliveredOrdersUpsellFilter = 'all' | 'needs' | 'open'
+export type DeliveredOrdersPaymentFilter = 'all' | 'cod' | 'prepaid'
+export type DeliveredOrdersDatePreset = '7days' | '30days' | '90days' | 'all'
+export type DeliveredOrdersSort =
+  | 'delivered_desc'
+  | 'delivered_asc'
+  | 'ordered_desc'
+  | 'ordered_asc'
+  | 'total_desc'
+  | 'total_asc'
+  | 'name_asc'
+
 export async function listDeliveredOrdersForCare(params?: {
   page?: number
   pageSize?: number
   search?: string
+  upsell?: DeliveredOrdersUpsellFilter
+  payment?: DeliveredOrdersPaymentFilter
+  datePreset?: DeliveredOrdersDatePreset
+  sort?: DeliveredOrdersSort
 }): Promise<{
   orders: DeliveredOrderForCare[]
   pagination: { page: number; pageSize: number; total: number; totalPages: number }
@@ -170,6 +192,10 @@ export async function listDeliveredOrdersForCare(params?: {
   if (params?.page) qs.set('page', String(params.page))
   if (params?.pageSize) qs.set('pageSize', String(params.pageSize))
   if (params?.search) qs.set('search', params.search)
+  if (params?.upsell && params.upsell !== 'all') qs.set('upsell', params.upsell)
+  if (params?.payment && params.payment !== 'all') qs.set('payment', params.payment)
+  if (params?.datePreset) qs.set('datePreset', params.datePreset)
+  if (params?.sort) qs.set('sort', params.sort)
   const res = await apiFetch(`/api/care-tasks/delivered-orders?${qs.toString()}`, {
     cache: 'no-store',
   })
@@ -202,6 +228,83 @@ export async function createUpsellCareTask(
   })
   const data = await parseJson(res)
   return { created: Boolean(data.created), task: data.task || null }
+}
+
+export type ShopifyCatalogVariant = {
+  id: number
+  productId: number
+  productTitle: string
+  title: string
+  sku: string
+  price: string
+  available: boolean
+}
+
+export async function listShopifyCareProducts(q?: string): Promise<{
+  variants: ShopifyCatalogVariant[]
+  total: number
+}> {
+  const qs = new URLSearchParams()
+  if (q?.trim()) qs.set('q', q.trim())
+  const res = await apiFetch(`/api/care-tasks/shopify-products?${qs.toString()}`, {
+    cache: 'no-store',
+  })
+  const data = await parseJson(res)
+  return {
+    variants: data.variants || [],
+    total: Number(data.total || 0),
+  }
+}
+
+export async function createShopifyCareOrder(body: {
+  email?: string
+  phone: string
+  note?: string
+  payment: 'cod' | 'paid'
+  shipping: {
+    firstName: string
+    lastName?: string
+    phone: string
+    address1: string
+    address2?: string
+    city: string
+    province: string
+    zip: string
+    country?: string
+  }
+  lineItems: Array<{
+    variantId?: number | null
+    title?: string
+    quantity: number
+    price?: string
+  }>
+}): Promise<{
+  orderId: number | string | null
+  orderName: string | null
+  payment: string
+  invoiceUrl: string | null
+  createdBy: { email: string; name: string } | null
+  order: {
+    id: number
+    name: string
+    total_price?: string
+    financial_status?: string
+  } | null
+}> {
+  const res = await apiFetch('/api/care-tasks/shopify-create-order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await parseJson(res)
+  return {
+    orderId: data.orderId || null,
+    orderName: data.orderName || null,
+    payment: data.payment || body.payment,
+    invoiceUrl: data.invoiceUrl || null,
+    createdBy: data.createdBy || null,
+    order: data.order || null,
+  }
 }
 
 export type { CareTask, CareTaskSummary, ExecutivePerformance }
