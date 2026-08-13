@@ -727,6 +727,18 @@ export default function CareTasksPage() {
   const callAfterMin = toDatetimeLocalValue(new Date())
   const callAfterMax = toDatetimeLocalValue(new Date(Date.now() + CALL_AFTER_MAX_MS))
 
+  const dueReminderTasks = useMemo(() => {
+    const now = Date.now()
+    const seen = typeof window !== 'undefined' ? loadReminderSeen() : new Set<string>()
+    return tasks.filter(
+      (t) =>
+        t.lastUnreachableAt &&
+        (t.status === 'pending' || t.status === 'rescheduled') &&
+        new Date(t.scheduledAt).getTime() <= now &&
+        !seen.has(`${t.id}:${t.lastUnreachableAt}`),
+    )
+  }, [tasks, reminderTask])
+
   const dismissReminder = (open: boolean) => {
     if (reminderTask?.lastUnreachableAt) {
       const seen = loadReminderSeen()
@@ -734,6 +746,15 @@ export default function CareTasksPage() {
       saveReminderSeen(seen)
     }
     if (open && reminderTask) setExpandedId(reminderTask.id)
+    setReminderTask(null)
+  }
+
+  const dismissAllReminders = () => {
+    const seen = loadReminderSeen()
+    for (const t of dueReminderTasks) {
+      if (t.lastUnreachableAt) seen.add(`${t.id}:${t.lastUnreachableAt}`)
+    }
+    saveReminderSeen(seen)
     setReminderTask(null)
   }
 
@@ -2366,6 +2387,11 @@ export default function CareTasksPage() {
                   <br />
                   {reminderTask.customerName} · {reminderTask.phone}
                 </p>
+                {dueReminderTasks.length > 1 && (
+                  <p className="text-[11px] mt-1.5 font-semibold" style={{ color: 'var(--foreground-muted)' }}>
+                    {dueReminderTasks.length} reminders waiting
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -2376,7 +2402,21 @@ export default function CareTasksPage() {
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={dismissAllReminders}
+                className="mr-auto px-3 py-2 rounded-lg text-sm border"
+                style={{ borderColor: 'var(--border)', color: 'var(--foreground-muted)' }}
+                title={
+                  dueReminderTasks.length > 1
+                    ? `Clear all ${dueReminderTasks.length} waiting reminders`
+                    : 'Clear this reminder'
+                }
+              >
+                Dismiss all
+                {dueReminderTasks.length > 1 ? ` (${dueReminderTasks.length})` : ''}
+              </button>
               <button
                 type="button"
                 onClick={() => dismissReminder(false)}

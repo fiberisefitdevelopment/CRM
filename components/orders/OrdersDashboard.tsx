@@ -126,14 +126,6 @@ interface ShopifyOrder {
   is_test_order?: boolean
 }
 
-interface CourierQuote {
-  id: string
-  name: string
-  rate: number
-  edd: string
-  rating: number
-}
-
 interface ManifestRecord {
   id: string
   date: string
@@ -522,14 +514,6 @@ export function OrdersPanel({
     }
   ])
 
-  // Courier list quotes
-  const courierQuotes: CourierQuote[] = [
-    { id: 'delhivery', name: 'Delhivery Surface', rate: 48, edd: '21 May 2026 (3 Days)', rating: 4.5 },
-    { id: 'shadowfax', name: 'Shadowfax Surface', rate: 42, edd: '22 May 2026 (4 Days)', rating: 4.2 },
-    { id: 'ekart', name: 'Ekart Logistics', rate: 50, edd: '20 May 2026 (2 Days)', rating: 4.7 },
-    { id: 'xpressbees', name: 'Xpressbees Air', rate: 46, edd: '21 May 2026 (3 Days)', rating: 4.4 }
-  ]
-
   // ── Fetch Paginated Orders ──
   const fetchPageRef = useRef<AbortController | null>(null)
 
@@ -787,35 +771,59 @@ export function OrdersPanel({
 
 
 
-  // ── Logistics Actions Simulations ──
+  // ── Logistics Actions ──
 
-  // 1. Ship Now (Select Courier quote & Assign AWB)
-  const handleAssignCourier = (orderId: number, courier: CourierQuote) => {
-    setOrders((prev) =>
-      prev.map((o) => {
-        if (o.id !== orderId) return o
-        const nowIso = new Date().toISOString()
-        return {
-          ...o,
-          fulfillment_status: 'fulfilled',
-          fulfillments: [
-            {
-              id: Math.floor(Math.random() * 10000),
-              status: 'success',
-              tracking_number: `SR${courier.name.substring(0, 2).toUpperCase()}${Math.floor(100000000 + Math.random() * 900000000)}`,
-              tracking_company: courier.name,
-              tracking_url: '#',
-              shipment_status: 'pickup_scheduled',
-              created_at: nowIso,
-              dispatch_date: nowIso,
-              delivery_date: null
-            }
-          ]
-        }
+  // 1. Ship Now — real Shiprocket assign AWB on the original order (no clone)
+  const handleAssignCourier = async (orderId: number) => {
+    try {
+      setActionLoadingOrderId(orderId)
+      const res = await apiFetch('/api/shiprocket/ship-confirmed-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId }),
       })
-    )
-    setActiveCourierOrder(null)
-    triggerNotification('success', `Successfully generated AWB and scheduled pickup with ${courier.name}!`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || `Ship failed (${res.status})`)
+      }
+
+      if (data.order) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? ({ ...o, ...data.order } as ShopifyOrder) : o)),
+        )
+      }
+
+      setActiveCourierOrder(null)
+      setSelectedOrders({})
+      invalidatePageCache()
+
+      const awb = data.awb ? String(data.awb) : ''
+      const courierName = data.courier ? String(data.courier) : 'Shiprocket'
+      if (awb) {
+        triggerNotification(
+          'success',
+          `Shipped ${data.orderName || ''} · AWB ${awb} (${courierName})`,
+        )
+      } else if (data.warning) {
+        triggerNotification('error', String(data.warning))
+      } else {
+        triggerNotification(
+          'success',
+          `Order ${data.orderName || ''} pushed to Shiprocket. Refresh if AWB is still pending.`,
+        )
+      }
+
+      // Refresh current page so Confirmed / Ready to Ship tabs update
+      try {
+        await fetchOrdersPage(currentPage)
+      } catch {
+        // local patch already applied
+      }
+    } catch (err: any) {
+      triggerNotification('error', err?.message || 'Failed to ship on Shiprocket')
+    } finally {
+      setActionLoadingOrderId(null)
+    }
   }
 
   // 2. Download Manifest (Dispatches Ready To Ship order into In Transit)
@@ -2273,9 +2281,17 @@ export function OrdersPanel({
                                 <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                                   <button
                                     onClick={() => setActiveCourierOrder(order)}
-                                    className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-extrabold text-white transition-all shadow-lg shadow-purple-600/10"
+                                    disabled={actionLoadingOrderId === order.id}
+                                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-extrabold text-white transition-all shadow-lg shadow-purple-600/10 disabled:opacity-50"
                                   >
-                                    Ship Now
+                                    {actionLoadingOrderId === order.id ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        Shipping…
+                                      </>
+                                    ) : (
+                                      'Ship Now'
+                                    )}
                                   </button>
                                 </td>
                               </>
@@ -3118,8 +3134,10 @@ export function OrdersPanel({
                 <Truck className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Select Courier Partner</h3>
-                <p className="text-xs text-white/50 font-normal">Assign courier and allocate tracking AWB for order {activeCourierOrder.name}</p>
+                <h3 className="text-lg font-bold text-white">Confirm Ship</h3>
+                <p className="text-xs text-white/50 font-normal">
+                  Assign AWB on Shiprocket for order {activeCourierOrder.name}
+                </p>
               </div>
             </div>
 
@@ -3151,42 +3169,41 @@ export function OrdersPanel({
               </div>
             </div>
 
-            <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3">Available Courier Quotes</p>
-            
-            <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">
-              {courierQuotes.map((quote) => (
-                <div
-                  key={quote.id}
-                  className="flex items-center justify-between p-4 rounded-2xl bg-white/5 border border-white/5 hover:border-purple-500/30 transition-all hover:bg-white/10"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center font-bold text-purple-300 border border-white/10 text-xs">
-                      {quote.name.charAt(0)}
-                    </div>
-                    <div className="font-semibold">
-                      <p className="text-sm font-bold text-white">{quote.name}</p>
-                      <div className="flex items-center gap-1.5 mt-0.5 font-normal">
-                        <span className="text-[11px] text-yellow-400 font-bold">★ {quote.rating}</span>
-                        <span className="text-white/30 text-[10px]">•</span>
-                        <span className="text-[10px] text-white/50">EDD: {quote.edd}</span>
-                      </div>
-                    </div>
-                  </div>
+            <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3">
+              Ship on Shiprocket
+            </p>
+            <p className="text-xs text-white/50 mb-4">
+              This assigns a courier AWB on the <span className="text-white/80 font-semibold">original</span> order
+              (no clone). Shiprocket picks the courier automatically.
+            </p>
 
-                  <div className="flex items-center gap-4">
-                    <div className="text-right">
-                      <p className="text-sm font-extrabold text-white">₹{quote.rate}.00</p>
-                      <span className="text-[9px] text-white/40 font-normal">Chargeable wt. 0.5kg</span>
-                    </div>
-                    <button
-                      onClick={() => handleAssignCourier(activeCourierOrder.id, quote)}
-                      className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-all"
-                    >
-                      Assign & Ship
-                    </button>
-                  </div>
-                </div>
-              ))}
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveCourierOrder(null)}
+                disabled={actionLoadingOrderId === activeCourierOrder.id}
+                className="flex-1 py-2.5 rounded-xl border border-white/10 text-xs font-bold text-white/70 hover:bg-white/5 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionLoadingOrderId === activeCourierOrder.id}
+                onClick={() => handleAssignCourier(activeCourierOrder.id)}
+                className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white disabled:opacity-50"
+              >
+                {actionLoadingOrderId === activeCourierOrder.id ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Shipping…
+                  </>
+                ) : (
+                  <>
+                    <Truck className="w-3.5 h-3.5" />
+                    Confirm & Ship
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>

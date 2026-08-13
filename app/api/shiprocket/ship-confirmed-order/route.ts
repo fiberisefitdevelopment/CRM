@@ -205,9 +205,59 @@ export async function POST(req: NextRequest) {
         const response = assignResult?.response?.data || assignResult?.data || assignResult
         awb = response?.awb_code || response?.awb || awb
         courier = response?.courier_name || response?.courier || courier
+
+        // Shiprocket sometimes returns HTTP 200 with an error payload
+        const statusCode = Number(
+          assignResult?.status_code ?? assignResult?.response?.status_code ?? NaN,
+        )
+        if (!awb && Number.isFinite(statusCode) && statusCode !== 1 && statusCode !== 200) {
+          const msg =
+            assignResult?.message ||
+            assignResult?.response?.message ||
+            JSON.stringify(assignResult).slice(0, 300)
+          return NextResponse.json(
+            {
+              error: `Shiprocket AWB assign rejected: ${msg}`,
+              shiprocketOrderId,
+              shipmentId,
+              assignResult,
+            },
+            { status: 502 },
+          )
+        }
       } catch (err: any) {
-        console.warn('⚠️ AWB assign failed (order still pushed):', err?.message || err)
+        return NextResponse.json(
+          {
+            error: `Shiprocket order found but AWB assign failed: ${err?.message || err}`,
+            shiprocketOrderId,
+            shipmentId,
+          },
+          { status: 502 },
+        )
       }
+    }
+
+    if (!shipmentId) {
+      return NextResponse.json(
+        {
+          error: 'Shiprocket order has no shipment id yet. Open it in Shiprocket and retry.',
+          shiprocketOrderId,
+        },
+        { status: 502 },
+      )
+    }
+
+    if (!awb) {
+      return NextResponse.json(
+        {
+          error:
+            'Could not assign AWB on Shiprocket. Check wallet/courier settings, then retry Ship Now.',
+          shiprocketOrderId,
+          shipmentId,
+          assignResult,
+        },
+        { status: 502 },
+      )
     }
 
     // 4) Schedule pickup when AWB exists
