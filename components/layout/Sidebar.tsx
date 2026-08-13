@@ -18,6 +18,7 @@ import {
   Plane,
   Megaphone,
   ListTodo,
+  BadgeCheck,
 } from 'lucide-react'
 import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
@@ -25,6 +26,7 @@ import { useAuth } from '@/lib/auth'
 const menuItems = [
   { icon: PackageSearch, label: 'Order Status', href: '/order-status' },
   { icon: ShoppingBag,    label: 'Orders', href: '/orders' },
+  { icon: BadgeCheck,    label: 'Confirmed Orders', href: '/confirmed-orders' },
   { icon: PackagePlus,   label: 'Create Order', href: '/shiprocket/create-order' },
   { icon: Headphones,    label: 'Customer Service', href: '/customer-service' },
   { icon: TrendingUp,    label: 'Sales Analytics', href: '/sales-dashboard' },

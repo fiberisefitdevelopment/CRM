@@ -123,14 +123,44 @@ export async function cancelShiprocketOrder(orderId: number) {
   return shiprocketPost('/orders/cancel', { ids: [orderId] })
 }
 
+export async function assignShiprocketAwb(params: {
+  shipmentId: number | string
+  courierId?: number | string
+}): Promise<any> {
+  const body: Record<string, unknown> = {
+    shipment_id: params.shipmentId,
+  }
+  if (params.courierId != null && params.courierId !== '') {
+    body.courier_id = params.courierId
+  }
+  return shiprocketPost('/courier/assign/awb', body)
+}
+
+export async function scheduleShiprocketPickup(params: {
+  shipmentId: number | string
+  pickupDate?: string
+}): Promise<any> {
+  const body: Record<string, unknown> = {
+    shipment_id: [params.shipmentId],
+  }
+  if (params.pickupDate) body.pickup_date = [params.pickupDate]
+  return shiprocketPost('/courier/generate/pickup', body)
+}
+
 /**
  * Resolve a Shiprocket order by the channel order number
  * (e.g. Shopify order.name "#1021" → strip # → "1021")
- * Returns { id, shipment_id } or null if not found.
  */
 export async function findShiprocketOrderByChannelNumber(
   orderName: string,
-): Promise<{ id: number; shipment_id: number | null } | null> {
+): Promise<{
+  id: number
+  shipment_id: number | null
+  status?: string | null
+  awb?: string | null
+  courier?: string | null
+  raw?: any
+} | null> {
   const clean = orderName.replace(/^#/, '').trim()
   try {
     const data = await shiprocketGet(
@@ -138,10 +168,23 @@ export async function findShiprocketOrderByChannelNumber(
     )
     const list: any[] = data?.data ?? data?.orders ?? []
     if (!Array.isArray(list) || list.length === 0) return null
-    const order = list[0]
+    // Prefer non-cancelled / non-clone-looking rows with the exact channel id
+    const exact = list.find(
+      (o) =>
+        String(o.channel_order_id || '')
+          .replace(/^#/, '')
+          .trim()
+          .toLowerCase() === clean.toLowerCase(),
+    )
+    const order = exact || list[0]
+    const shipment = order.shipments?.[0]
     return {
       id: order.id ?? order.order_id,
-      shipment_id: order.shipments?.[0]?.id ?? order.shipment_id ?? null,
+      shipment_id: shipment?.id ?? order.shipment_id ?? null,
+      status: order.status || shipment?.status || null,
+      awb: shipment?.awb || order.awb || null,
+      courier: shipment?.courier || order.courier_name || null,
+      raw: order,
     }
   } catch {
     return null

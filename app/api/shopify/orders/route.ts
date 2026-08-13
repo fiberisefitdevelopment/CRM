@@ -99,6 +99,13 @@ export async function GET(_req: NextRequest) {
     const orderStatusView = searchParams.get('view') === 'order_status'
     const deliveryStatus = searchParams.get('delivery') || 'all'
     const paymentStatusUi = searchParams.get('payment_status') || undefined
+    const careConfirmRaw = searchParams.get('care_confirm') || searchParams.get('careConfirmSource') || 'all'
+    const careConfirmSource: 'care_confirmed' | 'aisensy_confirmed' | 'all' =
+      careConfirmRaw === 'care_confirmed' || careConfirmRaw === 'care'
+        ? 'care_confirmed'
+        : careConfirmRaw === 'aisensy_confirmed' || careConfirmRaw === 'aisensy'
+          ? 'aisensy_confirmed'
+          : 'all'
 
     const filters = {
       tab,
@@ -117,6 +124,7 @@ export async function GET(_req: NextRequest) {
       endDate,
       fulfillmentStatus,
       includeTest,
+      careConfirmSource,
     }
 
     // A. Serve from OrderRepository (cache or Firestore per flag)

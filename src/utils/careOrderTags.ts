@@ -56,19 +56,29 @@ export function hasCodConfirmation(order: {
   tags?: string | null
   care_tag?: CareOrderTagEntry | null
 }): boolean {
+  return resolveCodConfirmationKind(order) != null
+}
+
+/** Which confirmation source applies — Care vs AiSensy. */
+export function resolveCodConfirmationKind(order: {
+  tags?: string | null
+  care_tag?: CareOrderTagEntry | null
+}): 'care_confirmed' | 'aisensy_confirmed' | null {
   const kind = order?.care_tag?.kind
-  if (kind === 'care_confirmed' || kind === 'aisensy_confirmed') return true
+  if (kind === 'care_confirmed' || kind === 'aisensy_confirmed') return kind
 
   const tags = String(order?.tags || '')
     .toLowerCase()
     .replace(/[_-]+/g, ' ')
-  if (!tags.trim()) return false
+  if (!tags.trim()) return null
 
   // Shopify / AiSensy tags e.g. "ai sensy cod confirmed", "aisensy_cod_confirmed"
-  if (tags.includes('ai sensy cod confirmed') || tags.includes('aisensy cod confirmed')) return true
-  if (tags.includes('aisensy') && tags.includes('confirm')) return true
-  if (tags.includes('cod confirmed') && (tags.includes('aisensy') || tags.includes('ai sensy'))) {
-    return true
+  if (tags.includes('ai sensy cod confirmed') || tags.includes('aisensy cod confirmed')) {
+    return 'aisensy_confirmed'
   }
-  return false
+  if (tags.includes('aisensy') && tags.includes('confirm')) return 'aisensy_confirmed'
+  if (tags.includes('cod confirmed') && (tags.includes('aisensy') || tags.includes('ai sensy'))) {
+    return 'aisensy_confirmed'
+  }
+  return null
 }

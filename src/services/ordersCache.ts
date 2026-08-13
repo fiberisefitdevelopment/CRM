@@ -26,7 +26,7 @@ import {
   getOperationalOrder,
 } from '@/src/utils/cloneOrders'
 import { isCodOrder } from '@/src/utils/orderPayment'
-import { hasCodConfirmation } from '@/src/utils/careOrderTags'
+import { hasCodConfirmation, resolveCodConfirmationKind } from '@/src/utils/careOrderTags'
 import { lookupCareOrderTag } from '@/src/services/careOrderTagStore'
 
 export let cachedOrders: any[] | null = null
@@ -152,6 +152,8 @@ export interface OrderFilters {
   is_test_order?: boolean
   /** When true, keep test orders in results (Order Status / Shopify parity counts). */
   includeTest?: boolean
+  /** Confirmed tab sub-filter: Care vs AiSensy. */
+  careConfirmSource?: 'care_confirmed' | 'aisensy_confirmed' | 'all'
 }
 
 export function getCachedOrdersCount(filters: OrderFilters = {}, sourceOrders?: any[] | null): number {
@@ -219,6 +221,22 @@ function isNotShippedBucket(order: any, live?: any): boolean {
   return hasCodConfirmation({ ...order, care_tag: careTag })
 }
 
+/** Care / AiSensy confirmed and still waiting to ship. */
+function isConfirmedAwaitingShipment(
+  order: any,
+  live?: any,
+  source: 'care_confirmed' | 'aisensy_confirmed' | 'all' = 'all',
+): boolean {
+  const op = live || order
+  if (isOrderCancelled(op) || !isNotShippedStatus(op)) return false
+  const careTag = order.care_tag || lookupCareOrderTag(order.id, order.name)
+  const tagged = { ...order, care_tag: careTag }
+  const kind = resolveCodConfirmationKind(tagged)
+  if (!kind) return false
+  if (source === 'all') return true
+  return kind === source
+}
+
 /** Resolve date presets / bounds to inclusive IST YYYY-MM-DD keys (Shiprocket parity). */
 function resolveIstDateBounds(filters: {
   datePreset?: string
@@ -276,6 +294,9 @@ export interface TabCounts {
   cancelled: number
   all: number
   test_orders: number
+  confirmed: number
+  confirmed_care: number
+  confirmed_aisensy: number
 }
 
 export function computeTabCounts(
@@ -292,6 +313,9 @@ export function computeTabCounts(
     cancelled: 0,
     all: 0,
     test_orders: 0,
+    confirmed: 0,
+    confirmed_care: 0,
+    confirmed_aisensy: 0,
   }
 
   const baseList = sourceOrders !== undefined ? sourceOrders : cachedOrders
@@ -338,6 +362,14 @@ export function computeTabCounts(
         counts.cancelled++
       }
       continue
+    }
+
+    if (inRange && isConfirmedAwaitingShipment(o)) {
+      counts.confirmed++
+      const careTag = o.care_tag || lookupCareOrderTag(o.id, o.name)
+      const kind = resolveCodConfirmationKind({ ...o, care_tag: careTag })
+      if (kind === 'care_confirmed') counts.confirmed_care++
+      else if (kind === 'aisensy_confirmed') counts.confirmed_aisensy++
     }
 
     if (!o.fulfillment_status || o.fulfillment_status === 'unfulfilled') {
@@ -403,6 +435,15 @@ export function getCachedOrdersFiltered(
 
       if (tab === 'ready_to_ship') {
         return isReadyToShipStatus(o)
+      }
+
+      if (tab === 'confirmed') {
+        const source =
+          filters.careConfirmSource === 'care_confirmed' ||
+          filters.careConfirmSource === 'aisensy_confirmed'
+            ? filters.careConfirmSource
+            : 'all'
+        return isConfirmedAwaitingShipment(o, undefined, source)
       }
 
       if (tab === 'in_transit') {
@@ -581,6 +622,18 @@ export function addOrderToCache(order: any) {
   } else {
     cachedOrders = [order]
   }
+}
+
+/** Merge fields onto an existing cached order (keeps same id — no clone). */
+export function patchOrderInCache(id: string | number, patch: Record<string, unknown>): any | null {
+  if (!cachedOrders?.length) return null
+  let updated: any | null = null
+  cachedOrders = cachedOrders.map((o) => {
+    if (String(o.id) !== String(id)) return o
+    updated = { ...o, ...patch }
+    return updated
+  })
+  return updated
 }
 
 export function toggleTestOrderInCache(id: string | number, isTest: boolean) {

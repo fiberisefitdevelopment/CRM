@@ -99,6 +99,7 @@ export const config = {
     '/',
     '/orders/:path*',
     '/order-status/:path*',
+    '/confirmed-orders/:path*',
     '/whatsapp/:path*',
     '/shiprocket/:path*',
     '/sales-dashboard/:path*',

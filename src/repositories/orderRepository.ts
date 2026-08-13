@@ -28,6 +28,7 @@ import {
   getCachedOrdersCount as cacheGetCount,
   getCachedOrdersFiltered as cacheGetFiltered,
   getCachedOrdersPaginated as cacheGetPaginated,
+  patchOrderInCache as cachePatchOrderInCache,
   getOrderStatusPaginated as cacheGetOrderStatusPaginated,
   removeOrderFromCache,
   setActiveFetchPromise,
@@ -353,6 +354,12 @@ function addOrderToCache(order: any) {
   mirrorOrderIntoFirestoreSnapshot(order)
 }
 
+function patchOrderInCache(id: string | number, patch: Record<string, unknown>) {
+  const updated = cachePatchOrderInCache(id, patch)
+  if (updated) mirrorOrderIntoFirestoreSnapshot(updated)
+  return updated
+}
+
 function getCacheExpiresAt() {
   if (isOrdersReadFromFirestoreEnabled()) return firestoreExpiresAt
   return cacheGetExpiresAt()
@@ -443,6 +450,7 @@ export const OrderRepository = {
   getOrderStatusPaginated,
   computeTabCounts,
   addOrderToCache,
+  patchOrderInCache,
   toggleTestOrderInCache,
   updateOrderNoteInCache,
   expireFirestoreOrdersSnapshot,
