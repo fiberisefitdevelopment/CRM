@@ -6,48 +6,49 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  Clock,
   Loader2,
-  MapPin,
   Phone,
   RefreshCw,
   Search,
-  StickyNote,
   User,
   MoreHorizontal,
   X,
-  Star,
-  Truck,
+  ExternalLink,
 } from 'lucide-react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
-import { CallAudioPlayer } from '@/components/customer-service/CallAudioPlayer'
+import { OrderIdLink } from '@/components/customer-service/OrderIdLink'
 import { ErrorToast } from '@/components/ErrorToast'
 import {
-  addCareTaskNote,
+  badge,
+  careOrderWorkspaceHref,
+  escalationReason,
+  fmtDay,
+  fmtWhen,
+  isTaskOverdue,
+  openCareOrderWorkspace,
+  statusBadge,
+} from '@/components/customer-service/careTaskShared'
+import {
   generateCareTasks,
-  getCareOrderContext,
   getCarePerformance,
-  getEscalationTargets,
   getCareTaskSummary,
   listCareTasks,
   syncCareTaskCalls,
   updateCareTask,
   type CareTask,
   type CareTaskSummary,
+  type CareOrderGroup,
   type ExecutivePerformance,
 } from '@/lib/careTasksApi'
 import { isAdminRole, isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
 import {
   CARE_TASK_KIND_TABS,
-  CALL_AFTER_MAX_MS,
   getCareTaskKind,
-  requiresCustomerRating,
   type CareTaskKind,
 } from '@/src/services/careTasks/types'
-import { parseFlexibleDate, type TimelineStep } from '@/src/utils/orderTimeline'
 import { isCareTaskCodConfirmed } from '@/src/utils/careOrderTags'
 
 type StatusFilter =
@@ -56,6 +57,7 @@ type StatusFilter =
   | 'overdue'
   | 'upcoming'
   | 'rescheduled'
+  | 'unreachable'
   | 'escalated'
   | 'not_interested'
   | 'completed'
@@ -64,11 +66,6 @@ type PageSize = 20 | 50 | 100
 
 const PAGE_SIZE_OPTIONS: PageSize[] = [20, 50, 100]
 const REMINDER_SEEN_KEY = 'fiberise_care_unreachable_reminders'
-
-function toDatetimeLocalValue(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
 
 function loadReminderSeen(): Set<string> {
   try {
@@ -83,163 +80,14 @@ function saveReminderSeen(seen: Set<string>) {
   localStorage.setItem(REMINDER_SEEN_KEY, JSON.stringify([...seen].slice(-100)))
 }
 
-function fmtWhen(value?: string | null) {
-  if (!value) return '—'
-  const d = parseFlexibleDate(value) || new Date(value)
-  if (isNaN(d.getTime())) return String(value)
-  return d.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function fmtDay(value?: string | null) {
-  if (!value) return '—'
-  const d = parseFlexibleDate(value) || new Date(value)
-  if (isNaN(d.getTime())) return String(value)
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-}
-
-function badge(tone: 'red' | 'amber' | 'emerald' | 'blue' | 'purple' | 'muted' | 'neutral') {
-  const map = {
-    red: 'bg-red-500/10 text-red-600 dark:text-red-300 border-red-500/25',
-    amber: 'bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/25',
-    emerald: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/25',
-    blue: 'bg-blue-500/10 text-blue-700 dark:text-blue-300 border-blue-500/25',
-    purple: 'bg-purple-500/10 text-purple-700 dark:text-purple-300 border-purple-500/25',
-    muted: 'bg-black/5 dark:bg-white/5 text-[var(--foreground-muted)] border-[var(--border)]',
-    neutral: 'bg-black/5 dark:bg-white/5 text-[var(--foreground-muted)] border-[var(--border)]',
-  }
-  return `text-[10px] font-bold px-2 py-0.5 rounded border ${map[tone]}`
-}
-
-function TimelineRail({ steps }: { steps: TimelineStep[] }) {
-  return (
-    <div className="overflow-x-auto pb-2 -mx-1 px-1">
-      <ol className="flex items-start min-w-min gap-0">
-        {steps.map((step, idx) => {
-          const isLast = idx === steps.length - 1
-          return (
-            <li key={step.key} className="flex items-start shrink-0">
-              <div className="w-[7.5rem] flex flex-col items-center text-center px-1">
-                <div
-                  className={`w-8 h-8 rounded-full border flex items-center justify-center ${
-                    step.completed
-                      ? badge(step.tone === 'neutral' ? 'muted' : step.tone)
-                      : 'bg-[var(--card)] border-[var(--border)] text-[var(--foreground-muted)]'
-                  }`}
-                >
-                  {step.completed ? (
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                  ) : (
-                    <Clock className="w-3.5 h-3.5" />
-                  )}
-                </div>
-                <p
-                  className="mt-2 text-[11px] font-semibold leading-tight line-clamp-2"
-                  style={{ color: 'var(--foreground)' }}
-                >
-                  {step.label}
-                </p>
-                {step.current && (
-                  <span className="mt-1 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border bg-purple-500/10 text-purple-600 border-purple-500/20">
-                    Current
-                  </span>
-                )}
-                <p
-                  className="mt-1 text-[10px] leading-snug line-clamp-2"
-                  style={{ color: 'var(--foreground-muted)' }}
-                  title={step.description}
-                >
-                  {step.description}
-                </p>
-                <p className="mt-0.5 text-[10px]" style={{ color: 'var(--foreground-muted)' }}>
-                  {step.timestamp ? fmtDay(step.timestamp) : '—'}
-                </p>
-              </div>
-              {!isLast && (
-                <div
-                  className="w-6 h-0.5 mt-4 shrink-0 rounded-full"
-                  style={{
-                    background: step.completed ? 'rgb(168 85 247 / 0.55)' : 'var(--border)',
-                  }}
-                />
-              )}
-            </li>
-          )
-        })}
-      </ol>
-    </div>
-  )
-}
-
-type OrderContext = {
-  order: any
-  operational: any
-  parent: any
-  clones: any[]
-  delivered: boolean
-  statusLabel: string
-  timeline: TimelineStep[]
-  state?: string | null
-  city?: string | null
-  pincode?: string | null
-  etd?: string | null
-}
-
-function isTaskOverdue(task: CareTask) {
-  if (task.status !== 'pending' && task.status !== 'rescheduled') return false
-  return Boolean(task.scheduledAt && new Date(task.scheduledAt).getTime() < Date.now())
-}
-
-function statusBadge(task: CareTask) {
-  if (task.status === 'completed') return { label: 'Done', tone: 'emerald' as const }
-  if (task.status === 'not_interested') return { label: 'Not interested', tone: 'muted' as const }
-  if (task.status === 'escalated') return { label: 'Escalated', tone: 'red' as const }
-  if (task.status === 'unreachable') return { label: 'Unreachable', tone: 'amber' as const }
-  if (isTaskOverdue(task)) return { label: 'Overdue', tone: 'red' as const }
-  if (task.status === 'rescheduled') return { label: 'Call after', tone: 'blue' as const }
-  return { label: 'Pending', tone: 'amber' as const }
-}
-
-function escalationReason(task: CareTask): string {
-  return String(task.remarks || task.notes?.[0]?.text || '').trim()
-}
-
-function pushLocalNotif(title: string, body: string, type: 'order' | 'system' | 'alert') {
-  try {
-    const key = 'fiberise_notifications'
-    const raw = localStorage.getItem(key)
-    const list = raw ? JSON.parse(raw) : []
-    const next = [
-      {
-        id: `care-${Date.now()}`,
-        title,
-        body,
-        time: 'Just now',
-        createdAt: Date.now(),
-        unread: true,
-        type,
-      },
-      ...(Array.isArray(list) ? list : []),
-    ].slice(0, 50)
-    localStorage.setItem(key, JSON.stringify(next))
-    window.dispatchEvent(new Event('fiberise_notifications_updated'))
-  } catch {
-    // ignore
-  }
-}
-
 export default function CareTasksPage() {
   const { user } = useAuth()
   const role = user?.role || null
   const [tasks, setTasks] = useState<CareTask[]>([])
+  const [orderGroups, setOrderGroups] = useState<CareOrderGroup[]>([])
   const [summary, setSummary] = useState<CareTaskSummary | null>(null)
   const [performance, setPerformance] = useState<ExecutivePerformance[]>([])
-  const [kindFilter, setKindFilter] = useState<CareTaskKind | 'all'>('cod_confirmation')
+  const [kindFilter, setKindFilter] = useState<CareTaskKind | 'all'>('all')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('inbox')
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -248,39 +96,16 @@ export default function CareTasksPage() {
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [kindCounts, setKindCounts] = useState<Record<string, number>>({})
-  const [expandedId, setExpandedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [generating, setGenerating] = useState(false)
   const [showMoreTools, setShowMoreTools] = useState(false)
-  const [orderCtx, setOrderCtx] = useState<OrderContext | null>(null)
-  const [orderCtxTaskId, setOrderCtxTaskId] = useState<string | null>(null)
-  const [orderCtxLoading, setOrderCtxLoading] = useState(false)
-  const [orderCtxError, setOrderCtxError] = useState<string | null>(null)
-  const orderCtxFetchSeq = useRef(0)
   const autoGenerateTried = useRef(false)
   const loadSeq = useRef(0)
   const execDefaultsApplied = useRef(false)
 
-  const [outcome, setOutcome] = useState('')
-  const [remarks, setRemarks] = useState('')
-  const [customerResponse, setCustomerResponse] = useState('')
-  const [customerRating, setCustomerRating] = useState(0)
-  const [noteText, setNoteText] = useState('')
-  const [rescheduleAt, setRescheduleAt] = useState('')
-  const [callAfterAt, setCallAfterAt] = useState('')
-  const [escalateReason, setEscalateReason] = useState('')
-  const [escalateTargetEmail, setEscalateTargetEmail] = useState('')
-  const [escalationTargets, setEscalationTargets] = useState<
-    Array<{ userId: string; email: string; name: string }>
-  >([])
-  const [unreachableConfirmTask, setUnreachableConfirmTask] = useState<CareTask | null>(null)
-  const [escalateConfirmTask, setEscalateConfirmTask] = useState<CareTask | null>(null)
-  const [callAfterConfirmTask, setCallAfterConfirmTask] = useState<CareTask | null>(null)
-  const [notInterestedConfirmTask, setNotInterestedConfirmTask] = useState<CareTask | null>(null)
-  const [notInterestedReason, setNotInterestedReason] = useState('')
   const [reminderTask, setReminderTask] = useState<CareTask | null>(null)
   const [panelEscalatedTasks, setPanelEscalatedTasks] = useState<CareTask[]>([])
   const [escalatedPanelOpen, setEscalatedPanelOpen] = useState(false)
@@ -304,34 +129,23 @@ export default function CareTasksPage() {
     return () => window.clearTimeout(t)
   }, [search])
 
-  const ensureEscalationTargets = useCallback(async () => {
-    if (escalationTargets.length > 0) return escalationTargets
-    try {
-      const users = await getEscalationTargets()
-      setEscalationTargets(users)
-      return users
-    } catch {
-      setEscalationTargets([])
-      return []
-    }
-  }, [escalationTargets])
-
   const panelKind = isExec || kindFilter === 'all' ? 'all' : kindFilter
 
   const loadPanelEscalated = useCallback(async () => {
     if (role === null) return
     try {
-      const [panelRes, allRes] = await Promise.all([
-        listCareTasks({ status: 'escalated', kind: panelKind, pageSize: 100 }),
-        listCareTasks({ status: 'escalated', kind: 'all', pageSize: 100 }),
-      ])
-      setPanelEscalatedTasks(panelRes.tasks)
+      const allRes = await listCareTasks({ status: 'escalated', kind: 'all', pageSize: 100 })
       const counts: Record<string, number> = {}
       for (const t of allRes.tasks) {
         const k = getCareTaskKind(t)
         counts[k] = (counts[k] || 0) + 1
       }
       setEscalatedKindCounts(counts)
+      const panelTasks =
+        panelKind === 'all'
+          ? allRes.tasks
+          : allRes.tasks.filter((t) => getCareTaskKind(t) === panelKind)
+      setPanelEscalatedTasks(panelTasks)
     } catch {
       setPanelEscalatedTasks([])
       setEscalatedKindCounts({})
@@ -352,34 +166,25 @@ export default function CareTasksPage() {
         page,
         pageSize,
         assignee: isAdmin && executiveFilter ? executiveFilter : undefined,
+        groupBy: 'order',
       })
       if (seq !== loadSeq.current) return null
 
       setTasks(listRes.tasks)
+      setOrderGroups(listRes.groups || [])
       setTotal(listRes.total)
       setTotalPages(listRes.totalPages)
       setKindCounts(listRes.kindCounts || {})
       if (listRes.page !== page) setPage(listRes.page)
       setLoading(false)
 
-      // Summary + performance after list paints (shared server cache makes this cheap)
+      // Summary after list paints (shared server cache makes this cheap)
       void getCareTaskSummary(isAdmin && executiveFilter ? executiveFilter : undefined)
         .then((sum) => {
           if (seq === loadSeq.current) setSummary(sum)
         })
         .catch(() => {})
 
-      if (isAdmin) {
-        void getCarePerformance()
-          .then((rows) => {
-            if (seq === loadSeq.current) setPerformance(rows)
-          })
-          .catch(() => {
-            if (seq === loadSeq.current) setPerformance([])
-          })
-      }
-
-      void loadPanelEscalated()
       return listRes.total
     } catch (err: any) {
       if (seq === loadSeq.current) {
@@ -388,7 +193,7 @@ export default function CareTasksPage() {
       }
       return null
     }
-  }, [statusFilter, kindFilter, debouncedSearch, page, pageSize, isAdmin, isExec, loadPanelEscalated, executiveFilter])
+  }, [statusFilter, kindFilter, debouncedSearch, page, pageSize, isAdmin, isExec, executiveFilter])
 
   const selectExecutive = useCallback((email: string, name: string) => {
     const normalized = email.toLowerCase()
@@ -400,7 +205,6 @@ export default function CareTasksPage() {
     setKindFilter('all')
     setStatusFilter('inbox')
     setPage(1)
-    setExpandedId(null)
     setSuccess(`Showing to-do tasks for ${name}`)
     window.setTimeout(() => {
       taskListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -458,84 +262,32 @@ export default function CareTasksPage() {
   }, [role, statusFilter, kindFilter, debouncedSearch, page, pageSize, executiveFilter])
 
   useEffect(() => {
+    if (!isAdmin) return
+    void getCarePerformance()
+      .then(setPerformance)
+      .catch(() => setPerformance([]))
+  }, [isAdmin])
+
+  useEffect(() => {
     if (role === null) return
     void loadPanelEscalated()
   }, [role, panelKind, loadPanelEscalated])
 
   const openEscalatedTask = (task: CareTask) => {
-    setStatusFilter('escalated')
-    setPage(1)
-    setExpandedId(task.id)
     setEscalatedPanelOpen(false)
+    openCareOrderWorkspace(task.orderId, task.id)
   }
 
   const safePage = Math.min(page, totalPages)
   const pageStart = total === 0 ? 0 : (safePage - 1) * pageSize
-  const pageEnd = Math.min(pageStart + tasks.length, total)
+  const pageEnd = Math.min(pageStart + orderGroups.length, total)
 
   const goToPage = (next: number) => {
-    setExpandedId(null)
     setPage(Math.min(Math.max(1, next), totalPages))
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'smooth' })
     }
   }
-
-  const expandedTask = useMemo(
-    () => (expandedId ? tasks.find((t) => t.id === expandedId) ?? null : null),
-    [expandedId, tasks],
-  )
-
-  const clearExpandedTaskUi = useCallback(() => {
-    orderCtxFetchSeq.current += 1
-    setOrderCtx(null)
-    setOrderCtxTaskId(null)
-    setOrderCtxError(null)
-    setOrderCtxLoading(false)
-    setOutcome('')
-    setRemarks('')
-    setCustomerResponse('')
-    setCustomerRating(0)
-    setNoteText('')
-    setRescheduleAt('')
-    setCallAfterAt('')
-    setEscalateReason('')
-  }, [])
-
-  useEffect(() => {
-    if (!expandedId) {
-      clearExpandedTaskUi()
-      return
-    }
-    if (!expandedTask) return
-
-    clearExpandedTaskUi()
-    const seq = ++orderCtxFetchSeq.current
-    const taskId = expandedTask.id
-    const { orderId, orderName } = expandedTask
-
-    ;(async () => {
-      setOrderCtxLoading(true)
-      try {
-        const ctx = await getCareOrderContext(orderId, orderName)
-        if (seq !== orderCtxFetchSeq.current) return
-        setOrderCtx(ctx)
-        setOrderCtxTaskId(taskId)
-      } catch (err: any) {
-        if (seq !== orderCtxFetchSeq.current) return
-        setOrderCtxError(err?.message || 'Could not load order trail')
-      } finally {
-        if (seq === orderCtxFetchSeq.current) setOrderCtxLoading(false)
-      }
-    })()
-  }, [expandedId, expandedTask?.id, expandedTask?.orderId, expandedTask?.orderName, clearExpandedTaskUi])
-
-  useEffect(() => {
-    if (expandedId && !tasks.some((t) => t.id === expandedId)) {
-      setExpandedId(null)
-      clearExpandedTaskUi()
-    }
-  }, [tasks, expandedId, clearExpandedTaskUi])
 
   // Reminder popup when a previously-unreachable task becomes due again
   useEffect(() => {
@@ -569,117 +321,16 @@ export default function CareTasksPage() {
     ]
   }, [summary])
 
-  const onAction = async (task: CareTask, action: string) => {
-    const form = {
-      outcome,
-      remarks,
-      customerResponse,
-      customerRating,
-      rescheduleAt,
-      callAfterAt,
-      escalateReason,
-      escalateTargetEmail,
-      notInterestedReason,
-    }
+  const onConfirmCod = async (task: CareTask) => {
     try {
       setSavingId(task.id)
       setError(null)
       setSuccess(null)
-      setExpandedId(null)
-      clearExpandedTaskUi()
-      if (action === 'confirm_cod') {
-        await updateCareTask(task.id, { action: 'confirm_cod' })
-        setSuccess(`Tagged ${task.orderName} as Care confirmed (Orders / Order Status)`)
-      } else if (action === 'cancel_cod') {
-        await updateCareTask(task.id, { action: 'cancel_cod' })
-        setSuccess(`Tagged ${task.orderName} as Care cancelled (display only — order not cancelled)`)
-      } else if (action === 'complete') {
-        if (requiresCustomerRating(task) && (form.customerRating < 1 || form.customerRating > 5)) {
-          throw new Error('Please rate the customer (1–5 stars) before completing')
-        }
-        await updateCareTask(task.id, {
-          action: 'complete',
-          outcome: form.outcome,
-          remarks: form.remarks,
-          customerResponse: form.customerResponse,
-          ...(requiresCustomerRating(task) ? { customerRating: form.customerRating } : {}),
-        })
-        setSuccess('Task completed')
-      } else if (action === 'unreachable') {
-        await updateCareTask(task.id, {
-          action: 'unreachable',
-          remarks: form.remarks || 'Customer unreachable',
-        })
-        setUnreachableConfirmTask(null)
-        setSuccess('Marked unreachable — task will return in 1 hour')
-      } else if (action === 'escalate') {
-        const reason = form.escalateReason.trim()
-        if (!reason) throw new Error('Escalate reason is required')
-        const target = escalationTargets.find((t) => t.email === form.escalateTargetEmail)
-        if (!target) throw new Error('Select who to escalate this task to')
-        await updateCareTask(task.id, { action: 'escalate', remarks: reason, escalatedTo: target })
-        setEscalateConfirmTask(null)
-        setSuccess(`Escalated to ${target.name || target.email}`)
-        pushLocalNotif(
-          'Care task escalated',
-          `${task.orderName} — ${task.taskLabel} → ${target.name || target.email}`,
-          'alert',
-        )
-      } else if (action === 'call_after') {
-        if (!form.callAfterAt) throw new Error('Pick a call-after date & time first')
-        const when = new Date(form.callAfterAt).getTime()
-        if (Number.isNaN(when)) throw new Error('Invalid call-after date')
-        if (when > Date.now() + CALL_AFTER_MAX_MS) {
-          throw new Error('Call After can be at most 3 days from now')
-        }
-        if (when < Date.now() - 60_000) throw new Error('Call-after time must be in the future')
-        await updateCareTask(task.id, {
-          action: 'call_after',
-          scheduledAt: new Date(when).toISOString(),
-          remarks: form.remarks,
-        })
-        setCallAfterConfirmTask(null)
-        setSuccess('Scheduled call after')
-      } else if (action === 'not_interested') {
-        const reason = form.notInterestedReason.trim()
-        if (!reason) throw new Error('Please enter a reason')
-        await updateCareTask(task.id, {
-          action: 'not_interested',
-          remarks: reason,
-          customerResponse: form.customerResponse || 'Customer not interested',
-        })
-        setNotInterestedConfirmTask(null)
-        setSuccess('Moved to Not interested')
-      } else if (action === 'reschedule') {
-        if (!form.rescheduleAt) throw new Error('Pick a new date & time first')
-        const when = new Date(form.rescheduleAt).getTime()
-        if (Number.isNaN(when)) throw new Error('Invalid reschedule date')
-        if (when < Date.now() - 60_000) throw new Error('Reschedule time must be in the future')
-        await updateCareTask(task.id, {
-          action: 'reschedule',
-          scheduledAt: new Date(when).toISOString(),
-          remarks: form.remarks,
-        })
-        setSuccess('Rescheduled')
-      }
+      await updateCareTask(task.id, { action: 'confirm_cod' })
+      setSuccess(`Tagged ${task.orderName} as Care confirmed (Orders / Order Status)`)
       await load()
     } catch (err: any) {
       setError(err?.message || 'Action failed')
-    } finally {
-      setSavingId(null)
-    }
-  }
-
-  const onAddNote = async (task: CareTask) => {
-    if (!noteText.trim()) return
-    try {
-      setSavingId(task.id)
-      await addCareTaskNote(task.id, noteText.trim())
-      setNoteText('')
-      setSuccess('Note saved')
-      await load()
-    } catch (err: any) {
-      setError(err?.message || 'Failed to add note')
     } finally {
       setSavingId(null)
     }
@@ -689,6 +340,7 @@ export default function CareTasksPage() {
     ['inbox', 'To do'],
     ['overdue', 'Overdue'],
     ['rescheduled', 'Rescheduled'],
+    ['unreachable', 'Unreachable'],
     ['escalated', 'Escalated'],
     ['not_interested', 'Not interested'],
     ['completed', 'Done'],
@@ -700,6 +352,7 @@ export default function CareTasksPage() {
         inbox: summary.pending,
         overdue: summary.overdue,
         rescheduled: summary.rescheduled,
+        unreachable: summary.unreachable,
         escalated: summary.escalated,
         not_interested: summary.notInterested,
         completed: summary.completed,
@@ -732,9 +385,6 @@ export default function CareTasksPage() {
       ? 'All tasks'
       : CARE_TASK_KIND_TABS.find((t) => t.key === kindFilter)?.label || 'Tasks'
 
-  const callAfterMin = toDatetimeLocalValue(new Date())
-  const callAfterMax = toDatetimeLocalValue(new Date(Date.now() + CALL_AFTER_MAX_MS))
-
   const dueReminderTasks = useMemo(() => {
     const now = Date.now()
     const seen = typeof window !== 'undefined' ? loadReminderSeen() : new Set<string>()
@@ -753,7 +403,7 @@ export default function CareTasksPage() {
       seen.add(`${reminderTask.id}:${reminderTask.lastUnreachableAt}`)
       saveReminderSeen(seen)
     }
-    if (open && reminderTask) setExpandedId(reminderTask.id)
+    if (open && reminderTask) openCareOrderWorkspace(reminderTask.orderId, reminderTask.id)
     setReminderTask(null)
   }
 
@@ -969,7 +619,6 @@ export default function CareTasksPage() {
                     if (tab.key === kindFilter) return
                     setKindFilter(tab.key)
                     setPage(1)
-                    setExpandedId(null)
                   }}
                   className={`px-3 py-2 text-xs font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
                     active
@@ -1012,7 +661,6 @@ export default function CareTasksPage() {
                       if (value === statusFilter) return
                       setStatusFilter(value)
                       setPage(1)
-                      setExpandedId(null)
                     }}
                     className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-colors ${
                       active ? 'bg-purple-600 text-white' : ''
@@ -1095,7 +743,12 @@ export default function CareTasksPage() {
                           <div className="flex flex-wrap items-center gap-1.5 mb-1">
                             <span className={badge('red')}>Escalated</span>
                             <span className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
-                              {task.orderName}
+                              <OrderIdLink
+                                orderId={task.orderId}
+                                orderName={task.orderName}
+                                href={careOrderWorkspaceHref(task.orderId, task.id)}
+                                title="Open care workspace in a new tab"
+                              />
                             </span>
                             <span className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
                               {task.taskLabel}
@@ -1186,8 +839,10 @@ export default function CareTasksPage() {
                 {debouncedSearch
                   ? 'Nothing matches this search. Try another query or clear filters.'
                   : statusFilter === 'rescheduled'
-                    ? 'No Call After / unreachable reschedules right now.'
-                    : statusFilter === 'escalated'
+                    ? 'No Call After tasks right now.'
+                    : statusFilter === 'unreachable'
+                      ? 'No unreachable tasks right now.'
+                      : statusFilter === 'escalated'
                       ? 'No escalated tasks right now.'
                       : statusFilter === 'not_interested'
                         ? 'No not-interested tasks yet.'
@@ -1195,6 +850,7 @@ export default function CareTasksPage() {
               </p>
               {!debouncedSearch &&
                 statusFilter !== 'rescheduled' &&
+                statusFilter !== 'unreachable' &&
                 statusFilter !== 'escalated' &&
                 statusFilter !== 'not_interested' &&
                 statusFilter !== 'completed' && (
@@ -1221,7 +877,8 @@ export default function CareTasksPage() {
                   of{' '}
                   <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
                     {total.toLocaleString('en-IN')}
-                  </span>
+                  </span>{' '}
+                  orders
                 </p>
                 <label className="inline-flex items-center gap-2">
                   <span>Per page</span>
@@ -1244,73 +901,100 @@ export default function CareTasksPage() {
                 </label>
               </div>
 
-              {tasks.map((task) => {
-                const expanded = expandedId === task.id
+              {orderGroups.map((group) => {
+                const task =
+                  group.tasks.find((t) => t.id === group.focusTaskId) || group.tasks[0]
+                if (!task) return null
                 const st = statusBadge(task)
-                const overdue = isTaskOverdue(task)
+                const overdue = group.tasks.some((t) => isTaskOverdue(t))
                 const busy = savingId === task.id
-                const isCodConfirm =
-                  getCareTaskKind(task) === 'cod_confirmation' && task.status !== 'completed'
-                const taskOrderCtx = orderCtxTaskId === task.id ? orderCtx : null
-                const taskOrderCtxLoading = expanded && orderCtxTaskId !== task.id && orderCtxLoading
-                const taskOrderCtxError = orderCtxTaskId === task.id ? orderCtxError : null
-                const shipState =
-                  taskOrderCtx?.state ||
-                  taskOrderCtx?.operational?.state ||
-                  taskOrderCtx?.order?.state ||
-                  null
-                const shipCity =
-                  taskOrderCtx?.city ||
-                  taskOrderCtx?.operational?.city ||
-                  taskOrderCtx?.order?.city ||
-                  null
-                const shipEtd =
-                  taskOrderCtx?.etd ||
-                  taskOrderCtx?.operational?.etd ||
-                  taskOrderCtx?.order?.etd ||
-                  null
+                const isCodConfirm = group.tasks.some(
+                  (t) =>
+                    getCareTaskKind(t) === 'cod_confirmation' && t.status !== 'completed',
+                )
+                const codTask = group.tasks.find(
+                  (t) =>
+                    getCareTaskKind(t) === 'cod_confirmation' && t.status !== 'completed',
+                )
+                const workspaceHref = careOrderWorkspaceHref(
+                  group.orderId,
+                  group.focusTaskId || task.id,
+                )
 
                 return (
                   <div
-                    key={task.id}
-                    className={`crm-card overflow-hidden border ${overdue ? 'ring-1 ring-red-500/35' : ''}`}
+                    key={group.key}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openCareOrderWorkspace(group.orderId, group.focusTaskId || task.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        openCareOrderWorkspace(group.orderId, group.focusTaskId || task.id)
+                      }
+                    }}
+                    className={`crm-card overflow-hidden border cursor-pointer hover:border-purple-500/40 transition-colors ${
+                      overdue ? 'ring-1 ring-red-500/35' : ''
+                    }`}
                     style={{
                       borderColor: overdue ? 'rgba(239, 68, 68, 0.45)' : 'var(--border)',
                     }}
+                    title="Open care workspace in a new tab"
                   >
-                    <button
-                      type="button"
-                      onClick={() => setExpandedId(expanded ? null : task.id)}
-                      className="w-full text-left p-4 hover:bg-purple-500/[0.03] transition-colors"
-                    >
+                    <div className="w-full text-left p-4">
                       <div className="flex items-start gap-3">
-                        <div className="mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                          {expanded ? (
-                            <ChevronDown className="w-4 h-4" />
-                          ) : (
-                            <ChevronRight className="w-4 h-4" />
-                          )}
+                        <div
+                          className="mt-0.5 p-0.5 rounded"
+                          style={{ color: 'var(--foreground-muted)' }}
+                        >
+                          <ExternalLink className="w-4 h-4" />
                         </div>
 
                         <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-12 gap-3">
                           <div className="md:col-span-4">
                             <div className="flex flex-wrap items-center gap-1.5 mb-1">
-                              {getCareTaskKind(task) === 'cod_confirmation' && (
+                              {group.paymentMethod === 'cod' && (
                                 <span className={badge('purple')}>COD</span>
                               )}
+                              {group.tasks.length > 1 && (
+                                <span className={badge('blue')}>{group.tasks.length} calls</span>
+                              )}
                               <span className={badge(st.tone)}>{st.label}</span>
-                              {task.priority === 'high' && !isCareTaskCodConfirmed(task) && (
+                              {group.tasks.some((t) => t.priority === 'high' && !isCareTaskCodConfirmed(t)) && (
                                 <span className={badge('red')}>High</span>
                               )}
                             </div>
                             <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
-                              {task.taskLabel}
+                              <OrderIdLink
+                                orderId={group.orderId}
+                                orderName={group.orderName}
+                                href={workspaceHref}
+                                title="Open care workspace in a new tab"
+                              />
                             </p>
                             <p className="text-[11px] mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                              {task.orderName}
-                              {task.packLabel ? ` · ${task.packLabel}` : ''}
-                              {task.orderCreatedAt ? ` · ordered ${fmtDay(task.orderCreatedAt)}` : ''}
+                              {group.packLabel || task.packLabel || '—'}
+                              {group.orderCreatedAt ? ` · ordered ${fmtDay(group.orderCreatedAt)}` : ''}
                             </p>
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {group.tasks.map((step) => {
+                                const stepSt = statusBadge(step)
+                                return (
+                                  <span
+                                    key={step.id}
+                                    className="text-[10px] font-bold px-2 py-0.5 rounded border"
+                                    style={{
+                                      borderColor: 'var(--border)',
+                                      color: 'var(--foreground)',
+                                      background: 'var(--card)',
+                                    }}
+                                  >
+                                    {step.taskLabel.replace(/ Call$/i, '')}
+                                    <span className="opacity-60"> · {stepSt.label}</span>
+                                  </span>
+                                )
+                              })}
+                            </div>
                           </div>
 
                           <div className="md:col-span-3">
@@ -1328,23 +1012,6 @@ export default function CareTasksPage() {
                               <Phone className="w-3 h-3" />
                               {task.phone || '—'}
                             </p>
-                            {expanded && (shipState || shipCity) && (
-                              <p className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                                <MapPin className="w-3 h-3" />
-                                {[shipCity, shipState].filter(Boolean).join(', ')}
-                              </p>
-                            )}
-                            {expanded && (
-                              <p className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                                <Truck className="w-3 h-3" />
-                                ETD{' '}
-                                {taskOrderCtxLoading
-                                  ? '…'
-                                  : shipEtd
-                                    ? fmtDay(shipEtd)
-                                    : '—'}
-                              </p>
-                            )}
                           </div>
 
                           <div className="md:col-span-3">
@@ -1353,6 +1020,7 @@ export default function CareTasksPage() {
                               style={{ color: 'var(--foreground-muted)' }}
                             >
                               {task.status === 'rescheduled' ? 'Call after' : 'Due'}
+                              {group.tasks.length > 1 ? ` · ${task.taskLabel.replace(/ Call$/i, '')}` : ''}
                             </p>
                             <p className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
                               {fmtDay(task.scheduledAt)}
@@ -1384,15 +1052,10 @@ export default function CareTasksPage() {
                                 ? escalationReason(task) || 'No reason recorded'
                                 : task.notes?.[0]?.text || task.remarks || 'No notes yet'}
                             </p>
-                            {task.status === 'escalated' && task.escalatedTo?.email && (
-                              <p className="text-[11px] mt-1" style={{ color: 'var(--foreground-muted)' }}>
-                                To {task.escalatedTo.name || task.escalatedTo.email}
-                              </p>
-                            )}
                           </div>
                         </div>
                       </div>
-                    </button>
+                    </div>
 
                     {isCodConfirm && (
                       <div
@@ -1402,7 +1065,7 @@ export default function CareTasksPage() {
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => onAction(task, 'confirm_cod')}
+                          onClick={() => onConfirmCod(codTask || task)}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white disabled:opacity-50"
                           title="Tag order as confirmed by care (does not change Shopify)"
                         >
@@ -1412,556 +1075,6 @@ export default function CareTasksPage() {
                         <span className="text-[10px]" style={{ color: 'var(--foreground-muted)' }}>
                           Tags only — shown on Orders & Order Status
                         </span>
-                      </div>
-                    )}
-
-                    {expanded && (
-                      <div
-                        key={`expanded-${task.id}`}
-                        className="border-t px-4 lg:px-5 py-4 space-y-5"
-                        style={{ borderColor: 'var(--border)' }}
-                      >
-                        {/* Meta strip — no nested cards */}
-                        <div
-                          className="flex flex-wrap gap-x-5 gap-y-1.5 text-[12px]"
-                          style={{ color: 'var(--foreground-muted)' }}
-                        >
-                          <span>
-                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                              Order created
-                            </span>{' '}
-                            {fmtWhen(task.orderCreatedAt)}
-                          </span>
-                          <span>
-                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>Pack</span>{' '}
-                            {task.packLabel || '—'}
-                          </span>
-                          <span>
-                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>Call due</span>{' '}
-                            {task.scheduleDay < 0
-                              ? 'Right after order placed'
-                              : `Day ${task.scheduleDay} after delivery`}
-                          </span>
-                          {isAdmin && (
-                            <span>
-                              <span className="font-semibold" style={{ color: 'var(--foreground)' }}>Assignee</span>{' '}
-                              {task.assignedTo?.email || '—'}
-                            </span>
-                          )}
-                          {task.status === 'escalated' && task.escalatedTo?.email && (
-                            <span>
-                              <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                                Escalated to
-                              </span>{' '}
-                              {task.escalatedTo.name || task.escalatedTo.email}
-                            </span>
-                          )}
-                          <span className="inline-flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            Last call:{' '}
-                            {task.lastCall
-                              ? fmtWhen(task.lastCall.startTime || task.lastCall.createdAt)
-                              : 'None'}
-                          </span>
-                          <span>
-                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                              State
-                            </span>{' '}
-                            {shipState || shipCity
-                              ? [shipCity, shipState].filter(Boolean).join(', ')
-                              : taskOrderCtxLoading
-                                ? '…'
-                                : '—'}
-                          </span>
-                          <span>
-                            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                              Est. delivery
-                            </span>{' '}
-                            {shipEtd
-                              ? fmtWhen(shipEtd)
-                              : taskOrderCtxLoading
-                                ? '…'
-                                : 'Not available yet'}
-                          </span>
-                          {taskOrderCtx?.operational && (
-                            <span>
-                              <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
-                                Fulfillment
-                              </span>{' '}
-                              {taskOrderCtx.statusLabel}
-                              {taskOrderCtx.operational.awb ? ` · ${taskOrderCtx.operational.awb}` : ''}
-                              {taskOrderCtx.operational.courier
-                                ? ` · ${taskOrderCtx.operational.courier}`
-                                : ''}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Order timeline + clone trail (same idea as Order Status) */}
-                        <div>
-                          <p
-                            className="text-[10px] font-bold uppercase tracking-wider mb-2"
-                            style={{ color: 'var(--foreground-muted)' }}
-                          >
-                            Order trail
-                          </p>
-                          {taskOrderCtxLoading && (
-                            <p
-                              className="text-sm flex items-center gap-2"
-                              style={{ color: 'var(--foreground-muted)' }}
-                            >
-                              <Loader2 className="w-4 h-4 animate-spin" /> Loading shipment trail…
-                            </p>
-                          )}
-                          {taskOrderCtxError && (
-                            <p className="text-sm text-red-500">{taskOrderCtxError}</p>
-                          )}
-                          {!taskOrderCtxLoading && taskOrderCtx && (
-                            <div className="space-y-4">
-                              <div>
-                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                                  <p
-                                    className="text-xs font-semibold"
-                                    style={{ color: 'var(--foreground)' }}
-                                  >
-                                    {taskOrderCtx.delivered ? 'Order timeline' : 'Shipment timeline'}
-                                  </p>
-                                  {!taskOrderCtx.delivered && (
-                                    <span className={badge('amber')}>
-                                      {taskOrderCtx.statusLabel}
-                                      {taskOrderCtx.operational?.etd
-                                        ? ` · ETD ${fmtDay(taskOrderCtx.operational.etd)}`
-                                        : ''}
-                                    </span>
-                                  )}
-                                </div>
-                                {taskOrderCtx.timeline?.length ? (
-                                  <TimelineRail steps={taskOrderCtx.timeline} />
-                                ) : (
-                                  <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>
-                                    No timeline steps yet.
-                                  </p>
-                                )}
-                              </div>
-
-                              {(taskOrderCtx.clones?.length > 0 || taskOrderCtx.parent) && (
-                                <div>
-                                  <p
-                                    className="text-xs font-semibold mb-2"
-                                    style={{ color: 'var(--foreground)' }}
-                                  >
-                                    Clone order trail
-                                  </p>
-                                  <div className="overflow-x-auto pb-1">
-                                    <ol className="flex items-stretch gap-0 min-w-min">
-                                      {(() => {
-                                        const nodes = [
-                                          {
-                                            key: 'original',
-                                            title: 'Original',
-                                            name: (taskOrderCtx.parent || taskOrderCtx.order)?.name,
-                                            sub: (taskOrderCtx.parent || taskOrderCtx.order)?.statusLabel,
-                                            awb: (taskOrderCtx.parent || taskOrderCtx.order)?.awb,
-                                            active: false,
-                                          },
-                                          ...(taskOrderCtx.clones || []).map(
-                                            (clone: any, idx: number) => ({
-                                              key: String(clone.id),
-                                              title: `Clone${taskOrderCtx.clones.length > 1 ? ` ${idx + 1}` : ''}${
-                                                idx === taskOrderCtx.clones.length - 1 ? ' · active' : ''
-                                              }`,
-                                              name: clone.name,
-                                              sub: `${fmtDay(clone.created_at)} · ${clone.statusLabel}`,
-                                              awb: clone.awb,
-                                              active: idx === taskOrderCtx.clones.length - 1,
-                                            }),
-                                          ),
-                                        ]
-                                        return nodes.map((node, idx) => (
-                                          <li key={node.key} className="flex items-center shrink-0">
-                                            <div
-                                              className="w-44 rounded-lg border p-2.5"
-                                              style={{
-                                                borderColor: node.active
-                                                  ? 'rgba(16, 185, 129, 0.45)'
-                                                  : 'var(--border)',
-                                              }}
-                                            >
-                                              <p
-                                                className={`text-[10px] font-bold uppercase ${
-                                                  node.active ? 'text-emerald-600' : ''
-                                                }`}
-                                                style={
-                                                  node.active
-                                                    ? undefined
-                                                    : { color: 'var(--foreground-muted)' }
-                                                }
-                                              >
-                                                {node.title}
-                                              </p>
-                                              <p
-                                                className="text-sm font-extrabold truncate"
-                                                style={{ color: 'var(--foreground)' }}
-                                              >
-                                                {node.name}
-                                              </p>
-                                              <p
-                                                className="text-[11px] line-clamp-2"
-                                                style={{ color: 'var(--foreground-muted)' }}
-                                              >
-                                                {node.sub}
-                                                {node.awb ? ` · ${node.awb}` : ''}
-                                              </p>
-                                            </div>
-                                            {idx < nodes.length - 1 && (
-                                              <div
-                                                className="w-6 h-0.5 mx-1 rounded-full shrink-0"
-                                                style={{ background: 'rgba(16, 185, 129, 0.45)' }}
-                                              />
-                                            )}
-                                          </li>
-                                        ))
-                                      })()}
-                                    </ol>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Compact activity */}
-                        <div>
-                          <p
-                            className="text-[10px] font-bold uppercase tracking-wider mb-2"
-                            style={{ color: 'var(--foreground-muted)' }}
-                          >
-                            Activity
-                          </p>
-                          <ul className="space-y-1.5 text-sm">
-                            <li style={{ color: 'var(--foreground)' }}>
-                              Created · <span style={{ color: 'var(--foreground-muted)' }}>{fmtWhen(task.createdAt)}</span>
-                            </li>
-                            <li style={{ color: 'var(--foreground)' }}>
-                              Scheduled · <span style={{ color: 'var(--foreground-muted)' }}>{fmtWhen(task.scheduledAt)}</span>
-                            </li>
-                            {(task.rescheduledAt || task.status === 'rescheduled') && (
-                              <>
-                                <li style={{ color: 'var(--foreground)' }}>
-                                  Call after requested ·{' '}
-                                  <span style={{ color: 'var(--foreground-muted)' }}>
-                                    {fmtWhen(task.rescheduledAt || task.updatedAt || task.createdAt)}
-                                  </span>
-                                </li>
-                                <li style={{ color: 'var(--foreground)' }}>
-                                  {new Date(task.scheduledAt).getTime() <= Date.now()
-                                    ? 'Moved to To do · '
-                                    : 'Moves to To do · '}
-                                  <span style={{ color: 'var(--foreground-muted)' }}>
-                                    {fmtWhen(task.scheduledAt)}
-                                  </span>
-                                </li>
-                              </>
-                            )}
-                            {task.lastUnreachableAt && (
-                              <li style={{ color: 'var(--foreground)' }}>
-                                Marked unreachable ·{' '}
-                                <span style={{ color: 'var(--foreground-muted)' }}>
-                                  {fmtWhen(task.lastUnreachableAt)}
-                                </span>
-                              </li>
-                            )}
-                            {(task.notes || []).slice(0, 3).map((n) => (
-                              <li key={n.id} style={{ color: 'var(--foreground)' }}>
-                                <StickyNote className="w-3 h-3 inline mr-1 opacity-50" />
-                                {n.text}{' '}
-                                <span style={{ color: 'var(--foreground-muted)' }}>· {fmtWhen(n.createdAt)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-
-                        {/* Calls — only if present, else one quiet line */}
-                        <div>
-                          <p
-                            className="text-[10px] font-bold uppercase tracking-wider mb-2"
-                            style={{ color: 'var(--foreground-muted)' }}
-                          >
-                            Calls
-                          </p>
-                          {(task.calls || []).length === 0 ? (
-                            <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>
-                              No Salestrail calls linked yet. Use ⋮ → Sync Salestrail calls after dialing.
-                            </p>
-                          ) : (
-                            <div className="space-y-3">
-                              {(task.calls || []).map((c) => (
-                                <div key={c.callId} className="py-2 border-t first:border-0" style={{ borderColor: 'var(--border)' }}>
-                                  <p className="text-[12px] mb-1.5" style={{ color: 'var(--foreground-muted)' }}>
-                                    {fmtWhen(c.startTime || c.createdAt)} · {c.inbound ? 'Inbound' : 'Outbound'} ·{' '}
-                                    {c.answered ? 'Answered' : 'Missed'} · {c.duration || 0}s
-                                  </p>
-                                  {c.hasRecording ? (
-                                    <CallAudioPlayer callId={c.callId} />
-                                  ) : (
-                                    <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
-                                      Recording not available
-                                    </p>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Complete / update — clear single form */}
-                        {task.status !== 'completed' && task.status !== 'not_interested' ? (
-                          <div
-                            className="pt-4 border-t space-y-3"
-                            style={{ borderColor: 'var(--border)' }}
-                          >
-                            <p className="text-sm font-semibold" style={{ color: 'var(--foreground)' }}>
-                              After the call
-                            </p>
-                            <div className="grid grid-cols-1 gap-2.5">
-                              <label className="block">
-                                <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                  Call outcome
-                                </span>
-                                <input
-                                  value={outcome}
-                                  onChange={(e) => setOutcome(e.target.value)}
-                                  placeholder="e.g. Confirmed address, will accept delivery"
-                                  className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                  style={{
-                                    background: 'var(--background)',
-                                    borderColor: 'var(--border)',
-                                    color: 'var(--foreground)',
-                                  }}
-                                />
-                              </label>
-                              <label className="block">
-                                <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                  Customer response
-                                </span>
-                                <input
-                                  value={customerResponse}
-                                  onChange={(e) => setCustomerResponse(e.target.value)}
-                                  placeholder="e.g. Happy with order, asked about delivery date"
-                                  className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                  style={{
-                                    background: 'var(--background)',
-                                    borderColor: 'var(--border)',
-                                    color: 'var(--foreground)',
-                                  }}
-                                />
-                              </label>
-                              <label className="block">
-                                <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                  Remarks
-                                </span>
-                                <input
-                                  value={remarks}
-                                  onChange={(e) => setRemarks(e.target.value)}
-                                  placeholder="Anything else for the next agent"
-                                  className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                  style={{
-                                    background: 'var(--background)',
-                                    borderColor: 'var(--border)',
-                                    color: 'var(--foreground)',
-                                  }}
-                                />
-                              </label>
-                              {requiresCustomerRating(task) && (
-                                <div>
-                                  <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                    Customer rating * (1–5)
-                                  </span>
-                                  <div className="mt-1.5 flex items-center gap-1">
-                                    {[1, 2, 3, 4, 5].map((n) => (
-                                      <button
-                                        key={n}
-                                        type="button"
-                                        disabled={busy}
-                                        onClick={() => setCustomerRating(n)}
-                                        className="p-0.5 disabled:opacity-50"
-                                        title={`${n} star${n > 1 ? 's' : ''}`}
-                                      >
-                                        <Star
-                                          className={`w-6 h-6 ${
-                                            n <= customerRating
-                                              ? 'fill-amber-400 text-amber-400'
-                                              : 'text-[var(--foreground-muted)]'
-                                          }`}
-                                        />
-                                      </button>
-                                    ))}
-                                    {customerRating > 0 && (
-                                      <span className="ml-2 text-xs font-semibold tabular-nums" style={{ color: 'var(--foreground-muted)' }}>
-                                        {customerRating}/5
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-
-                            <div className="flex flex-nowrap items-center gap-2 pt-1 overflow-x-auto">
-                              <button
-                                disabled={busy}
-                                onClick={() => onAction(task, 'complete')}
-                                className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white disabled:opacity-50"
-                              >
-                                <CheckCircle2 className="w-4 h-4" />
-                                Mark completed
-                              </button>
-                              <button
-                                disabled={busy}
-                                onClick={() => setUnreachableConfirmTask(task)}
-                                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                Unreachable
-                              </button>
-                              <button
-                                disabled={busy}
-                                onClick={() => {
-                                  void (async () => {
-                                    setEscalateReason('')
-                                    const users = await ensureEscalationTargets()
-                                    const defaultTarget =
-                                      users.find((t) => t.email !== user?.email) || users[0]
-                                    setEscalateTargetEmail(defaultTarget?.email || '')
-                                    setEscalateConfirmTask(task)
-                                  })()
-                                }}
-                                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                Escalate
-                              </button>
-                              <button
-                                disabled={busy}
-                                onClick={() => {
-                                  setCallAfterAt(toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000)))
-                                  setCallAfterConfirmTask(task)
-                                }}
-                                className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                <Clock className="w-4 h-4" />
-                                Call After
-                              </button>
-                              <button
-                                disabled={busy}
-                                onClick={() => {
-                                  setNotInterestedReason('')
-                                  setNotInterestedConfirmTask(task)
-                                }}
-                                className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                Not interested
-                              </button>
-                            </div>
-
-                            <div className="flex flex-wrap items-end gap-2 pt-1">
-                              <label className="block">
-                                <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                  Reschedule
-                                </span>
-                                <input
-                                  type="datetime-local"
-                                  value={rescheduleAt}
-                                  onChange={(e) => setRescheduleAt(e.target.value)}
-                                  className="mt-1 block px-3 py-2 rounded-lg text-sm border"
-                                  style={{
-                                    background: 'var(--background)',
-                                    borderColor: 'var(--border)',
-                                    color: 'var(--foreground)',
-                                  }}
-                                />
-                              </label>
-                              <button
-                                disabled={busy}
-                                onClick={() => onAction(task, 'reschedule')}
-                                className="px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                Save new time
-                              </button>
-                            </div>
-
-                            <div className="flex gap-2 pt-1">
-                              <input
-                                value={noteText}
-                                onChange={(e) => setNoteText(e.target.value)}
-                                placeholder="Quick note (optional)"
-                                className="flex-1 px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                style={{
-                                  background: 'var(--background)',
-                                  borderColor: 'var(--border)',
-                                  color: 'var(--foreground)',
-                                }}
-                              />
-                              <button
-                                disabled={busy || !noteText.trim()}
-                                onClick={() => onAddNote(task)}
-                                className="px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-40"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                Add note
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            className="pt-3 border-t text-sm space-y-1"
-                            style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                          >
-                            {task.status === 'not_interested' ? (
-                              <>
-                                <p className="font-semibold flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
-                                  Not interested
-                                </p>
-                                <p style={{ color: 'var(--foreground-muted)' }}>
-                                  Reason: {task.remarks || '—'}
-                                </p>
-                                {task.completedAt && (
-                                  <p style={{ color: 'var(--foreground-muted)' }}>
-                                    Marked on: {fmtWhen(task.completedAt)}
-                                  </p>
-                                )}
-                              </>
-                            ) : (
-                              <>
-                            <p className="font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                              <CheckCircle2 className="w-4 h-4" /> Completed
-                            </p>
-                            <p style={{ color: 'var(--foreground-muted)' }}>Outcome: {task.outcome || '—'}</p>
-                            <p style={{ color: 'var(--foreground-muted)' }}>
-                              Response: {task.customerResponse || '—'}
-                            </p>
-                            <p style={{ color: 'var(--foreground-muted)' }}>Remarks: {task.remarks || '—'}</p>
-                            {typeof task.customerRating === 'number' && (
-                              <p style={{ color: 'var(--foreground-muted)' }} className="flex items-center gap-1">
-                                Rating:{' '}
-                                {[1, 2, 3, 4, 5].map((n) => (
-                                  <Star
-                                    key={n}
-                                    className={`w-3.5 h-3.5 ${
-                                      n <= (task.customerRating || 0)
-                                        ? 'fill-amber-400 text-amber-400'
-                                        : 'text-[var(--foreground-muted)]'
-                                    }`}
-                                  />
-                                ))}
-                              </p>
-                            )}
-                              </>
-                            )}
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -2091,289 +1204,6 @@ export default function CareTasksPage() {
           <button className="ml-2 opacity-60" onClick={() => setSuccess(null)}>
             ✕
           </button>
-        </div>
-      )}
-
-      {/* Unreachable confirmation */}
-      {unreachableConfirmTask && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
-          <div
-            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-          >
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
-                Customer unreachable
-              </h3>
-              <button
-                type="button"
-                onClick={() => setUnreachableConfirmTask(null)}
-                className="p-1 rounded-lg"
-                style={{ color: 'var(--foreground-muted)' }}
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-sm mb-4" style={{ color: 'var(--foreground-muted)' }}>
-              We’ll bring <span className="font-semibold" style={{ color: 'var(--foreground)' }}>{unreachableConfirmTask.orderName}</span> back
-              as a reminder in <strong>1 hour</strong>.
-            </p>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setUnreachableConfirmTask(null)}
-                className="px-3 py-2 rounded-lg text-sm border"
-                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={savingId === unreachableConfirmTask.id}
-                onClick={() => onAction(unreachableConfirmTask, 'unreachable')}
-                className="px-4 py-2 rounded-lg text-sm font-semibold bg-amber-600 text-white disabled:opacity-50"
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Escalate reason popup */}
-      {escalateConfirmTask && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
-          <div
-            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-          >
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
-                Escalate task
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setEscalateConfirmTask(null)
-                  setEscalateReason('')
-                  setEscalateTargetEmail('')
-                }}
-                className="p-1 rounded-lg"
-                style={{ color: 'var(--foreground-muted)' }}
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
-              {escalateConfirmTask.orderName} — {escalateConfirmTask.taskLabel}
-            </p>
-            <label className="block mb-3">
-              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                Escalate to *
-              </span>
-              <select
-                value={escalateTargetEmail}
-                onChange={(e) => setEscalateTargetEmail(e.target.value)}
-                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                style={{
-                  background: 'var(--background)',
-                  borderColor: 'var(--border)',
-                  color: 'var(--foreground)',
-                }}
-              >
-                {escalationTargets.length === 0 ? (
-                  <option value="">No users available</option>
-                ) : (
-                  escalationTargets.map((t) => (
-                    <option key={t.email} value={t.email}>
-                      {t.name} ({t.email})
-                    </option>
-                  ))
-                )}
-              </select>
-            </label>
-            <label className="block mb-4">
-              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                Reason *
-              </span>
-              <textarea
-                value={escalateReason}
-                onChange={(e) => setEscalateReason(e.target.value)}
-                rows={3}
-                placeholder="Why are you escalating this?"
-                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30 resize-none"
-                style={{
-                  background: 'var(--background)',
-                  borderColor: 'var(--border)',
-                  color: 'var(--foreground)',
-                }}
-                autoFocus
-              />
-            </label>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setEscalateConfirmTask(null)
-                  setEscalateReason('')
-                  setEscalateTargetEmail('')
-                }}
-                className="px-3 py-2 rounded-lg text-sm border"
-                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={
-                  savingId === escalateConfirmTask.id ||
-                  !escalateReason.trim() ||
-                  !escalateTargetEmail
-                }
-                onClick={() => onAction(escalateConfirmTask, 'escalate')}
-                className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-600 text-white disabled:opacity-50"
-              >
-                Escalate
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Not interested reason popup */}
-      {notInterestedConfirmTask && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
-          <div
-            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-          >
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
-                Not interested
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setNotInterestedConfirmTask(null)
-                  setNotInterestedReason('')
-                }}
-                className="p-1 rounded-lg"
-                style={{ color: 'var(--foreground-muted)' }}
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
-              {notInterestedConfirmTask.orderName} — {notInterestedConfirmTask.taskLabel}
-            </p>
-            <label className="block mb-4">
-              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                Reason *
-              </span>
-              <textarea
-                value={notInterestedReason}
-                onChange={(e) => setNotInterestedReason(e.target.value)}
-                placeholder="Why is the customer not interested?"
-                rows={4}
-                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30 resize-y"
-                style={{
-                  background: 'var(--background)',
-                  borderColor: 'var(--border)',
-                  color: 'var(--foreground)',
-                }}
-              />
-            </label>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setNotInterestedConfirmTask(null)
-                  setNotInterestedReason('')
-                }}
-                className="px-3 py-2 rounded-lg text-sm border"
-                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={savingId === notInterestedConfirmTask.id || !notInterestedReason.trim()}
-                onClick={() => onAction(notInterestedConfirmTask, 'not_interested')}
-                className="px-4 py-2 rounded-lg text-sm font-semibold bg-zinc-700 text-white disabled:opacity-50"
-              >
-                Move to Not interested
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Call After popup */}
-      {callAfterConfirmTask && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40">
-          <div
-            className="w-full max-w-md rounded-2xl border p-5 shadow-xl"
-            style={{ background: 'var(--card)', borderColor: 'var(--border)' }}
-          >
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <h3 className="text-base font-bold" style={{ color: 'var(--foreground)' }}>
-                Call After
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setCallAfterConfirmTask(null)
-                  setCallAfterAt('')
-                }}
-                className="p-1 rounded-lg"
-                style={{ color: 'var(--foreground-muted)' }}
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <p className="text-sm mb-3" style={{ color: 'var(--foreground-muted)' }}>
-              {callAfterConfirmTask.orderName} — schedule a callback within 3 days.
-            </p>
-            <label className="block mb-4">
-              <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                Date & time *
-              </span>
-              <input
-                type="datetime-local"
-                value={callAfterAt}
-                min={callAfterMin}
-                max={callAfterMax}
-                onChange={(e) => setCallAfterAt(e.target.value)}
-                className="mt-1 w-full px-3 py-2 rounded-lg text-sm border"
-                style={{
-                  background: 'var(--background)',
-                  borderColor: 'var(--border)',
-                  color: 'var(--foreground)',
-                }}
-              />
-            </label>
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setCallAfterConfirmTask(null)
-                  setCallAfterAt('')
-                }}
-                className="px-3 py-2 rounded-lg text-sm border"
-                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={savingId === callAfterConfirmTask.id || !callAfterAt}
-                onClick={() => onAction(callAfterConfirmTask, 'call_after')}
-                className="px-4 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white disabled:opacity-50"
-              >
-                Schedule
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

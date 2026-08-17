@@ -2,11 +2,20 @@ import { apiFetch } from '@/lib/auth'
 import type {
   CareTask,
   CareTaskSummary,
+  CareOrderGroup,
   ExecutivePerformance,
 } from '@/src/services/careTasks/types'
 
 async function parseJson(res: Response) {
-  const data = await res.json().catch(() => ({}))
+  const text = await res.text().catch(() => '')
+  let data: any = {}
+  if (text.trim()) {
+    try {
+      data = JSON.parse(text)
+    } catch {
+      data = {}
+    }
+  }
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
   return data
 }
@@ -20,9 +29,12 @@ export async function listCareTasks(params?: {
   assignee?: string
   sort?: string
   deliveredOnly?: boolean
-  day?: 'all' | '5' | '28' | '90' | 'manual'
+  day?: 'all' | '5' | '23' | '28' | '90' | 'manual'
+  pack?: 'all' | '7' | '30' | '90'
+  groupBy?: 'task' | 'order'
 }): Promise<{
   tasks: CareTask[]
+  groups: CareOrderGroup[]
   total: number
   page: number
   pageSize: number
@@ -39,10 +51,13 @@ export async function listCareTasks(params?: {
   if (params?.sort) qs.set('sort', params.sort)
   if (params?.deliveredOnly) qs.set('deliveredOnly', '1')
   if (params?.day && params.day !== 'all') qs.set('day', params.day)
+  if (params?.pack && params.pack !== 'all') qs.set('pack', params.pack)
+  if (params?.groupBy === 'order') qs.set('groupBy', 'order')
   const res = await apiFetch(`/api/care-tasks?${qs.toString()}`, { cache: 'no-store' })
   const data = await parseJson(res)
   return {
     tasks: data.tasks || [],
+    groups: Array.isArray(data.groups) ? data.groups : [],
     total: Number(data.total || 0),
     page: Number(data.page || 1),
     pageSize: Number(data.pageSize || 20),
@@ -127,6 +142,31 @@ export async function getCareOrderContext(orderId: string, orderName?: string) {
     cache: 'no-store',
   })
   return parseJson(res)
+}
+
+export async function getCareOrderActivity(
+  orderId: string,
+  taskIds?: string[],
+): Promise<
+  Array<{
+    id: string
+    action: string
+    orderId: string | null
+    orderName: string | null
+    taskId: string | null
+    details: Record<string, unknown>
+    status: string
+    createdAt: string | null
+  }>
+> {
+  const qs = new URLSearchParams()
+  qs.set('orderId', orderId)
+  if (taskIds?.length) qs.set('taskIds', taskIds.join(','))
+  const res = await apiFetch(`/api/care-tasks/activity?${qs.toString()}`, {
+    cache: 'no-store',
+  })
+  const data = await parseJson(res)
+  return Array.isArray(data.logs) ? data.logs : []
 }
 
 export type DeliveredOrderForCare = {
@@ -307,4 +347,85 @@ export async function createShopifyCareOrder(body: {
   }
 }
 
-export type { CareTask, CareTaskSummary, ExecutivePerformance }
+export interface CareCreatedOrderLine {
+  title: string
+  variantTitle: string | null
+  sku: string | null
+  quantity: number
+  price: string
+}
+
+export interface CareCreatedOrder {
+  id: string
+  name: string
+  created_at: string | null
+  total_price: string
+  currency: string
+  financial_status: string | null
+  fulfillment_status: string | null
+  cancelled: boolean
+  cancelled_at: string | null
+  cancel_reason: string | null
+  payment: 'cod' | 'prepaid'
+  email: string | null
+  phone: string | null
+  customerName: string
+  address1: string | null
+  address2: string | null
+  city: string | null
+  province: string | null
+  zip: string | null
+  country: string | null
+  note: string | null
+  tags: string[]
+  lineItems: CareCreatedOrderLine[]
+  createdByEmail: string | null
+  createdByName: string | null
+}
+
+export interface CareCreatedOrdersSummary {
+  total: number
+  mine: number
+  cod: number
+  prepaid: number
+  active: number
+  cancelled: number
+}
+
+export async function fetchCareCreatedOrders(opts?: {
+  mine?: boolean
+  search?: string
+  page?: number
+  pageSize?: number
+  payment?: 'all' | 'cod' | 'prepaid'
+  status?: 'all' | 'active' | 'cancelled'
+}): Promise<{
+  orders: CareCreatedOrder[]
+  summary: CareCreatedOrdersSummary
+  pagination: { page: number; pageSize: number; total: number; totalPages: number }
+}> {
+  const qs = new URLSearchParams()
+  if (opts?.mine) qs.set('mine', '1')
+  if (opts?.search) qs.set('search', opts.search)
+  if (opts?.page) qs.set('page', String(opts.page))
+  if (opts?.pageSize) qs.set('pageSize', String(opts.pageSize))
+  if (opts?.payment && opts.payment !== 'all') qs.set('payment', opts.payment)
+  if (opts?.status && opts.status !== 'all') qs.set('status', opts.status)
+  const query = qs.toString()
+  const res = await apiFetch(`/api/care-tasks/created-orders${query ? `?${query}` : ''}`, {
+    cache: 'no-store',
+  })
+  const data = await parseJson(res)
+  return {
+    orders: Array.isArray(data.orders) ? data.orders : [],
+    summary: data.summary || { total: 0, mine: 0, cod: 0, prepaid: 0, active: 0, cancelled: 0 },
+    pagination: data.pagination || {
+      page: 1,
+      pageSize: opts?.pageSize || 20,
+      total: 0,
+      totalPages: 1,
+    },
+  }
+}
+
+export type { CareTask, CareTaskSummary, CareOrderGroup, ExecutivePerformance }

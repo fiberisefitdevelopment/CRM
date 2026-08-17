@@ -172,15 +172,9 @@ export function syncCareTagsFromCareTasks(tasks: CareTagSourceTask[]): number {
   return added
 }
 
-/**
- * Ensure local tag cache includes Firestore care-task confirmations.
- * Safe to call on Order Status / Orders list requests.
- */
-export async function ensureCareTagsHydrated(): Promise<void> {
-  // Pick up any disk writes from other processes / manual backfills
+/** Disk + in-memory care-task sync only — safe for instant list APIs. */
+export function hydrateCareTagsFromLocalSources(): void {
   reloadStoreFromDisk()
-
-  // Always merge from warm care-task cache (sync, cheap)
   try {
     const { getCachedCareTasks } = require('@/src/services/careTasks/taskCache') as {
       getCachedCareTasks: () => CareTagSourceTask[] | null
@@ -190,6 +184,14 @@ export async function ensureCareTagsHydrated(): Promise<void> {
   } catch {
     // care tasks module unavailable
   }
+}
+
+/**
+ * Ensure local tag cache includes Firestore care-task confirmations.
+ * Safe to call on Order Status / Orders list requests.
+ */
+export async function ensureCareTagsHydrated(): Promise<void> {
+  hydrateCareTagsFromLocalSources()
 
   if (Date.now() < hydrateExpiresAt) return
   if (hydrateInflight) return hydrateInflight

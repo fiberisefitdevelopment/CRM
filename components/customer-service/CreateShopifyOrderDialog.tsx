@@ -155,8 +155,10 @@ export function CreateShopifyOrderDialog({
 
   useEffect(() => {
     if (!open) return
+    const q = productQ.trim()
+    if (!q) return
     const t = window.setTimeout(() => {
-      void loadCatalog(productQ.trim() || undefined)
+      void loadCatalog(q)
     }, 300)
     return () => window.clearTimeout(t)
   }, [productQ, open, loadCatalog])

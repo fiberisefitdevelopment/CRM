@@ -9,6 +9,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react'
+import Link from 'next/link'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
@@ -83,8 +84,10 @@ export default function CareCreateShopifyOrderPage() {
   }, [loadCatalog])
 
   useEffect(() => {
+    const q = productQ.trim()
+    if (!q) return
     const t = window.setTimeout(() => {
-      void loadCatalog(productQ.trim() || undefined)
+      void loadCatalog(q)
     }, 300)
     return () => window.clearTimeout(t)
   }, [productQ, loadCatalog])
@@ -223,7 +226,10 @@ export default function CareCreateShopifyOrderPage() {
             </h1>
             <p className="text-sm mt-1" style={{ color: 'var(--foreground-muted)' }}>
               Place a live order on Shopify for an upsell / reorder. COD creates the order with
-              payment pending.
+              payment pending.{' '}
+              <Link href="/customer-service/created-orders" className="text-purple-600 font-semibold">
+                View care-created orders
+              </Link>
             </p>
           </div>
 

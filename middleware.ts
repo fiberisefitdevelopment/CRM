@@ -45,6 +45,7 @@ const PUBLIC_API_PREFIXES = [
   '/api/auth/login',
   '/api/auth/refresh',
   '/api/auth/logout',
+  '/api/auth/me',
   '/api/webhooks/',
   '/api/cron/',
 ]

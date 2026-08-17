@@ -32,12 +32,16 @@ async function fetchAllShopifyOrders(limit: number | null = null): Promise<any[]
       cache: 'no-store',
     })
 
+    const text = await res.text().catch(() => '')
     if (!res.ok) {
-      const text = await res.text().catch(() => '')
       throw new Error(`Shopify API error: ${res.status} ${res.statusText}. ${text}`)
     }
-
-    const data = await res.json()
+    let data: any = {}
+    try {
+      data = text.trim() ? JSON.parse(text) : {}
+    } catch {
+      throw new Error('Shopify API returned empty or invalid JSON')
+    }
     if (Array.isArray(data.orders)) {
       shopifyOrders = shopifyOrders.concat(data.orders)
     }
@@ -142,21 +146,27 @@ export async function GET(_req: NextRequest) {
       const { applyNotesToOrders } = require('@/src/services/orderNotesStore')
       const {
         applyCareTagsToOrders,
+        hydrateCareTagsFromLocalSources,
         ensureCareTagsHydrated,
       } = require('@/src/services/careOrderTagStore') as {
         applyCareTagsToOrders: (list: any[]) => any[]
+        hydrateCareTagsFromLocalSources: () => void
         ensureCareTagsHydrated: () => Promise<void>
       }
       const {
         applyCareAssignmentsToOrders,
+        hydrateCareAssignmentsFromLocalSources,
         ensureCareAssignmentsHydrated,
       } = require('@/src/services/careAssignmentStore') as {
         applyCareAssignmentsToOrders: (list: any[]) => any[]
+        hydrateCareAssignmentsFromLocalSources: () => void
         ensureCareAssignmentsHydrated: () => Promise<void>
       }
-      // Pull Care confirmed / cancelled from Firestore care tasks into local cache
-      await ensureCareTagsHydrated()
-      await ensureCareAssignmentsHydrated()
+      // Instant: disk + memory. Firestore refresh in background (same as delivered-orders).
+      hydrateCareTagsFromLocalSources()
+      hydrateCareAssignmentsFromLocalSources()
+      void ensureCareTagsHydrated()
+      void ensureCareAssignmentsHydrated()
       const decorate = (list: any[]) =>
         applyCareAssignmentsToOrders(applyCareTagsToOrders(applyNotesToOrders(list)))
 
@@ -187,12 +197,12 @@ export async function GET(_req: NextRequest) {
         )
       }
 
-      const total = await OrderRepository.getCachedOrdersCount(filters)
       const tabCounts = await OrderRepository.computeTabCounts(filters)
 
       if (returnAll) {
         // Analytics mode: return ALL matching orders, no pagination
         const allOrders = decorate(await OrderRepository.getCachedOrdersFiltered(filters))
+        const total = allOrders.length
         return NextResponse.json(
           {
             orders: allOrders,
@@ -205,10 +215,13 @@ export async function GET(_req: NextRequest) {
         )
       }
 
-      const totalPages = Math.ceil(total / perPage) || 1
-      const paginatedSlice = decorate(
-        await OrderRepository.getCachedOrdersPaginated(page, perPage, filters),
+      const { orders: pageOrders, total } = await OrderRepository.getCachedOrdersPage(
+        page,
+        perPage,
+        filters,
       )
+      const totalPages = Math.ceil(total / perPage) || 1
+      const paginatedSlice = decorate(pageOrders)
 
       return NextResponse.json(
         {

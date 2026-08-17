@@ -42,6 +42,7 @@ export {
   authErrorResponse,
   AuthError,
   loadUserByEmail,
+  getCachedActiveUser,
 } from './guards'
 export {
   checkAuthRateLimit,

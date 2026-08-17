@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { CareTask } from './types'
+import { normalizeCareScheduleDay, normalizeCareTaskLabel } from './types'
 
 /** Fresh window — serve without hitting Firestore. */
 const FRESH_TTL_MS = 2 * 60 * 1000
@@ -25,6 +26,17 @@ const inflight: Record<BucketKey, Promise<CareTask[]> | null> = {
   full: null,
 }
 let hydratedFromDisk = false
+
+function normalizeCachedTask(task: CareTask): CareTask {
+  const scheduleDay = normalizeCareScheduleDay(Number(task.scheduleDay))
+  const taskLabel = normalizeCareTaskLabel(String(task.taskLabel || ''))
+  if (scheduleDay === task.scheduleDay && taskLabel === task.taskLabel) return task
+  return { ...task, scheduleDay, taskLabel }
+}
+
+function normalizeCachedTasks(tasks: CareTask[]): CareTask[] {
+  return tasks.map(normalizeCachedTask)
+}
 
 function diskPath(key: BucketKey) {
   return key === 'full' ? DISK_PATH : path.join(process.cwd(), '.care-tasks-active-cache.json')
@@ -56,7 +68,7 @@ function hydrateFromDisk() {
       const savedAt = typeof raw?.savedAt === 'number' ? raw.savedAt : 0
       if (!tasks?.length) continue
       if (Date.now() - savedAt > STALE_MAX_AGE_MS) continue
-      memory[key] = { tasks, fetchedAt: savedAt }
+      memory[key] = { tasks: normalizeCachedTasks(tasks), fetchedAt: savedAt }
       console.log(`⚡ Hydrated ${tasks.length} care tasks (${key}) from disk`)
     } catch (e) {
       console.warn(`⚠️ Failed to hydrate care-tasks ${key} disk cache:`, (e as Error)?.message || e)
@@ -65,6 +77,11 @@ function hydrateFromDisk() {
 }
 
 hydrateFromDisk()
+
+/** Peek a bucket without blocking. Stale snapshots are OK. */
+export function peekCachedCareTasks(key: BucketKey = 'full'): CareTask[] | null {
+  return getBucket(key, true)
+}
 
 /** Fresh hit only (within FRESH_TTL). Used by callers that want "is warm?". */
 export function getCachedCareTasks(): CareTask[] | null {
@@ -78,8 +95,9 @@ export function getCachedCareTasks(): CareTask[] | null {
 }
 
 export function setCachedCareTasks(tasks: CareTask[]): void {
-  memory.full = { tasks, fetchedAt: Date.now() }
-  persist('full', tasks)
+  const normalized = normalizeCachedTasks(tasks)
+  memory.full = { tasks: normalized, fetchedAt: Date.now() }
+  persist('full', normalized)
 }
 
 export function invalidateCareTasksCache(): void {
@@ -90,6 +108,8 @@ export function invalidateCareTasksCache(): void {
 
 function getBucket(key: BucketKey, allowStale: boolean): CareTask[] | null {
   hydrateFromDisk()
+  // One-shot remap for snapshots hydrated before D28→D23
+  ensureLegacyDay28Normalized()
   const entry = memory[key]
   if (!entry?.tasks?.length) return null
   const age = Date.now() - entry.fetchedAt
@@ -98,9 +118,20 @@ function getBucket(key: BucketKey, allowStale: boolean): CareTask[] | null {
   return null
 }
 
+let legacyDay28Normalized = false
+function ensureLegacyDay28Normalized() {
+  if (legacyDay28Normalized) return
+  legacyDay28Normalized = true
+  for (const key of ['active', 'full'] as BucketKey[]) {
+    const entry = memory[key]
+    if (!entry?.tasks?.length) continue
+    memory[key] = { ...entry, tasks: normalizeCachedTasks(entry.tasks) }
+  }
+}
+
 function adopt(key: BucketKey, tasks: CareTask[]) {
-  memory[key] = { tasks, fetchedAt: Date.now() }
-  persist(key, tasks)
+  memory[key] = { tasks: normalizeCachedTasks(tasks), fetchedAt: Date.now() }
+  persist(key, memory[key]!.tasks)
   // Active refresh also keeps "full" usable for open-queue filters until full reloads
   if (key === 'full') {
     // no-op

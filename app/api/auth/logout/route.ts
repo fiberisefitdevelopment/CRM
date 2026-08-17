@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   revokeRefreshToken,
   revokeAllRefreshTokens,
-  optionalAuth,
+  getAuthFromRequest,
   findValidRefreshRecord,
 } from '@/src/services/auth'
 import { logAction } from '@/src/services/auditLogService'
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     const refreshToken = body?.refreshToken ? String(body.refreshToken) : ''
     const allDevices = Boolean(body?.allDevices)
 
-    const session = await optionalAuth(req)
+    const session = await getAuthFromRequest(req)
     let userId = session?.id
     let userEmail = session?.email || ''
     let userName = session?.name || ''

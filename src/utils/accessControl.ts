@@ -1,9 +1,10 @@
-/** Care executive: Tasks + Delivered Orders + Create Shopify Order. */
+/** Care executive: Tasks + Delivered Orders + Care-created orders. */
 export const CARE_EXEC_HOME = '/customer-service/care-tasks'
 
 const CARE_EXEC_ALLOWED_PREFIXES = [
   '/customer-service/care-tasks',
   '/customer-service/delivered-orders',
+  '/customer-service/created-orders',
   '/customer-service/create-order',
   '/api/care-tasks',
   '/api/customer-service',
@@ -30,6 +31,9 @@ export function homePathForRole(role?: string | null): string {
 /** Pages / APIs a care executive may open. Everything else is blocked. */
 export function isPathAllowedForRole(role: string | undefined | null, pathname: string): boolean {
   if (!isCareExecutiveRole(role)) return true
+  // Full order detail in a new tab (not the Orders list)
+  if (pathname.startsWith('/orders/') && pathname !== '/orders/') return true
+  if (pathname.startsWith('/api/shopify/orders/')) return true
   return CARE_EXEC_ALLOWED_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   )

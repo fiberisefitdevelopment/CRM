@@ -12,7 +12,7 @@ export const DEFAULT_PACK_MATCHERS: PackMatcher[] = [
 export const DEFAULT_FOLLOWUP_PLANS: Record<string, FollowupPlan> = {
   '7': {
     packKey: '7',
-    label: 'Starter Pack (7 days)',
+    label: 'Starter Pack',
     steps: [
       { day: 0, taskType: 'introduction', taskLabel: 'Introduction Call', priority: 'high' },
       { day: 3, taskType: 'review', taskLabel: 'Day 3 Review Call', priority: 'medium' },
@@ -21,22 +21,21 @@ export const DEFAULT_FOLLOWUP_PLANS: Record<string, FollowupPlan> = {
   },
   '30': {
     packKey: '30',
-    label: 'Transformation Pack (30 days)',
+    label: 'Transformation Pack',
     steps: [
       { day: 0, taskType: 'introduction', taskLabel: 'Introduction Call', priority: 'high' },
-      { day: 15, taskType: 'courtesy', taskLabel: 'Day 15 Courtesy / Review Call', priority: 'medium' },
-      { day: 28, taskType: 'upsell', taskLabel: 'Day 28 Upsell / Reorder Reminder', priority: 'high' },
+      { day: 15, taskType: 'review', taskLabel: 'Day 15 Review Call', priority: 'medium' },
+      { day: 23, taskType: 'upsell', taskLabel: 'Day 23 Upsell Call', priority: 'high' },
     ],
   },
   '90': {
     packKey: '90',
-    label: 'Ultimate Pack (90 days)',
+    label: 'Ultimate Pack',
     steps: [
       { day: 0, taskType: 'introduction', taskLabel: 'Introduction Call', priority: 'high' },
-      { day: 15, taskType: 'courtesy', taskLabel: 'Day 15 Courtesy Call', priority: 'medium' },
+      { day: 15, taskType: 'review', taskLabel: 'Day 15 Review Call', priority: 'medium' },
       { day: 30, taskType: 'review', taskLabel: 'Day 30 Review Call', priority: 'medium' },
-      { day: 60, taskType: 'review', taskLabel: 'Day 60 Review Call', priority: 'medium' },
-      { day: 90, taskType: 'upsell', taskLabel: 'Day 90 Upsell / Renewal Call', priority: 'high' },
+      { day: 60, taskType: 'upsell', taskLabel: 'Day 60 Upsell Call', priority: 'high' },
     ],
   },
 }
@@ -69,7 +68,11 @@ export async function getCareTaskConfig(): Promise<CareTaskConfig> {
     const data = snap.data() || {}
     return {
       packMatchers: Array.isArray(data.packMatchers) ? data.packMatchers : DEFAULT_PACK_MATCHERS,
-      plans: data.plans && typeof data.plans === 'object' ? { ...DEFAULT_FOLLOWUP_PLANS, ...data.plans } : DEFAULT_FOLLOWUP_PLANS,
+      // Product schedule is source of truth for Starter / Transformation / Ultimate
+      plans: {
+        ...(data.plans && typeof data.plans === 'object' ? data.plans : {}),
+        ...DEFAULT_FOLLOWUP_PLANS,
+      },
       slaHours: typeof data.slaHours === 'number' ? data.slaHours : 24,
       defaultPackKey: data.defaultPackKey || '7',
     }

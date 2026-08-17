@@ -98,6 +98,8 @@ export type CareTaskKind =
   | 'day_3'
   | 'day_5'
   | 'day_15'
+  | 'day_23'
+  /** @deprecated legacy alias — treated as day_23 */
   | 'day_28'
   | 'day_30'
   | 'day_60'
@@ -111,7 +113,7 @@ export const CARE_TASK_KIND_TABS: Array<{ key: CareTaskKind; label: string }> = 
   { key: 'day_3', label: 'Day 3 Call' },
   { key: 'day_5', label: 'Day 5 Call' },
   { key: 'day_15', label: 'Day 15 Call' },
-  { key: 'day_28', label: 'Day 28 Call' },
+  { key: 'day_23', label: 'Day 23 Call' },
   { key: 'day_30', label: 'Day 30 Call' },
   { key: 'day_60', label: 'Day 60 Call' },
   { key: 'day_90', label: 'Day 90 Call' },
@@ -119,19 +121,50 @@ export const CARE_TASK_KIND_TABS: Array<{ key: CareTaskKind; label: string }> = 
   { key: 'other', label: 'Other' },
 ]
 
+/** Transformation upsell moved from D28 → D23; keep legacy tasks readable. */
+export function normalizeCareScheduleDay(scheduleDay: number): number {
+  return Number(scheduleDay) === 28 ? 23 : Number(scheduleDay)
+}
+
+export function normalizeCareTaskLabel(label: string): string {
+  return String(label || '').replace(/Day\s*28\b/gi, 'Day 23')
+}
+
+/** Resolve API/UI kind aliases (legacy day_28 → day_23). */
+export function normalizeCareTaskKindParam(
+  kind?: string | null,
+): CareTaskKind | 'all' | undefined {
+  if (!kind || kind === 'all') return kind === 'all' ? 'all' : undefined
+  if (kind === 'day_28') return 'day_23'
+  return kind as CareTaskKind
+}
+
 export function getCareTaskKind(task: Pick<CareTask, 'taskType' | 'scheduleDay'>): CareTaskKind {
-  if (task.taskType === 'cod_confirmation' || task.scheduleDay === -1) return 'cod_confirmation'
-  // Manual upsell (and any explicit upsell type) before day-based mapping
+  const day = normalizeCareScheduleDay(Number(task.scheduleDay))
+  if (task.taskType === 'cod_confirmation' || day === -1) return 'cod_confirmation'
+  if (task.taskType === 'introduction' || day === 0) return 'introduction'
+  if (day === 3) return 'day_3'
+  if (day === 5) return 'day_5'
+  if (day === 15) return 'day_15'
+  if (day === 23) return 'day_23'
+  if (day === 30) return 'day_30'
+  if (day === 60) return 'day_60'
+  if (day === 90) return 'day_90'
+  // Manual upsell (no fixed day) after day buckets
   if (task.taskType === 'upsell') return 'upsell'
-  if (task.taskType === 'introduction' || task.scheduleDay === 0) return 'introduction'
-  if (task.scheduleDay === 3) return 'day_3'
-  if (task.scheduleDay === 5) return 'day_5'
-  if (task.scheduleDay === 15) return 'day_15'
-  if (task.scheduleDay === 28) return 'day_28'
-  if (task.scheduleDay === 30) return 'day_30'
-  if (task.scheduleDay === 60) return 'day_60'
-  if (task.scheduleDay === 90) return 'day_90'
   return 'other'
+}
+
+/**
+ * Pack upsell days (D5/D23/D60/…) keep day_* kinds for Tasks tabs, but still count as
+ * upsell work for Delivered Orders · Upsell tasks and open-upsell summaries.
+ */
+export function isUpsellCareTask(
+  task: Pick<CareTask, 'taskType' | 'scheduleDay' | 'id'>,
+): boolean {
+  if (task.taskType === 'upsell') return true
+  if (getCareTaskKind(task) === 'upsell') return true
+  return String(task.id || '').includes('__upsell__')
 }
 
 /** Star rating required when completing any task except COD confirmation. */
@@ -163,6 +196,21 @@ export interface PackMatcher {
   /** Substrings matched against title/sku (case-insensitive) */
   matchers: string[]
   label: string
+}
+
+export interface CareOrderGroup {
+  key: string
+  orderId: string
+  orderName: string
+  customerName: string
+  phone: string
+  packKey: string
+  packLabel?: string
+  orderCreatedAt?: string | null
+  paymentMethod: CareTask['paymentMethod']
+  assignedTo: CareTask['assignedTo']
+  tasks: CareTask[]
+  focusTaskId: string
 }
 
 export interface CareTaskSummary {

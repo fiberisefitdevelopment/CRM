@@ -17,7 +17,7 @@ import {
   CARE_EXECUTIVE_EMAILS,
   normalizeCareExecutiveEmail,
 } from '@/src/services/careTasks/executiveConfig'
-import { getCareTaskKind } from '@/src/services/careTasks/types'
+import { isUpsellCareTask } from '@/src/services/careTasks/types'
 import { cleanOrderName } from '@/src/utils/cloneOrders'
 import { parseFlexibleDate } from '@/src/utils/orderTimeline'
 import { isCodOrder } from '@/src/utils/orderPayment'
@@ -57,11 +57,7 @@ function loadOpenUpsellByOrderId(): Map<
   const tasks = getCachedCareTasks() || []
 
   for (const t of tasks) {
-    const isUpsell =
-      t.taskType === 'upsell' ||
-      getCareTaskKind(t) === 'upsell' ||
-      String(t.id || '').includes('__upsell__')
-    if (!isUpsell || !isOpenCareTaskStatus(t.status)) continue
+    if (!isUpsellCareTask(t) || !isOpenCareTaskStatus(t.status)) continue
     const orderId = String(t.orderId || '')
     if (!orderId || map.has(orderId)) continue
     map.set(orderId, {
@@ -174,9 +170,11 @@ export async function GET(req: NextRequest) {
 
     const {
       applyCareTagsToOrders,
+      hydrateCareTagsFromLocalSources,
       ensureCareTagsHydrated,
     } = require('@/src/services/careOrderTagStore') as {
       applyCareTagsToOrders: (list: any[]) => any[]
+      hydrateCareTagsFromLocalSources: () => void
       ensureCareTagsHydrated: () => Promise<void>
     }
     const {
@@ -190,6 +188,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Instant: disk + in-memory only. Refresh Firestore assignments in background.
+    hydrateCareTagsFromLocalSources()
     hydrateCareAssignmentsFromLocalSources()
     void ensureCareAssignmentsHydrated()
     void ensureCareTagsHydrated()
@@ -201,7 +200,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Single in-memory pass over Firestore orders snapshot (warm from disk)
-    const full = await OrderRepository.getOrderStatusPaginated(1, 5000, listFilters)
+    const full = await OrderRepository.getOrderStatusPaginated(1, 0, listFilters)
 
     const upsellByOrder = loadOpenUpsellByOrderId()
     let decorated = applyCareAssignmentsToOrders(applyCareTagsToOrders(full.orders || []))

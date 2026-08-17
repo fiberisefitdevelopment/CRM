@@ -67,6 +67,15 @@ async function promoteDueReschedules(): Promise<number> {
   const batch = getDb().batch()
   const updatedAt = new Date().toISOString()
   for (const doc of due.slice(0, 200)) {
+    const data = doc.data()
+    if (data.lastUnreachableAt) {
+      batch.update(doc.ref, {
+        status: 'unreachable',
+        updatedAt,
+        updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      continue
+    }
     batch.update(doc.ref, {
       status: 'pending',
       updatedAt,

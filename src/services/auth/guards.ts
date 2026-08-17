@@ -29,13 +29,31 @@ function toAuthUser(
   }
 }
 
+const USER_CACHE_TTL_MS = 60_000
+const userCache = new Map<string, { at: number; user: AuthUser | null }>()
+
 async function loadActiveUser(userId: string): Promise<AuthUser | null> {
+  const hit = userCache.get(userId)
+  if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return hit.user
+
   const db = admin.firestore(getFirebaseAdmin())
   const snap = await db.collection('users').doc(userId).get()
-  if (!snap.exists) return null
+  if (!snap.exists) {
+    userCache.set(userId, { at: Date.now(), user: null })
+    return null
+  }
   const data = snap.data() as Record<string, unknown>
-  if (data.active === false) return null
-  return toAuthUser(snap.id, data)
+  if (data.active === false) {
+    userCache.set(userId, { at: Date.now(), user: null })
+    return null
+  }
+  const user = toAuthUser(snap.id, data)
+  userCache.set(userId, { at: Date.now(), user })
+  return user
+}
+
+export async function getCachedActiveUser(userId: string): Promise<AuthUser | null> {
+  return loadActiveUser(userId)
 }
 
 /**

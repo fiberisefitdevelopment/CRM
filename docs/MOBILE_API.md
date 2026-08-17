@@ -349,7 +349,7 @@ Primary domain for care-executive mobile apps.
   packLabel?: string
   taskType: string          // e.g. "cod_confirmation", "introduction", "review"
   taskLabel: string
-  scheduleDay: number       // -1 COD, 0 intro, 3/5/15/28/30/60/90 follow-ups
+  scheduleDay: number       // -1 COD, 0 intro, 3/5/15/23/30/60/90 follow-ups
   scheduledAt: string       // ISO
   orderCreatedAt?: string | null
   priority: "high" | "medium" | "low"
@@ -385,7 +385,7 @@ Primary domain for care-executive mobile apps.
 | `all` | Default when omitted on some UIs; list default is `all` |
 | `cod_confirmation` | COD confirmation |
 | `introduction` | Intro call |
-| `day_3` / `day_5` / `day_15` / `day_28` / `day_30` / `day_60` / `day_90` | Follow-ups |
+| `day_3` / `day_5` / `day_15` / `day_23` / `day_30` / `day_60` / `day_90` | Follow-ups (`day_28` aliases to `day_23`) |
 | `other` | Everything else |
 
 ### Status buckets (list filter)

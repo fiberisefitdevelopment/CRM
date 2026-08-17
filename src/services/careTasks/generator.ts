@@ -108,6 +108,37 @@ async function createTaskIfMissing(params: {
   const { orderId, orderName } = orderIdentity(params.order)
   if (!orderId) return null
 
+  // Transformation upsell moved D28 → D23: update legacy docs instead of creating a second task
+  if (params.taskType === 'upsell' && params.scheduleDay === 23) {
+    const legacyKey = makeDedupeKey(orderId, 'upsell', 28)
+    const legacyRef = getDb().collection(COL).doc(legacyKey)
+    const legacySnap = await legacyRef.get()
+    if (legacySnap.exists) {
+      const prev = legacySnap.data() || {}
+      const now = new Date().toISOString()
+      const prevStatus = String(prev.status || '')
+      const intentionallyRescheduled =
+        prevStatus === 'rescheduled' ||
+        Boolean(prev.lastUnreachableAt) ||
+        Boolean(prev.rescheduledAt)
+      const patch: Record<string, unknown> = {
+        scheduleDay: 23,
+        taskLabel: String(prev.taskLabel || params.taskLabel).replace(/Day\s*28\b/gi, 'Day 23'),
+        updatedAt: now,
+        updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+      }
+      if (!intentionallyRescheduled && !['completed', 'not_interested'].includes(prevStatus)) {
+        patch.scheduledAt = params.scheduledAt
+      }
+      try {
+        await legacyRef.update(patch)
+      } catch (migrateErr) {
+        console.warn('careTasks: failed to migrate D28→D23 upsell', legacyKey, migrateErr)
+      }
+      return null
+    }
+  }
+
   const dedupeKey = makeDedupeKey(orderId, params.taskType, params.scheduleDay)
   const ref = getDb().collection(COL).doc(dedupeKey)
 
@@ -395,20 +426,22 @@ export async function ensureCodConfirmationTask(
   })
 }
 
-/** After delivery: introduction + pack follow-ups. */
+/** After delivery: introduction (prepaid) or pack follow-ups (COD skips day-0 intro — they already had COD confirmation). */
 export async function ensureDeliveredFollowupTasks(
   order: any,
   assigneeOverride?: CareAssignee | null,
 ): Promise<CareTask[]> {
-  if (!isCodOrder(order)) return []
   if (order?.is_test_order || order?.test === true) return []
   if (!isShiprocketDeliveredStatus(order)) return []
 
-  await autoCloseCodConfirmation(order)
+  if (isCodOrder(order)) {
+    await autoCloseCodConfirmation(order)
+  }
 
   const config = await getCareTaskConfig()
   const pack = resolvePackFromOrder(order, config)
   const created: CareTask[] = []
+  const cod = isCodOrder(order)
 
   let assignee: CareAssignee | null =
     assigneeOverride === undefined ? await assignCareExecutiveForOrder(order) : assigneeOverride ?? null
@@ -418,6 +451,9 @@ export async function ensureDeliveredFollowupTasks(
   }
 
   for (const step of pack.plan.steps) {
+    // COD: confirmation call already covered pre-delivery — skip intro at delivery
+    if (cod && step.day === 0 && step.taskType === 'introduction') continue
+    // Prepaid: intro at delivery + later review/upsell days
     const task = await createTaskIfMissing({
       order,
       taskType: step.taskType,
@@ -459,8 +495,13 @@ export async function processOrdersForCareTasks(
   const maxOrders = Math.max(1, Math.min(opts.maxOrders ?? 150, 400))
   const config = await getCareTaskConfig()
 
-  const codOrders = orders
-    .filter((o) => o && !o.is_test_order && o.test !== true && isCodOrder(o))
+  // COD (confirmation + delivered follow-ups) and prepaid delivered (intro + follow-ups)
+  const candidates = orders
+    .filter((o) => {
+      if (!o || o.is_test_order || o.test === true) return false
+      if (isCodOrder(o)) return true
+      return isShiprocketDeliveredStatus(o)
+    })
     .sort((a, b) => {
       const ta = new Date(a.created_at || 0).getTime()
       const tb = new Date(b.created_at || 0).getTime()
@@ -476,9 +517,11 @@ export async function processOrdersForCareTasks(
     assigneeEmail: null,
   }
 
-  console.log(`careTasks: processing ${codOrders.length} COD orders with per-order executive assignment`)
+  console.log(
+    `careTasks: processing ${candidates.length} orders (COD + prepaid delivered) with per-order executive assignment`,
+  )
 
-  for (const order of codOrders) {
+  for (const order of candidates) {
     result.scanned += 1
     try {
       const assignee = await assignCareExecutiveForOrder(order)
@@ -490,9 +533,10 @@ export async function processOrdersForCareTasks(
 
       const pack = resolvePackFromOrder(order, config)
       const delivered = isShiprocketDeliveredStatus(order)
+      const cod = isCodOrder(order)
 
-      // COD confirmation only before delivery
-      if (!delivered) {
+      if (cod && !delivered) {
+        // COD confirmation only before delivery
         const conf = await createTaskIfMissing({
           order,
           taskType: 'cod_confirmation',
@@ -506,10 +550,10 @@ export async function processOrdersForCareTasks(
           quiet: true,
         })
         if (conf) result.confirmationCreated += 1
-      } else {
-        // Auto-close any open COD confirmation — call is no longer needed
-        await autoCloseCodConfirmation(order)
+      } else if (delivered) {
+        if (cod) await autoCloseCodConfirmation(order)
         for (const step of pack.plan.steps) {
+          if (cod && step.day === 0 && step.taskType === 'introduction') continue
           const task = await createTaskIfMissing({
             order,
             taskType: step.taskType,
@@ -555,6 +599,11 @@ function inferCareOrderTag(
 }
 
 export function serializeCareTask(id: string, data: Record<string, any>): CareTask {
+  const rawDay = Number(data.scheduleDay ?? 0)
+  const scheduleDay = rawDay === 28 ? 23 : rawDay
+  const rawLabel = String(data.taskLabel || data.taskType || '')
+  const taskLabel = rawLabel.replace(/Day\s*28\b/gi, 'Day 23')
+
   return {
     id,
     dedupeKey: data.dedupeKey || id,
@@ -566,8 +615,8 @@ export function serializeCareTask(id: string, data: Record<string, any>): CareTa
     packKey: String(data.packKey || ''),
     packLabel: data.packLabel,
     taskType: data.taskType,
-    taskLabel: data.taskLabel || data.taskType,
-    scheduleDay: Number(data.scheduleDay ?? 0),
+    taskLabel,
+    scheduleDay,
     scheduledAt: data.scheduledAt || '',
     orderCreatedAt: data.orderCreatedAt || null,
     priority: data.priority || 'medium',

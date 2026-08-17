@@ -71,9 +71,6 @@ function persistToDisk(orders: any[]) {
   }
 }
 
-// Hydrate once on module load so the first API hit is instant after restart
-hydrateFromDisk()
-
 export function getCachedOrders() {
   if (!cachedOrders || cachedOrders.length === 0) hydrateFromDisk()
   return cachedOrders
@@ -100,6 +97,7 @@ export function expireOrdersCache() {
 }
 
 export function getCachedOrderById(id: string | number) {
+  if (!cachedOrders || cachedOrders.length === 0) hydrateFromDisk()
   return cachedOrders?.find(o => String(o.id) === String(id)) || null
 }
 
@@ -167,8 +165,17 @@ export function getCachedOrdersPaginated(
   filters: OrderFilters = {},
   sourceOrders?: any[] | null,
 ): any[] {
+  return getCachedOrdersPage(page, perPage, filters, sourceOrders).orders
+}
+
+/** Filter once → total + sorted page (avoids a second full-list scan for count). */
+export function getCachedOrdersPage(
+  page: number,
+  perPage: number,
+  filters: OrderFilters = {},
+  sourceOrders?: any[] | null,
+): { orders: any[]; total: number } {
   const filtered = getCachedOrdersFiltered(filters, sourceOrders)
-  // Newest order-created first — same as Order Status / Shiprocket list
   const sorted = [...filtered].sort((a, b) => {
     let dateStrA = a.created_at
     let dateStrB = b.created_at
@@ -181,7 +188,7 @@ export function getCachedOrdersPaginated(
     return dateB - dateA
   })
   const start = (page - 1) * perPage
-  return sorted.slice(start, start + perPage)
+  return { orders: sorted.slice(start, start + perPage), total: sorted.length }
 }
 
 // ── Tab Count Computation ────────────────────────────────────────────────────
@@ -407,6 +414,9 @@ export function getCachedOrdersFiltered(
   filters: OrderFilters = {},
   sourceOrders?: any[] | null,
 ): any[] {
+  if (sourceOrders === undefined && (!cachedOrders || cachedOrders.length === 0)) {
+    hydrateFromDisk()
+  }
   const base = sourceOrders !== undefined ? sourceOrders : cachedOrders
   if (!base) return []
 
@@ -930,10 +940,12 @@ export function getOrderStatusPaginated(
   }
 
   const total = filtered.length
-  const totalPages = Math.max(1, Math.ceil(total / perPage) || 1)
-  const safePage = Math.min(Math.max(1, page), totalPages)
-  const start = (safePage - 1) * perPage
-  const pageOrders = filtered.slice(start, start + perPage).map((o) => {
+  const skipSlice = perPage <= 0
+  const totalPages = skipSlice ? 1 : Math.max(1, Math.ceil(total / perPage) || 1)
+  const safePage = skipSlice ? 1 : Math.min(Math.max(1, page), totalPages)
+  const start = skipSlice ? 0 : (safePage - 1) * perPage
+  const slice = skipSlice ? filtered : filtered.slice(start, start + perPage)
+  const pageOrders = slice.map((o) => {
     const clean = cleanOrderName(o.name)
     const relatedClones = clonesByParent.get(clean) || []
     const parentBase = getCloneParentBase(o.name)

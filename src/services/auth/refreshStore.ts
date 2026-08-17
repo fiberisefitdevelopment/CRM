@@ -88,9 +88,9 @@ export async function findValidRefreshRecord(
 export async function rotateRefreshToken(
   oldRefreshToken: string,
   user: AuthUser,
-  opts?: { req?: Request; device?: DeviceMeta },
+  opts?: { req?: Request; device?: DeviceMeta; existing?: RefreshTokenRecord | null },
 ): Promise<TokenPair | null> {
-  const existing = await findValidRefreshRecord(oldRefreshToken)
+  const existing = opts?.existing ?? (await findValidRefreshRecord(oldRefreshToken))
   if (!existing) return null
 
   const db = getDb()

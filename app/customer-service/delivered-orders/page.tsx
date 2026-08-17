@@ -22,6 +22,11 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { ErrorToast } from '@/components/ErrorToast'
+import { OrderIdLink } from '@/components/customer-service/OrderIdLink'
+import {
+  careOrderWorkspaceHref,
+  openCareOrderWorkspace,
+} from '@/components/customer-service/careTaskShared'
 import {
   CreateShopifyOrderDialog,
   type CreateOrderPrefill,
@@ -56,13 +61,14 @@ type StatusFilter =
   | 'inbox'
   | 'overdue'
   | 'rescheduled'
+  | 'unreachable'
   | 'escalated'
   | 'not_interested'
   | 'completed'
   | 'all'
 type PageSize = 20 | 50 | 100
 type TaskSort = 'due_asc' | 'due_desc' | 'created_desc' | 'priority' | 'name_asc'
-type DayFilter = 'all' | '5' | '28' | '90' | 'manual'
+type PackFilter = 'all' | '7' | '30' | '90'
 
 const PAGE_SIZE_OPTIONS: PageSize[] = [20, 50, 100]
 
@@ -84,12 +90,11 @@ const TASK_SORT_OPTIONS: Array<{ value: TaskSort; label: string }> = [
   { value: 'name_asc', label: 'Order # · A–Z' },
 ]
 
-const DAY_FILTERS: Array<[DayFilter, string]> = [
-  ['all', 'All days'],
-  ['5', 'Day 5'],
-  ['28', 'Day 28'],
-  ['90', 'Day 90'],
-  ['manual', 'Manual'],
+const PACK_FILTERS: Array<{ value: PackFilter; label: string }> = [
+  { value: 'all', label: 'All products' },
+  { value: '7', label: 'Starter Pack' },
+  { value: '30', label: 'Transformation Pack' },
+  { value: '90', label: 'Ultimate Pack' },
 ]
 
 function toDatetimeLocalValue(d: Date): string {
@@ -251,6 +256,28 @@ export default function DeliveredOrdersPage() {
   const isExec = isCareExecutiveRole(role)
 
   const [mainTab, setMainTab] = useState<MainTab>('delivered')
+
+  useEffect(() => {
+    try {
+      const tab = new URLSearchParams(window.location.search).get('tab')
+      if (tab === 'upsell') setMainTab('upsell')
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const selectMainTab = useCallback((key: MainTab) => {
+    setMainTab(key)
+    try {
+      const url = new URL(window.location.href)
+      if (key === 'upsell') url.searchParams.set('tab', 'upsell')
+      else url.searchParams.delete('tab')
+      window.history.replaceState({}, '', `${url.pathname}${url.search}`)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -278,7 +305,7 @@ export default function DeliveredOrdersPage() {
   const [tasks, setTasks] = useState<CareTask[]>([])
   const [tasksLoading, setTasksLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('inbox')
-  const [dayFilter, setDayFilter] = useState<DayFilter>('all')
+  const [packFilter, setPackFilter] = useState<PackFilter>('all')
   const [taskSort, setTaskSort] = useState<TaskSort>('due_asc')
   const [taskSearch, setTaskSearch] = useState('')
   const [debouncedTaskSearch, setDebouncedTaskSearch] = useState('')
@@ -332,7 +359,7 @@ export default function DeliveredOrdersPage() {
 
   useEffect(() => {
     setTaskPage(1)
-  }, [debouncedTaskSearch, statusFilter, dayFilter, taskPageSize, taskSort])
+  }, [debouncedTaskSearch, statusFilter, packFilter, taskPageSize, taskSort])
 
   const clearExpandedTaskUi = useCallback(() => {
     setOutcome('')
@@ -394,7 +421,7 @@ export default function DeliveredOrdersPage() {
         pageSize: taskPageSize,
         sort: taskSort,
         deliveredOnly: true,
-        day: dayFilter,
+        pack: packFilter,
       })
       setTasks(data.tasks)
       setTaskTotal(data.total)
@@ -404,7 +431,7 @@ export default function DeliveredOrdersPage() {
     } finally {
       setTasksLoading(false)
     }
-  }, [statusFilter, dayFilter, debouncedTaskSearch, taskPage, taskPageSize, taskSort])
+  }, [statusFilter, packFilter, debouncedTaskSearch, taskPage, taskPageSize, taskSort])
 
   useEffect(() => {
     if (mainTab === 'delivered') void loadOrders()
@@ -499,6 +526,8 @@ export default function DeliveredOrdersPage() {
       } else {
         setSuccess(`Open Upsell Call already exists for ${order.name}`)
       }
+      const taskId = result.task?.id || order.upsellTaskId
+      if (taskId) openCareOrderWorkspace(order.id, taskId, 'delivered-upsell')
       await loadOrders()
     } catch (err: any) {
       setError(err?.message || 'Failed to create upsell task')
@@ -543,7 +572,8 @@ export default function DeliveredOrdersPage() {
           remarks: form.remarks || 'Customer unreachable',
         })
         setUnreachableConfirmTask(null)
-        setSuccess('Marked unreachable — task will return in 1 hour')
+        setStatusFilter('unreachable')
+        setSuccess('Marked unreachable')
       } else if (action === 'escalate') {
         const reason = form.escalateReason.trim()
         if (!reason) throw new Error('Escalate reason is required')
@@ -618,6 +648,7 @@ export default function DeliveredOrdersPage() {
     ['inbox', 'To do'],
     ['overdue', 'Overdue'],
     ['rescheduled', 'Rescheduled'],
+    ['unreachable', 'Unreachable'],
     ['escalated', 'Escalated'],
     ['not_interested', 'Not interested'],
     ['completed', 'Done'],
@@ -691,7 +722,7 @@ export default function DeliveredOrdersPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          setMainTab('delivered')
+                          selectMainTab('delivered')
                           setUpsellFilter('all')
                         }}
                         className={`text-left ${upsellFilter === 'all' && mainTab === 'delivered' ? 'underline decoration-2' : ''}`}
@@ -705,7 +736,7 @@ export default function DeliveredOrdersPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          setMainTab('delivered')
+                          selectMainTab('delivered')
                           setUpsellFilter('open')
                         }}
                         className={`text-left ${upsellFilter === 'open' ? 'underline decoration-2' : ''}`}
@@ -719,7 +750,7 @@ export default function DeliveredOrdersPage() {
                       <button
                         type="button"
                         onClick={() => {
-                          setMainTab('delivered')
+                          selectMainTab('delivered')
                           setUpsellFilter('needs')
                         }}
                         className={`text-left ${upsellFilter === 'needs' ? 'underline decoration-2' : ''}`}
@@ -762,7 +793,7 @@ export default function DeliveredOrdersPage() {
               <button
                 key={key}
                 type="button"
-                onClick={() => setMainTab(key)}
+                onClick={() => selectMainTab(key)}
                 className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border transition-colors ${
                   mainTab === key
                     ? 'bg-purple-600 text-white border-purple-500'
@@ -963,7 +994,7 @@ export default function DeliveredOrdersPage() {
                               )}
                             </div>
                             <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
-                              {order.name}
+                              <OrderIdLink orderId={order.id} orderName={order.name} />
                             </p>
                             <p className="text-[11px] mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
                               Ordered {fmtDay(order.created_at)}
@@ -1015,18 +1046,19 @@ export default function DeliveredOrdersPage() {
 
                           <div className="md:col-span-3 flex md:justify-end items-center gap-2">
                             {order.hasOpenUpsell ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setMainTab('upsell')
-                                  setStatusFilter('inbox')
-                                  setTaskSearch(order.name || '')
-                                }}
-                                className="px-3 py-2 rounded-lg text-sm font-medium border"
+                              <a
+                                href={careOrderWorkspaceHref(
+                                  order.id,
+                                  order.upsellTaskId || undefined,
+                                  'delivered',
+                                )}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-3 py-2 rounded-lg text-sm font-medium border no-underline"
                                 style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
                               >
-                                View upsell task
-                              </button>
+                                Open care workspace
+                              </a>
                             ) : (
                               <button
                                 type="button"
@@ -1133,32 +1165,6 @@ export default function DeliveredOrdersPage() {
                 ))}
               </div>
 
-              <div className="mb-3 flex flex-wrap gap-2">
-                {DAY_FILTERS.map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setDayFilter(key)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
-                      dayFilter === key
-                        ? 'bg-emerald-600 text-white border-emerald-500'
-                        : ''
-                    }`}
-                    style={
-                      dayFilter === key
-                        ? undefined
-                        : {
-                            borderColor: 'var(--border)',
-                            color: 'var(--foreground)',
-                            background: 'var(--card)',
-                          }
-                    }
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
               <div className="mb-4 flex flex-col sm:flex-row gap-3 sm:items-center">
                 <div className="relative flex-1">
                   <Search
@@ -1177,6 +1183,25 @@ export default function DeliveredOrdersPage() {
                     }}
                   />
                 </div>
+                <label className="inline-flex items-center gap-2 text-xs shrink-0" style={{ color: 'var(--foreground-muted)' }}>
+                  Product
+                  <select
+                    value={packFilter}
+                    onChange={(e) => setPackFilter(e.target.value as PackFilter)}
+                    className="px-2.5 py-2 rounded-xl border text-xs font-semibold"
+                    style={{
+                      background: 'var(--card)',
+                      borderColor: 'var(--border)',
+                      color: 'var(--foreground)',
+                    }}
+                  >
+                    {PACK_FILTERS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <label className="inline-flex items-center gap-2 text-xs shrink-0" style={{ color: 'var(--foreground-muted)' }}>
                   Sort
                   <select
@@ -1210,68 +1235,51 @@ export default function DeliveredOrdersPage() {
                 >
                   No upsell tasks for delivered orders in this filter.
                   <span className="block mt-1 text-[11px]">
-                    Only tasks for currently delivered orders are shown here. Undelivered Day 5/28/90 calls stay on Tasks.
+                    Click a row to open the shared care workspace (call journey, trails, notes). Pack schedule: Starter D3/D5 · Transformation D15/D23 · Ultimate D15/D30/D60.
                   </span>
                 </div>
               ) : (
                 <div className="space-y-3">
                   {tasks.map((task) => {
-                    const expanded = expandedId === task.id
                     const st = statusBadge(task)
                     const overdue = isTaskOverdue(task)
-                    const busy = savingId === task.id
-                    const canAct = !['completed', 'not_interested'].includes(task.status)
-                    const taskOrderCtx = orderCtxTaskId === task.id ? orderCtx : null
-                    const taskOrderCtxLoading = expanded && orderCtxTaskId !== task.id && orderCtxLoading
-                    const shipState =
-                      taskOrderCtx?.state ||
-                      taskOrderCtx?.operational?.state ||
-                      taskOrderCtx?.order?.state ||
-                      null
-                    const shipCity =
-                      taskOrderCtx?.city ||
-                      taskOrderCtx?.operational?.city ||
-                      taskOrderCtx?.order?.city ||
-                      null
-                    const shipEtd =
-                      taskOrderCtx?.etd ||
-                      taskOrderCtx?.operational?.etd ||
-                      taskOrderCtx?.order?.etd ||
-                      null
-
+                    const workspaceHref = careOrderWorkspaceHref(
+                      task.orderId,
+                      task.id,
+                      'delivered-upsell',
+                    )
                     return (
-                      <div
+                      <a
                         key={task.id}
-                        className={`crm-card overflow-hidden border ${overdue ? 'ring-1 ring-red-500/35' : ''}`}
+                        href={workspaceHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`crm-card overflow-hidden border cursor-pointer hover:border-purple-500/40 transition-colors block no-underline ${
+                          overdue ? 'ring-1 ring-red-500/35' : ''
+                        }`}
                         style={{
                           borderColor: overdue ? 'rgba(239, 68, 68, 0.45)' : 'var(--border)',
+                          color: 'inherit',
                         }}
+                        title="Open care workspace in a new tab"
                       >
-                        <button
-                          type="button"
-                          onClick={() => setExpandedId(expanded ? null : task.id)}
-                          className="w-full text-left p-4 hover:bg-purple-500/[0.03] transition-colors"
-                        >
+                        <div className="w-full text-left p-4">
                           <div className="flex items-start gap-3">
-                            <div className="mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                              {expanded ? (
-                                <ChevronDown className="w-4 h-4" />
-                              ) : (
-                                <ChevronRight className="w-4 h-4" />
-                              )}
-                            </div>
                             <div className="flex-1 min-w-0 grid grid-cols-1 md:grid-cols-12 gap-3">
                               <div className="md:col-span-4">
                                 <div className="flex flex-wrap items-center gap-1.5 mb-1">
                                   <span className={badge('purple')}>Upsell</span>
                                   <span className={badge(st.tone)}>{st.label}</span>
                                   {task.priority === 'high' && <span className={badge('red')}>High</span>}
+                                  {task.packLabel && <span className={badge('blue')}>{task.packLabel}</span>}
                                 </div>
                                 <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>
                                   {task.taskLabel}
                                 </p>
                                 <p className="text-[11px] mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                                  {task.orderName}
+                                  <span className="text-purple-600 font-medium">
+                                    {task.orderName || `#${task.orderId}`}
+                                  </span>
                                   {task.packLabel ? ` · ${task.packLabel}` : ''}
                                 </p>
                               </div>
@@ -1290,18 +1298,6 @@ export default function DeliveredOrdersPage() {
                                   <Phone className="w-3 h-3" />
                                   {task.phone || '—'}
                                 </p>
-                                {expanded && (shipState || shipCity) && (
-                                  <p className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                                    <MapPin className="w-3 h-3" />
-                                    {[shipCity, shipState].filter(Boolean).join(', ')}
-                                  </p>
-                                )}
-                                {expanded && (
-                                  <p className="text-[11px] flex items-center gap-1 mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-                                    <Truck className="w-3 h-3" />
-                                    ETD {taskOrderCtxLoading ? '…' : shipEtd ? fmtDay(shipEtd) : '—'}
-                                  </p>
-                                )}
                               </div>
                               <div className="md:col-span-3">
                                 <p
@@ -1332,285 +1328,8 @@ export default function DeliveredOrdersPage() {
                               </div>
                             </div>
                           </div>
-                        </button>
-
-                        {expanded && (
-                          <div className="px-4 pb-4 space-y-3" onClick={(e) => e.stopPropagation()}>
-                            {(taskOrderCtx?.timeline?.length || orderCtxLoading || orderCtxError) && (
-                              <div
-                                className="rounded-xl border p-3"
-                                style={{ borderColor: 'var(--border)', background: 'var(--background)' }}
-                              >
-                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                                  <p
-                                    className="text-[10px] font-bold uppercase tracking-wider"
-                                    style={{ color: 'var(--foreground-muted)' }}
-                                  >
-                                    Order trail
-                                  </p>
-                                  {taskOrderCtx && (
-                                    <span
-                                      className={badge(
-                                        taskOrderCtx.delivered ? 'emerald' : 'amber',
-                                      )}
-                                    >
-                                      {taskOrderCtx.statusLabel ||
-                                        (taskOrderCtx.delivered ? 'Delivered' : 'Not delivered')}
-                                    </span>
-                                  )}
-                                </div>
-                                {orderCtxLoading && orderCtxTaskId !== task.id ? (
-                                  <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
-                                    Loading trail…
-                                  </p>
-                                ) : orderCtxError && orderCtxTaskId === task.id ? (
-                                  <p className="text-xs text-red-500">{orderCtxError}</p>
-                                ) : taskOrderCtx?.timeline?.length ? (
-                                  <TimelineRail steps={taskOrderCtx.timeline} />
-                                ) : null}
-                              </div>
-                            )}
-
-                            {canAct ? (
-                              <div className="space-y-3 pt-1 border-t" style={{ borderColor: 'var(--border)' }}>
-                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                                  <label className="block">
-                                    <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                      Call outcome
-                                    </span>
-                                    <input
-                                      value={outcome}
-                                      onChange={(e) => setOutcome(e.target.value)}
-                                      placeholder="e.g. Interested in refill"
-                                      className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                      style={{
-                                        background: 'var(--background)',
-                                        borderColor: 'var(--border)',
-                                        color: 'var(--foreground)',
-                                      }}
-                                    />
-                                  </label>
-                                  <label className="block">
-                                    <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                      Customer response
-                                    </span>
-                                    <input
-                                      value={customerResponse}
-                                      onChange={(e) => setCustomerResponse(e.target.value)}
-                                      placeholder="e.g. Will reorder next week"
-                                      className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                      style={{
-                                        background: 'var(--background)',
-                                        borderColor: 'var(--border)',
-                                        color: 'var(--foreground)',
-                                      }}
-                                    />
-                                  </label>
-                                  <label className="block">
-                                    <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                      Remarks
-                                    </span>
-                                    <input
-                                      value={remarks}
-                                      onChange={(e) => setRemarks(e.target.value)}
-                                      placeholder="Anything else for the next agent"
-                                      className="mt-1 w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                      style={{
-                                        background: 'var(--background)',
-                                        borderColor: 'var(--border)',
-                                        color: 'var(--foreground)',
-                                      }}
-                                    />
-                                  </label>
-                                </div>
-
-                                {requiresCustomerRating(task) && (
-                                  <div>
-                                    <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                      Customer rating * (1–5)
-                                    </span>
-                                    <div className="mt-1.5 flex items-center gap-1">
-                                      {[1, 2, 3, 4, 5].map((n) => (
-                                        <button
-                                          key={n}
-                                          type="button"
-                                          disabled={busy}
-                                          onClick={() => setCustomerRating(n)}
-                                          className="p-0.5 disabled:opacity-50"
-                                        >
-                                          <Star
-                                            className={`w-6 h-6 ${
-                                              n <= customerRating
-                                                ? 'fill-amber-400 text-amber-400'
-                                                : 'text-[var(--foreground-muted)]'
-                                            }`}
-                                          />
-                                        </button>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-
-                                <div className="flex flex-nowrap items-center gap-2 overflow-x-auto">
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => onAction(task, 'complete')}
-                                    className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-semibold bg-emerald-600 text-white disabled:opacity-50"
-                                  >
-                                    <CheckCircle2 className="w-4 h-4" />
-                                    Mark completed
-                                  </button>
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => openCreateOrderForTask(task)}
-                                    className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white disabled:opacity-50"
-                                  >
-                                    <PackagePlus className="w-4 h-4" />
-                                    Create order
-                                  </button>
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => setUnreachableConfirmTask(task)}
-                                    className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                    style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                                  >
-                                    Unreachable
-                                  </button>
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => {
-                                      void (async () => {
-                                        setEscalateReason('')
-                                        const users = await ensureEscalationTargets()
-                                        const defaultTarget =
-                                          users.find((t) => t.email !== user?.email) || users[0]
-                                        setEscalateTargetEmail(defaultTarget?.email || '')
-                                        setEscalateConfirmTask(task)
-                                      })()
-                                    }}
-                                    className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                    style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                                  >
-                                    Escalate
-                                  </button>
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => {
-                                      setCallAfterAt(
-                                        toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000)),
-                                      )
-                                      setCallAfterConfirmTask(task)
-                                    }}
-                                    className="inline-flex items-center gap-1.5 shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                    style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                                  >
-                                    <Clock className="w-4 h-4" />
-                                    Call After
-                                  </button>
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => {
-                                      setNotInterestedReason('')
-                                      setNotInterestedConfirmTask(task)
-                                    }}
-                                    className="shrink-0 px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                    style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                                  >
-                                    Not interested
-                                  </button>
-                                </div>
-
-                                <div className="flex flex-wrap items-end gap-2">
-                                  <label className="block">
-                                    <span className="text-[11px] font-medium" style={{ color: 'var(--foreground-muted)' }}>
-                                      Reschedule
-                                    </span>
-                                    <input
-                                      type="datetime-local"
-                                      value={rescheduleAt}
-                                      min={toDatetimeLocalValue(new Date())}
-                                      onChange={(e) => setRescheduleAt(e.target.value)}
-                                      onFocus={() => {
-                                        if (!rescheduleAt) {
-                                          setRescheduleAt(
-                                            toDatetimeLocalValue(
-                                              new Date(Date.now() + 60 * 60 * 1000),
-                                            ),
-                                          )
-                                        }
-                                      }}
-                                      className="mt-1 block px-3 py-2 rounded-lg text-sm border"
-                                      style={{
-                                        background: 'var(--background)',
-                                        borderColor: 'var(--border)',
-                                        color: 'var(--foreground)',
-                                      }}
-                                    />
-                                  </label>
-                                  <button
-                                    disabled={busy}
-                                    onClick={() => onAction(task, 'reschedule')}
-                                    className="px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-50"
-                                    style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                                  >
-                                    Save new time
-                                  </button>
-                                </div>
-
-                                <div className="flex gap-2">
-                                  <input
-                                    value={noteText}
-                                    onChange={(e) => setNoteText(e.target.value)}
-                                    placeholder="Quick note (optional)"
-                                    className="flex-1 px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 focus:ring-purple-500/30"
-                                    style={{
-                                      background: 'var(--background)',
-                                      borderColor: 'var(--border)',
-                                      color: 'var(--foreground)',
-                                    }}
-                                  />
-                                  <button
-                                    disabled={busy || !noteText.trim()}
-                                    onClick={() => onAddNote(task)}
-                                    className="px-3 py-2 rounded-lg text-sm font-medium border disabled:opacity-40"
-                                    style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                                  >
-                                    Add note
-                                  </button>
-                                </div>
-                              </div>
-                            ) : (
-                              <div
-                                className="pt-3 border-t text-sm space-y-1"
-                                style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                              >
-                                {task.status === 'not_interested' ? (
-                                  <>
-                                    <p className="font-semibold" style={{ color: 'var(--foreground-muted)' }}>
-                                      Not interested
-                                    </p>
-                                    <p style={{ color: 'var(--foreground-muted)' }}>
-                                      Reason: {task.remarks || '—'}
-                                    </p>
-                                  </>
-                                ) : (
-                                  <>
-                                    <p className="font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                                      <CheckCircle2 className="w-4 h-4" /> Completed
-                                    </p>
-                                    <p style={{ color: 'var(--foreground-muted)' }}>
-                                      Outcome: {task.outcome || '—'}
-                                    </p>
-                                    <p style={{ color: 'var(--foreground-muted)' }}>
-                                      Response: {task.customerResponse || '—'}
-                                    </p>
-                                  </>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                        </div>
+                      </a>
                     )
                   })}
                 </div>
@@ -1683,8 +1402,8 @@ export default function DeliveredOrdersPage() {
               Customer unreachable
             </h3>
             <p className="text-sm mt-2" style={{ color: 'var(--foreground-muted)' }}>
-              We’ll bring <span className="font-semibold">{unreachableConfirmTask.orderName}</span> back
-              in about an hour.
+              We’ll move <span className="font-semibold">{unreachableConfirmTask.orderName}</span> to
+              the Unreachable tab. It will not return to To do.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button

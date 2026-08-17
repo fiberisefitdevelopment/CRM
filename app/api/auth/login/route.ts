@@ -18,7 +18,8 @@ import { logAction } from '@/src/services/auditLogService'
 
 export async function POST(req: NextRequest) {
   try {
-    await seedAdminUser()
+    // Seed default accounts off the login critical path (first boot only).
+    void seedAdminUser()
 
     const body = await req.json().catch(() => null)
     if (!body?.email || !body?.password) {
@@ -110,7 +111,7 @@ export async function POST(req: NextRequest) {
 
     clearAuthFailures(ip, email)
 
-    await userDoc.ref.update({
+    void userDoc.ref.update({
       lastLoginAt: admin.firestore.FieldValue.serverTimestamp(),
     })
 

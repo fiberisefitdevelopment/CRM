@@ -39,12 +39,16 @@ async function refreshRecentOrdersIntoCache(limit = 50): Promise<{
     cache: 'no-store',
   })
 
+  const text = await res.text().catch(() => '')
   if (!res.ok) {
-    const text = await res.text().catch(() => '')
     throw new Error(`Shopify refresh failed: ${res.status} ${text}`)
   }
-
-  const data = await res.json()
+  let data: any = {}
+  try {
+    data = text.trim() ? JSON.parse(text) : {}
+  } catch {
+    throw new Error('Shopify refresh returned empty or invalid JSON')
+  }
   const fresh: any[] = Array.isArray(data.orders) ? data.orders : []
   const existing = (await OrderRepository.getCachedOrders()) || []
   const byId = new Map(existing.map((o: any) => [String(o.id), o]))

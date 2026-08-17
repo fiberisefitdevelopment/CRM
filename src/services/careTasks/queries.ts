@@ -14,9 +14,11 @@ import {
 } from './generator'
 import { resolveCareExecutivePool } from './assignmentEngine'
 import { careExecutiveDisplayName, normalizeCareExecutiveEmail } from './executiveConfig'
-import { invalidateCareTasksCache, loadCareTasksCached } from './taskCache'
+import { invalidateCareTasksCache, loadCareTasksCached, peekCachedCareTasks } from './taskCache'
 import {
   getCareTaskKind,
+  isUpsellCareTask,
+  type CareOrderGroup,
   type CareTask,
   type CareTaskKind,
   type CareTaskSummary,
@@ -101,11 +103,16 @@ export interface ListCareTasksParams {
   /** When true, keep only tasks whose linked order is currently delivered. */
   deliveredOnly?: boolean
   /** Filter upsell/day-based tasks by schedule day (5 / 28 / 90 / manual). */
-  day?: 'all' | '5' | '28' | '90' | 'manual'
+  day?: 'all' | '5' | '23' | '28' | '90' | 'manual'
+  /** Filter by mapped pack / product (7 starter, 30 transformation, 90 ultimate). */
+  pack?: 'all' | '7' | '30' | '90'
+  /** One row per Shopify order, with the full call journey nested. */
+  groupBy?: 'task' | 'order'
 }
 
 export interface ListCareTasksResult {
   tasks: CareTask[]
+  groups?: CareOrderGroup[]
   total: number
   page: number
   pageSize: number
@@ -179,16 +186,23 @@ function enrichOrderCreatedAt(tasks: CareTask[], orders: any[]): CareTask[] {
   })
 }
 
-function resolveTaskOrder(task: CareTask, orders: any[]): any | null {
-  if (!orders.length) return null
-  const byId = new Map(orders.map((o: any) => [String(o.id), o]))
-  const byName = new Map(
-    orders.map((o: any) => [String(o.name || '').replace(/^#/, '').toLowerCase(), o]),
-  )
+function resolveTaskOrder(
+  task: CareTask,
+  byId: Map<string, any>,
+  byName: Map<string, any>,
+): any | null {
   const nameKey = String(task.orderName || '')
     .replace(/^#/, '')
     .toLowerCase()
   return byId.get(String(task.orderId)) || byName.get(nameKey) || null
+}
+
+function orderLookupMaps(orders: any[]): { byId: Map<string, any>; byName: Map<string, any> } {
+  const byId = new Map(orders.map((o: any) => [String(o.id), o]))
+  const byName = new Map(
+    orders.map((o: any) => [String(o.name || '').replace(/^#/, '').toLowerCase(), o]),
+  )
+  return { byId, byName }
 }
 
 /**
@@ -199,12 +213,14 @@ function excludeDeliveredCodConfirmations(
   tasks: CareTask[],
   orders: any[],
   index = buildCloneOrderIndex(orders),
+  lookups?: { byId: Map<string, any>; byName: Map<string, any> },
 ): CareTask[] {
   if (!orders.length) return tasks
+  const { byId, byName } = lookups || orderLookupMaps(orders)
 
   return tasks.filter((t) => {
     if (getCareTaskKind(t) !== 'cod_confirmation') return true
-    const order = resolveTaskOrder(t, orders)
+    const order = resolveTaskOrder(t, byId, byName)
     if (!order) return true
     const { operational } = findCloneTrailIndexed(order, index)
     return !isShiprocketDeliveredStatus(operational || order)
@@ -234,12 +250,14 @@ function excludeNonActionableOrderTasks(
   tasks: CareTask[],
   orders: any[],
   index = buildCloneOrderIndex(orders),
+  lookups?: { byId: Map<string, any>; byName: Map<string, any> },
 ): CareTask[] {
   if (!orders.length) return tasks
+  const { byId, byName } = lookups || orderLookupMaps(orders)
 
   return tasks.filter((t) => {
     if (t.status === 'completed') return true
-    const order = resolveTaskOrder(t, orders)
+    const order = resolveTaskOrder(t, byId, byName)
     if (!order) return true
     const { operational } = findCloneTrailIndexed(order, index)
     const live = operational || order
@@ -296,7 +314,7 @@ async function fetchAllTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot
 /** Active work queue only — much smaller than the full history. */
 async function fetchActiveTaskDocs(): Promise<admin.firestore.QueryDocumentSnapshot[]> {
   try {
-    const statuses = ['pending', 'rescheduled', 'escalated'] as const
+    const statuses = ['pending', 'rescheduled', 'escalated', 'unreachable'] as const
     const snaps = await Promise.all(
       statuses.map((status) =>
         getDb().collection('careTasks').where('status', '==', status).get(),
@@ -331,26 +349,58 @@ async function docsToEnrichedTasks(
   persistScheduledAtRepairs(rawTasks, enriched)
   const promoted = promoteDueReschedules(enriched)
   const cloneIndex = buildCloneOrderIndex(orders)
+  const lookups = orderLookupMaps(orders)
   return excludeNonActionableOrderTasks(
-    excludeDeliveredCodConfirmations(promoted, orders, cloneIndex),
+    excludeDeliveredCodConfirmations(promoted, orders, cloneIndex, lookups),
     orders,
     cloneIndex,
+    lookups,
   )
 }
 
-/** When Call After time arrives, move task back to To do (pending). */
+/** When Call After time arrives, move task back to To do (pending). Unreachable stays put. */
 function promoteDueReschedules(tasks: CareTask[]): CareTask[] {
   const now = Date.now()
   const dueIds: string[] = []
   const next = tasks.map((t) => {
     if (t.status !== 'rescheduled') return t
+    if (t.lastUnreachableAt) {
+      return { ...t, status: 'unreachable' as const }
+    }
     const due = new Date(t.scheduledAt).getTime()
     if (!Number.isFinite(due) || due > now) return t
     dueIds.push(t.id)
     return { ...t, status: 'pending' as const }
   })
+  const parkedUnreachable = next
+    .filter((t) => t.status === 'unreachable' && t.lastUnreachableAt)
+    .map((t) => t.id)
+    .filter((id) => tasks.find((x) => x.id === id && x.status === 'rescheduled'))
+  if (parkedUnreachable.length) persistParkUnreachable(parkedUnreachable)
   if (dueIds.length) persistPromoteDueReschedules(dueIds)
   return next
+}
+
+function persistParkUnreachable(ids: string[]): void {
+  void (async () => {
+    try {
+      const db = getDb()
+      const chunk = ids.slice(0, 200)
+      const batch = db.batch()
+      const now = new Date().toISOString()
+      for (const id of chunk) {
+        batch.update(db.collection('careTasks').doc(id), {
+          status: 'unreachable',
+          updatedAt: now,
+          updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+        })
+      }
+      await batch.commit()
+      invalidateCareTasksCache()
+    } catch (err) {
+      console.warn('careTasks: park unreachable failed', err)
+    }
+  })()
 }
 
 function persistPromoteDueReschedules(ids: string[]): void {
@@ -416,7 +466,13 @@ function filterTasksClient(
   const todayEnd = new Date(endOfTodayIso()).getTime()
 
   if (!opts?.ignoreKind && params.kind && params.kind !== 'all') {
-    list = list.filter((t) => getCareTaskKind(t) === params.kind)
+    const kind =
+      params.kind === 'day_28' ? 'day_23' : params.kind
+    list = list.filter((t) =>
+      kind === 'upsell'
+        ? isUpsellCareTask(t)
+        : getCareTaskKind(t) === kind,
+    )
   }
 
   if (params.day && params.day !== 'all') {
@@ -428,9 +484,26 @@ function filterTasksClient(
           String(t.id || '').includes('__upsell__manual'),
       )
     } else {
-      const dayNum = Number(params.day)
-      list = list.filter((t) => Number(t.scheduleDay) === dayNum)
+      const dayNum = Number(params.day) === 28 ? 23 : Number(params.day)
+      list = list.filter((t) => {
+        const d = Number(t.scheduleDay)
+        // Legacy Transformation upsell was D28; treat as D23
+        if (dayNum === 23) return d === 23 || d === 28
+        return d === dayNum
+      })
     }
+  }
+
+  if (params.pack && params.pack !== 'all') {
+    const packKey = String(params.pack)
+    list = list.filter((t) => {
+      if (String(t.packKey || '') === packKey) return true
+      const hay = `${t.packLabel || ''} ${t.taskLabel || ''}`.toLowerCase()
+      if (packKey === '7') return hay.includes('starter')
+      if (packKey === '30') return hay.includes('transformation')
+      if (packKey === '90') return hay.includes('ultimate')
+      return false
+    })
   }
 
   if (params.status && params.status !== 'all') {
@@ -456,9 +529,12 @@ function filterTasksClient(
       list = list.filter(
         (t) =>
           t.status === 'rescheduled' &&
+          !t.lastUnreachableAt &&
           Number.isFinite(new Date(t.scheduledAt).getTime()) &&
           new Date(t.scheduledAt).getTime() > now,
       )
+    } else if (params.status === 'unreachable') {
+      list = list.filter((t) => t.status === 'unreachable')
     } else if (params.status === 'escalated') {
       list = list.filter((t) => t.status === 'escalated')
     } else if (params.status === 'not_interested') {
@@ -536,6 +612,104 @@ function persistScheduledAtRepairs(
   })()
 }
 
+function orderGroupKey(t: CareTask): string {
+  return String(t.orderId || '').trim() || String(t.orderName || '').trim() || t.id
+}
+
+function sortCallJourney(list: CareTask[]): CareTask[] {
+  return [...list].sort((a, b) => {
+    const da = Number(a.scheduleDay)
+    const db = Number(b.scheduleDay)
+    const sa = Number.isFinite(da) ? da : 999
+    const sb = Number.isFinite(db) ? db : 999
+    if (sa !== sb) return sa - sb
+    return new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime()
+  })
+}
+
+async function paginateByOrder(
+  matching: CareTask[],
+  opts: { page: number; pageSize: number; wantAll: boolean },
+): Promise<Pick<ListCareTasksResult, 'tasks' | 'groups' | 'total' | 'page' | 'pageSize'>> {
+  const keyOrder: string[] = []
+  const seen = new Set<string>()
+  const focusByKey = new Map<string, CareTask>()
+  for (const t of matching) {
+    const k = orderGroupKey(t)
+    if (!seen.has(k)) {
+      seen.add(k)
+      keyOrder.push(k)
+      focusByKey.set(k, t)
+    }
+  }
+
+  const total = keyOrder.length
+  const pageSize = opts.pageSize
+  let safePage = 1
+  let pageKeys = keyOrder
+  if (!opts.wantAll) {
+    const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1)
+    safePage = Math.min(Math.max(1, opts.page), totalPages)
+    const start = (safePage - 1) * pageSize
+    pageKeys = keyOrder.slice(start, start + pageSize)
+  }
+
+  const pageKeySet = new Set(pageKeys)
+  let pool: CareTask[] = matching
+  try {
+    pool = await loadOrgTasks()
+  } catch {
+    pool = matching
+  }
+
+  const byKey = new Map<string, CareTask[]>()
+  for (const t of pool) {
+    const k = orderGroupKey(t)
+    if (!pageKeySet.has(k)) continue
+    const arr = byKey.get(k) || []
+    arr.push(t)
+    byKey.set(k, arr)
+  }
+  for (const t of matching) {
+    const k = orderGroupKey(t)
+    if (!pageKeySet.has(k)) continue
+    const arr = byKey.get(k) || []
+    if (!arr.some((x) => x.id === t.id)) arr.push(t)
+    byKey.set(k, arr)
+  }
+
+  const groups: CareOrderGroup[] = pageKeys.map((k) => {
+    const groupTasks = sortCallJourney(byKey.get(k) || [])
+    const focus =
+      focusByKey.get(k) ||
+      groupTasks.find((t) => t.status === 'pending' || t.status === 'rescheduled') ||
+      groupTasks[0]
+    const head = focus || groupTasks[0]
+    return {
+      key: k,
+      orderId: head?.orderId || k,
+      orderName: head?.orderName || '',
+      customerName: head?.customerName || '',
+      phone: head?.phone || '',
+      packKey: head?.packKey || '',
+      packLabel: head?.packLabel,
+      orderCreatedAt: head?.orderCreatedAt || null,
+      paymentMethod: head?.paymentMethod || 'unknown',
+      assignedTo: head?.assignedTo || null,
+      tasks: groupTasks,
+      focusTaskId: focus?.id || groupTasks[0]?.id || '',
+    }
+  })
+
+  return {
+    tasks: groups.flatMap((g) => g.tasks),
+    groups,
+    total,
+    page: safePage,
+    pageSize: opts.wantAll ? total || pageSize : pageSize,
+  }
+}
+
 export async function listCareTasks(params: ListCareTasksParams = {}): Promise<ListCareTasksResult> {
   const pageSize = normalizePageSize(
     params.pageSize ||
@@ -564,13 +738,20 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
     kindCounts[k] = (kindCounts[k] || 0) + 1
   }
 
+  const resolvedKind =
+    params.kind === 'day_28' ? 'day_23' : params.kind
+  const matchesKind = (t: CareTask) =>
+    resolvedKind === 'upsell'
+      ? isUpsellCareTask(t)
+      : getCareTaskKind(t) === resolvedKind
+
   const filteredBase =
     params.status === 'rescheduled'
-      ? [...(params.kind && params.kind !== 'all'
-          ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
+      ? [...(resolvedKind && resolvedKind !== 'all'
+          ? statusFiltered.filter(matchesKind)
           : statusFiltered)]
-      : params.kind && params.kind !== 'all'
-        ? statusFiltered.filter((t) => getCareTaskKind(t) === params.kind)
+      : resolvedKind && resolvedKind !== 'all'
+        ? statusFiltered.filter(matchesKind)
         : statusFiltered
 
   let filteredForSort = filteredBase
@@ -633,6 +814,11 @@ export async function listCareTasks(params: ListCareTasksParams = {}): Promise<L
   })()
 
   const total = filtered.length
+  if (params.groupBy === 'order') {
+    const grouped = await paginateByOrder(filtered, { page, pageSize, wantAll })
+    return { ...grouped, kindCounts }
+  }
+
   if (wantAll) {
     return { tasks: filtered, total, page: 1, pageSize: total || pageSize, kindCounts }
   }
@@ -662,9 +848,14 @@ export async function getCareTaskById(id: string): Promise<CareTask | null> {
 
 /** Org-wide summary — same numbers for admin and care executives. */
 export async function summarizeCareTasks(assigneeEmail?: string | null): Promise<CareTaskSummary> {
-  const tasks = await resolveTaskUniverse({
-    assigneeEmail: assigneeEmail || undefined,
-  })
+  // Open-queue counts from active universe — never block first paint on full history.
+  let tasks = await loadActiveTasks()
+  if (assigneeEmail) {
+    const email = assigneeEmail.toLowerCase()
+    tasks = tasks.filter(
+      (t) => normalizeCareExecutiveEmail(t.assignedTo?.email) === email,
+    )
+  }
   const todayStart = new Date(startOfTodayIso()).getTime()
   const todayEnd = new Date(endOfTodayIso()).getTime()
 
@@ -705,6 +896,32 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
     if (t.status === 'pending' && ts > todayEnd) {
       summary.upcoming += 1
     }
+  }
+
+  // History totals from a warm full snapshot only — never wait on Firestore.
+  const full = peekCachedCareTasks('full')
+  if (full?.length) {
+    let completed = 0
+    let notInterested = 0
+    let unreachable = 0
+    let total = 0
+    const email = assigneeEmail?.toLowerCase()
+    for (const t of full) {
+      if (
+        email &&
+        normalizeCareExecutiveEmail(t.assignedTo?.email) !== email
+      ) {
+        continue
+      }
+      total += 1
+      if (t.status === 'completed') completed += 1
+      if (t.status === 'not_interested') notInterested += 1
+      if (t.status === 'unreachable') unreachable += 1
+    }
+    summary.total = total
+    summary.completed = completed
+    summary.notInterested = notInterested
+    summary.unreachable = unreachable
   }
 
   return summary

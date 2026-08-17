@@ -1,8 +1,6 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import admin from 'firebase-admin'
-import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import {
   rotateRefreshToken,
   findValidRefreshRecord,
@@ -10,27 +8,10 @@ import {
   recordAuthFailure,
   clearAuthFailures,
   getClientIp,
-  type AuthUser,
+  getCachedActiveUser,
   type DeviceMeta,
 } from '@/src/services/auth'
 import { logAction } from '@/src/services/auditLogService'
-
-async function loadUserById(userId: string): Promise<AuthUser | null> {
-  const db = admin.firestore(getFirebaseAdmin())
-  const snap = await db.collection('users').doc(userId).get()
-  if (!snap.exists) return null
-  const data = snap.data()!
-  if (data.active === false) return null
-  const email = String(data.email || '')
-    .toLowerCase()
-    .trim()
-  return {
-    id: snap.id,
-    email,
-    name: String(data.name || email.split('@')[0] || ''),
-    role: String(data.role || 'user'),
-  }
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -58,7 +39,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })
     }
 
-    const user = await loadUserById(existing.userId)
+    const user = await getCachedActiveUser(existing.userId)
     if (!user) {
       recordAuthFailure(ip, 'refresh')
       return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })
@@ -70,7 +51,7 @@ export async function POST(req: NextRequest) {
       platform: body.platform ? String(body.platform) : existing.platform,
     }
 
-    const tokens = await rotateRefreshToken(refreshToken, user, { req, device })
+    const tokens = await rotateRefreshToken(refreshToken, user, { req, device, existing })
     if (!tokens) {
       recordAuthFailure(ip, 'refresh')
       return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })

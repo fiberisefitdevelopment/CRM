@@ -36,6 +36,35 @@ export type CreateShopifyOrderAddress = {
   country?: string
 }
 
+export function parseShopifyTags(order: any): string[] {
+  const raw = order?.tags
+  if (Array.isArray(raw)) {
+    return raw.map((t) => String(t || '').trim()).filter(Boolean)
+  }
+  return String(raw || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+}
+
+export function isCareCreatedShopifyOrder(order: any): boolean {
+  const tags = parseShopifyTags(order).map((t) => t.toLowerCase())
+  if (tags.includes('care-created')) return true
+  if (tags.some((t) => t.startsWith('care:') && t !== 'care-created')) return true
+  return /created by care:/i.test(String(order?.note || ''))
+}
+
+export function careCreatedByEmail(order: any): string | null {
+  const tags = parseShopifyTags(order)
+  const tagged = tags.find((t) => {
+    const lower = t.toLowerCase()
+    return lower.startsWith('care:') && lower !== 'care-created'
+  })
+  if (tagged) return tagged.slice(tagged.indexOf(':') + 1).trim().toLowerCase() || null
+  const match = String(order?.note || '').match(/created by care:\s*(\S+)/i)
+  return match?.[1]?.trim().toLowerCase() || null
+}
+
 export type CreateShopifyOrderInput = {
   email?: string | null
   phone: string
@@ -90,6 +119,43 @@ async function shopifyFetch(path: string, init?: RequestInit) {
   return json
 }
 
+export type ShopifyCancelFields = {
+  cancelled_at: string | null
+  cancel_reason: string | null
+  financial_status: string | null
+  fulfillment_status: string | null
+}
+
+/** Live cancel fields from Shopify — CRM cache often still shows pending after cancel. */
+export async function getShopifyCancelFieldsByIds(
+  ids: Array<string | number>,
+): Promise<Map<string, ShopifyCancelFields>> {
+  const unique = [...new Set(ids.map((id) => String(id)).filter(Boolean))]
+  const byId = new Map<string, ShopifyCancelFields>()
+  if (!unique.length) return byId
+
+  for (let i = 0; i < unique.length; i += 50) {
+    const chunk = unique.slice(i, i + 50)
+    try {
+      const json = await shopifyFetch(
+        `/orders.json?ids=${chunk.join(',')}&status=any&fields=id,cancelled_at,cancel_reason,financial_status,fulfillment_status`,
+      )
+      for (const o of json?.orders || []) {
+        if (!o?.id) continue
+        byId.set(String(o.id), {
+          cancelled_at: o.cancelled_at || null,
+          cancel_reason: o.cancel_reason || null,
+          financial_status: o.financial_status || null,
+          fulfillment_status: o.fulfillment_status || null,
+        })
+      }
+    } catch {
+      // keep whatever we already have
+    }
+  }
+  return byId
+}
+
 let productsCache: { at: number; variants: ShopifyCatalogVariant[] } | null = null
 const PRODUCTS_TTL_MS = 5 * 60 * 1000
 
@@ -126,7 +192,12 @@ export async function listShopifyCatalogVariants(): Promise<ShopifyCatalogVarian
       err.status = res.status
       throw err
     }
-    const json = text ? JSON.parse(text) : { products: [] }
+    let json: any = { products: [] }
+    try {
+      json = text.trim() ? JSON.parse(text) : { products: [] }
+    } catch {
+      json = { products: [] }
+    }
     for (const p of json.products || []) {
       for (const v of p.variants || []) {
         variants.push({

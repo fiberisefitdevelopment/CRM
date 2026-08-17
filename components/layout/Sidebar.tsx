@@ -20,6 +20,7 @@ import {
   ListTodo,
   BadgeCheck,
   PackageCheck,
+  ClipboardList,
 } from 'lucide-react'
 import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
@@ -37,7 +38,7 @@ const menuItems = [
   { icon: Bell,          label: 'Advertisements', href: '/notifications' },
   { icon: ListTodo,      label: 'Tasks', href: '/customer-service/care-tasks' },
   { icon: PackageCheck,  label: 'Delivered Orders', href: '/customer-service/delivered-orders' },
-  { icon: PackagePlus,   label: 'Create Shopify Order', href: '/customer-service/create-order' },
+  { icon: ClipboardList, label: 'Care Orders', href: '/customer-service/created-orders' },
   { icon: ShieldCheck,   label: 'Audit Logs', href: '/audit-logs' },
 ]
 
@@ -81,10 +82,10 @@ export function Sidebar() {
       return (
         item.label === 'Tasks' ||
         item.label === 'Delivered Orders' ||
-        item.label === 'Create Shopify Order'
+        item.label === 'Care Orders'
       )
     }
-    if (item.label === 'Tasks' || item.label === 'Create Shopify Order') {
+    if (item.label === 'Tasks' || item.label === 'Care Orders') {
       // Care routes live under Customer Service for admins (SubNav)
       return false
     }

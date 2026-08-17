@@ -12,7 +12,6 @@ import {
 } from '@/src/services/careTasks/session'
 import {
   CALL_AFTER_MAX_MS,
-  UNREACHABLE_RETRY_MS,
   requiresCustomerRating,
   type CareTaskStatus,
 } from '@/src/services/careTasks/types'
@@ -86,10 +85,13 @@ export async function PATCH(
         action === 'confirm_cod'
           ? `Confirmed by ${actor}`
           : `Cancel requested by ${actor} (tag only)`
+      const cancelReason = String(body.remarks || '').trim()
       patch.remarks =
         action === 'confirm_cod'
           ? 'Order confirmed — tag set for Orders / Order Status'
-          : 'Customer wants to cancel — tag set for ops (order not cancelled in Shopify)'
+          : cancelReason
+            ? cancelReason
+            : 'Customer wants to cancel — tag set for ops (order not cancelled in Shopify)'
       patch.customerResponse =
         action === 'confirm_cod' ? 'Customer confirmed COD order' : 'Customer requested cancellation'
       patch.completedAt = nowIso
@@ -126,12 +128,8 @@ export async function PATCH(
       patch.customerResponse = String(body.customerResponse)
       patch.completedAt = nowIso
     } else if (action === 'unreachable' || body.status === 'unreachable') {
-      // Auto-bring back in 1 hour as a rescheduled reminder
-      const retryAt = new Date(Date.now() + UNREACHABLE_RETRY_MS).toISOString()
-      patch.status = 'rescheduled' as CareTaskStatus
-      patch.scheduledAt = retryAt
+      patch.status = 'unreachable' as CareTaskStatus
       patch.lastUnreachableAt = nowIso
-      patch.rescheduledAt = nowIso
       patch.remarks = body.remarks ? String(body.remarks) : 'Customer unreachable'
       if (body.outcome) patch.outcome = String(body.outcome)
     } else if (action === 'call_after') {

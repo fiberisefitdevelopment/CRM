@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
-import { requireAuth, authErrorResponse } from '@/src/services/auth'
+import { getAuthFromRequest, authErrorResponse } from '@/src/services/auth'
 
 function formatToIPv4(ip: string): string {
   if (!ip || ip === 'N/A') return '127.0.0.1'
@@ -30,7 +30,14 @@ function formatToIPv4(ip: string): string {
 
 export async function GET(req: NextRequest) {
   try {
-    const user = await requireAuth(req)
+    // JWT already carries id/name/email/role — skip Firestore so bootstrap is instant.
+    const user = await getAuthFromRequest(req)
+    if (!user?.id) {
+      return NextResponse.json(
+        { authenticated: false, error: 'No active session found.' },
+        { status: 401 },
+      )
+    }
 
     let ipAddress = '127.0.0.1'
     const xForwardedFor = req.headers.get('x-forwarded-for')

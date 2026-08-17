@@ -17,7 +17,8 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url)
     const status = (searchParams.get('status') || 'inbox') as any
-    const kind = (searchParams.get('kind') || 'all') as any
+    const kindRaw = searchParams.get('kind') || 'all'
+    const kind = (kindRaw === 'day_28' ? 'day_23' : kindRaw) as any
     const search = searchParams.get('search') || undefined
     const page = Number(searchParams.get('page') || 1)
     const pageSize = Number(searchParams.get('pageSize') || 20)
@@ -26,9 +27,15 @@ export async function GET(req: NextRequest) {
       searchParams.get('deliveredOnly') === '1' ||
       searchParams.get('deliveredOnly') === 'true'
     const dayRaw = (searchParams.get('day') || 'all').toLowerCase()
-    const day = (['all', '5', '28', '90', 'manual'].includes(dayRaw)
-      ? dayRaw
-      : 'all') as 'all' | '5' | '28' | '90' | 'manual'
+    const dayNormalized = dayRaw === '28' ? '23' : dayRaw
+    const day = (['all', '5', '23', '90', 'manual'].includes(dayNormalized)
+      ? dayNormalized
+      : 'all') as 'all' | '5' | '23' | '90' | 'manual'
+    const packRaw = (searchParams.get('pack') || 'all').toLowerCase()
+    const pack = (['all', '7', '30', '90'].includes(packRaw)
+      ? packRaw
+      : 'all') as 'all' | '7' | '30' | '90'
+    const groupBy = searchParams.get('groupBy') === 'order' ? 'order' : 'task'
 
     const assigneeParam = searchParams.get('assignee')
     const assigneeEmail = resolveCareTaskAssigneeFilter(session, assigneeParam)
@@ -43,10 +50,13 @@ export async function GET(req: NextRequest) {
       sort,
       deliveredOnly,
       day,
+      pack,
+      groupBy,
     })
 
     return NextResponse.json({
       tasks: result.tasks,
+      groups: result.groups || [],
       total: result.total,
       page: result.page,
       pageSize: result.pageSize,

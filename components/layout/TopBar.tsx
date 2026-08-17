@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { usePathname } from 'next/navigation'
 import { Heart, Bell, Menu, X, Check, Trash2, ShoppingBag, Sparkles, BellRing, Sun, Moon, Package, Settings2 } from 'lucide-react'
 import { useAuth, apiFetch } from '@/lib/auth'
 import { isCareExecutiveRole, isAdminRole } from '@/src/utils/accessControl'
@@ -66,6 +67,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 
 export function TopBar() {
   const { user } = useAuth()
+  const pathname = usePathname()
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const [activeToast, setActiveToast] = useState<AppNotification | null>(null)
@@ -163,10 +165,10 @@ export function TopBar() {
 
     const checkNewOrders = async (isFirstRun: boolean) => {
       try {
-        const res = await apiFetch('/api/shopify/orders')
+        const res = await apiFetch('/api/shopify/orders/latest')
         if (!res.ok) return
 
-        const data = await res.json()
+        const data = await res.json().catch(() => ({}))
         const fetchedOrders = data.orders || []
 
         if (isFirstRun) {
@@ -253,6 +255,8 @@ export function TopBar() {
     const isCare =
       isCareExecutiveRole(role) || isAdminRole(role)
     if (!isCare) return
+    // Care-tasks page already loads summary — don't compete on first paint
+    if (pathname?.startsWith('/customer-service/care-tasks')) return
 
     const seenKey = 'fiberise_care_notif_seen'
     const loadSeen = (): Set<string> => {
@@ -272,7 +276,7 @@ export function TopBar() {
         // Cheap summary first (shared SWR cache) — avoid dual full list scans every minute
         const summaryRes = await apiFetch('/api/care-tasks/summary', { cache: 'no-store' })
         if (!summaryRes.ok) return
-        const summaryJson = await summaryRes.json()
+        const summaryJson = await summaryRes.json().catch(() => ({}))
         const summary = summaryJson?.summary || {}
         const overdueCount = Number(summary.overdue || 0)
         const todayCount = Number(summary.today || 0)
@@ -295,8 +299,8 @@ export function TopBar() {
 
         const [overdueRes, todayRes] = await Promise.all(fetches)
         if (!todayRes.ok || !overdueRes.ok) return
-        const todayData = await todayRes.json()
-        const overdueData = await overdueRes.json()
+        const todayData = await todayRes.json().catch(() => ({ tasks: [] }))
+        const overdueData = await overdueRes.json().catch(() => ({ tasks: [] }))
         const seen = loadSeen()
         const incoming: AppNotification[] = []
 
@@ -363,7 +367,7 @@ export function TopBar() {
       window.clearTimeout(start)
       clearInterval(interval)
     }
-  }, [user])
+  }, [user, pathname])
 
   // ── 3c. External localStorage notification updates (care page escalations) ─
   useEffect(() => {

@@ -28,6 +28,7 @@ import {
   getCachedOrdersCount as cacheGetCount,
   getCachedOrdersFiltered as cacheGetFiltered,
   getCachedOrdersPaginated as cacheGetPaginated,
+  getCachedOrdersPage as cacheGetPage,
   patchOrderInCache as cachePatchOrderInCache,
   getOrderStatusPaginated as cacheGetOrderStatusPaginated,
   removeOrderFromCache,
@@ -412,6 +413,11 @@ async function getCachedOrdersPaginated(page: number, perPage: number, filters: 
   return cacheGetPaginated(page, perPage, filters, source)
 }
 
+async function getCachedOrdersPage(page: number, perPage: number, filters: OrderFilters = {}) {
+  const source = await resolveSourceOrders()
+  return cacheGetPage(page, perPage, filters, source)
+}
+
 async function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}) {
   const source = await resolveSourceOrders()
   return cacheComputeTabCounts(filters, source)
@@ -424,11 +430,6 @@ async function getOrderStatusPaginated(
 ) {
   const source = await resolveSourceOrders()
   return cacheGetOrderStatusPaginated(page, perPage, filters, source)
-}
-
-// Hydrate FS disk snapshot on module load (same pattern as ordersCache)
-if (isOrdersReadFromFirestoreEnabled()) {
-  hydrateFirestoreFromDisk()
 }
 
 export const OrderRepository = {
@@ -446,6 +447,7 @@ export const OrderRepository = {
   setActiveFetchPromise,
   getCachedOrdersCount,
   getCachedOrdersPaginated,
+  getCachedOrdersPage,
   getCachedOrdersFiltered,
   getOrderStatusPaginated,
   computeTabCounts,

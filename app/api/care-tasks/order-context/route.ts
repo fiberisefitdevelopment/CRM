@@ -8,12 +8,14 @@ import {
   fulfillmentStageLabel,
   isShiprocketDeliveredStatus,
   normalizeShipmentStatus,
+  parseFlexibleDate,
 } from '@/src/utils/orderTimeline'
-import { cleanOrderName, findCloneTrail } from '@/src/utils/cloneOrders'
+import { cleanOrderName, findCloneTrailIndexed, buildCloneOrderIndex } from '@/src/utils/cloneOrders'
 import {
   canAccessCareTasksApi,
   requireSession,
 } from '@/src/services/careTasks/session'
+import { phoneMatchKey } from '@/src/utils/phoneNormalize'
 
 /**
  * Order snapshot + timeline/clone trail for Care Tasks expand panel.
@@ -46,7 +48,10 @@ export async function GET(req: NextRequest) {
       )
     }
 
-    const { parent, clones, operational } = findCloneTrail(order, all)
+    const { parent, clones, operational } = findCloneTrailIndexed(
+      order,
+      buildCloneOrderIndex(all),
+    )
 
     let tracking: any = null
     const awb = operational?.fulfillments?.[0]?.tracking_number
@@ -124,6 +129,58 @@ export async function GET(req: NextRequest) {
         .join(' ') ||
       ''
 
+    const customerPhone = String(
+      ship.phone ||
+        cust.phone ||
+        meta.customer_phone ||
+        addrSource?.phone ||
+        '',
+    ).trim()
+    const phoneKey = phoneMatchKey(customerPhone)
+
+    const orderPhoneKey = (o: any): string => {
+      const s = o?.shipping_address || o?.billing_address || {}
+      const c = o?.customer || {}
+      const m = o?.shiprocket_meta || {}
+      return phoneMatchKey(
+        s.phone || c.phone || m.customer_phone || o?.phone || '',
+      )
+    }
+
+    const samePhoneOrders = !phoneKey
+      ? []
+      : all
+          .filter((o: any) => orderPhoneKey(o) === phoneKey)
+          .map((o: any) => {
+            const line = Array.isArray(o.line_items) ? o.line_items[0] : null
+            return {
+              id: o.id,
+              name: o.name,
+              created_at: o.created_at || null,
+              total_price: String(o.total_price || '0'),
+              currency: o.currency || 'INR',
+              financial_status: o.financial_status || null,
+              fulfillment_status: o.fulfillment_status || null,
+              cancelled_at: o.cancelled_at || null,
+              statusLabel: fulfillmentStageLabel(normalizeShipmentStatus(o)),
+              productTitle: line?.title || line?.name || null,
+              isCurrent: String(o.id) === String(order.id),
+            }
+          })
+          .sort((a: any, b: any) => {
+            const ta =
+              parseFlexibleDate(a.created_at)?.getTime() ||
+              new Date(a.created_at || 0).getTime() ||
+              0
+            const tb =
+              parseFlexibleDate(b.created_at)?.getTime() ||
+              new Date(b.created_at || 0).getTime() ||
+              0
+            return ta - tb
+          })
+
+    const repeatedCustomer = samePhoneOrders.length > 1
+
     return NextResponse.json({
       order: slim(order),
       operational: slim(operational),
@@ -143,13 +200,7 @@ export async function GET(req: NextRequest) {
         firstName,
         lastName,
         email: String(cust.email || addrSource?.email || '').trim() || null,
-        phone: String(
-          ship.phone ||
-            cust.phone ||
-            meta.customer_phone ||
-            addrSource?.phone ||
-            '',
-        ).trim() || null,
+        phone: customerPhone || null,
         address1: String(ship.address1 || '').trim() || null,
         address2: String(ship.address2 || '').trim() || null,
         city: String(ship.city || meta.customer_city || '').trim() || null,
@@ -159,6 +210,10 @@ export async function GET(req: NextRequest) {
         zip: String(ship.zip || meta.customer_pincode || '').trim() || null,
         country: String(ship.country || ship.country_code || 'India').trim() || 'India',
       },
+      phoneKey: phoneKey || null,
+      repeatedCustomer,
+      samePhoneOrders,
+      samePhoneOrderCount: samePhoneOrders.length,
     })
   } catch (error: any) {
     const status = error?.status || 500
