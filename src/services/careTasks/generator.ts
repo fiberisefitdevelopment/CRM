@@ -142,6 +142,40 @@ async function createTaskIfMissing(params: {
   const dedupeKey = makeDedupeKey(orderId, params.taskType, params.scheduleDay)
   const ref = getDb().collection(COL).doc(dedupeKey)
 
+  // Bulk/quiet path: check existence first (avoids expensive create→already-exists round trips)
+  if (params.quiet) {
+    try {
+      const existing = await ref.get()
+      if (existing.exists) {
+        const prev = existing.data() || {}
+        const prevStatus = String(prev.status || '')
+        const prevTag = String(prev.careOrderTag || '').trim()
+        if (['completed', 'not_interested'].includes(prevStatus)) return null
+        if (prevTag === 'care_confirmed' || prevTag === 'care_cancelled') return null
+        const orderCreatedAt = createdDate(params.order).toISOString()
+        const oldTs = new Date(prev.scheduledAt || 0).getTime()
+        const newTs = new Date(params.scheduledAt).getTime()
+        const orderCreatedTs = new Date(orderCreatedAt).getTime()
+        const clearlyWrong =
+          Number.isFinite(oldTs) &&
+          Number.isFinite(newTs) &&
+          (Math.abs(oldTs - newTs) > 12 * 3600 * 1000 ||
+            (Number.isFinite(orderCreatedTs) && oldTs < orderCreatedTs - 24 * 3600 * 1000))
+        if (clearlyWrong) {
+          await ref.update({
+            scheduledAt: params.scheduledAt,
+            orderCreatedAt,
+            updatedAt: new Date().toISOString(),
+            updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+          })
+        }
+        return null
+      }
+    } catch (precheckErr) {
+      console.warn('careTasks: quiet precheck failed', dedupeKey, precheckErr)
+    }
+  }
+
   const { customerName, phone } = customerFields(params.order)
   const now = new Date().toISOString()
   const orderCreatedAt = createdDate(params.order).toISOString()
@@ -446,7 +480,8 @@ export async function ensureDeliveredFollowupTasks(
   let assignee: CareAssignee | null =
     assigneeOverride === undefined ? await assignCareExecutiveForOrder(order) : assigneeOverride ?? null
   const { orderId, orderName } = orderIdentity(order)
-  if (assignee && orderId) {
+  // Only pin assignment when we resolved it ourselves (not bulk override)
+  if (assignee && orderId && assigneeOverride === undefined) {
     await persistOrderAssignment(orderId, orderName, assignee)
   }
 
@@ -481,8 +516,10 @@ export interface CareProcessResult {
 }
 
 export interface ProcessCareOptions {
-  /** Max COD orders to process (newest first). Default 150. */
+  /** Max orders to process (newest first). Default 150; hard cap 5000 when prepaidOnly. */
   maxOrders?: number
+  /** Only prepaid delivered orders (intro + pack follow-ups). */
+  prepaidOnly?: boolean
 }
 
 /** Idempotent scan of order list — used by sync + cron + Generate. */
@@ -492,13 +529,18 @@ export async function processOrdersForCareTasks(
 ): Promise<CareProcessResult> {
   await ensureCareTaskConfigSeeded()
 
-  const maxOrders = Math.max(1, Math.min(opts.maxOrders ?? 150, 400))
+  const prepaidOnly = opts.prepaidOnly === true
+  const hardCap = prepaidOnly ? 5000 : 400
+  const maxOrders = Math.max(1, Math.min(opts.maxOrders ?? (prepaidOnly ? 5000 : 150), hardCap))
   const config = await getCareTaskConfig()
 
   // COD (confirmation + delivered follow-ups) and prepaid delivered (intro + follow-ups)
   const candidates = orders
     .filter((o) => {
       if (!o || o.is_test_order || o.test === true) return false
+      if (prepaidOnly) {
+        return !isCodOrder(o) && isShiprocketDeliveredStatus(o)
+      }
       if (isCodOrder(o)) return true
       return isShiprocketDeliveredStatus(o)
     })
@@ -518,7 +560,9 @@ export async function processOrdersForCareTasks(
   }
 
   console.log(
-    `careTasks: processing ${candidates.length} orders (COD + prepaid delivered) with per-order executive assignment`,
+    prepaidOnly
+      ? `careTasks: processing ${candidates.length} prepaid delivered orders`
+      : `careTasks: processing ${candidates.length} orders (COD + prepaid delivered) with per-order executive assignment`,
   )
 
   for (const order of candidates) {

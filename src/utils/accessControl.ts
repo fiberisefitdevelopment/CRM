@@ -24,6 +24,25 @@ export function isAdminRole(role?: string | null): boolean {
   return role === 'admin' || role === 'super_admin'
 }
 
+/**
+ * Login/refresh gate for role-restricted clients (e.g. care-executive mobile app).
+ * `requiredRole=care_executive` also accepts legacy `support`.
+ */
+export function roleSatisfiesRequired(
+  userRole?: string | null,
+  requiredRole?: string | null,
+): boolean {
+  const required = String(requiredRole || '')
+    .toLowerCase()
+    .trim()
+  if (!required) return true
+  const actual = String(userRole || '')
+    .toLowerCase()
+    .trim()
+  if (required === 'care_executive') return isCareExecutiveRole(actual)
+  return actual === required
+}
+
 export function homePathForRole(role?: string | null): string {
   return isCareExecutiveRole(role) ? CARE_EXEC_HOME : '/orders'
 }

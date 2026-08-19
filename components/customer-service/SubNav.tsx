@@ -7,7 +7,6 @@ import {
   LayoutDashboard,
   Phone,
   Headphones,
-  ScrollText,
   BarChart3,
   ListTodo,
   PackageCheck,
@@ -21,7 +20,6 @@ const tabs = [
   { label: 'Care Orders', href: '/customer-service/created-orders', icon: ClipboardList },
   { label: 'Call History', href: '/customer-service/call-history', icon: Phone },
   { label: 'Recordings', href: '/customer-service/recordings', icon: Headphones },
-  { label: 'Integration Logs', href: '/customer-service/integration-logs', icon: ScrollText },
   { label: 'Analytics', href: '/customer-service/analytics', icon: BarChart3 },
 ]
 

@@ -15,6 +15,7 @@ import {
   type DeviceMeta,
 } from '@/src/services/auth'
 import { logAction } from '@/src/services/auditLogService'
+import { roleSatisfiesRequired } from '@/src/utils/accessControl'
 
 export async function POST(req: NextRequest) {
   try {
@@ -109,6 +110,33 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    const userRole = String(userData.role || 'user')
+    const requiredRole = body.requiredRole ? String(body.requiredRole).toLowerCase().trim() : ''
+    if (requiredRole && !roleSatisfiesRequired(userRole, requiredRole)) {
+      logAction({
+        userId: userDoc.id,
+        userEmail: email,
+        userName: userData.name || email.split('@')[0] || '',
+        userRole,
+        actionType: 'LOGIN_FAILED',
+        description: `Rejected login for ${email} — role ${userRole} does not match required ${requiredRole}`,
+        module: 'auth',
+        status: 'failure',
+        details: { reason: 'Role mismatch', requiredRole, role: userRole },
+        req,
+      })
+      const careOnly = requiredRole === 'care_executive'
+      return NextResponse.json(
+        {
+          error: careOnly
+            ? 'This app is only available to customer care executives.'
+            : 'Your account does not have access to this app.',
+          role: userRole,
+        },
+        { status: 403 },
+      )
+    }
+
     clearAuthFailures(ip, email)
 
     void userDoc.ref.update({
@@ -119,7 +147,7 @@ export async function POST(req: NextRequest) {
       id: userDoc.id,
       email: userData.email,
       name: userData.name || userData.email?.split('@')[0] || '',
-      role: userData.role || 'user',
+      role: userRole,
     }
 
     const device: DeviceMeta = {

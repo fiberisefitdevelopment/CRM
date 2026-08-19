@@ -11,7 +11,8 @@
     "backfill:orders:dry": "npx tsx scripts/backfill-orders-to-firestore.ts --dry-run",
     "shadow:compare": "npx tsx scripts/run-shadow-compare.ts",
     "verify:read-cutover": "npx tsx scripts/verify-firestore-read-cutover.ts",
-    "care-tasks:redistribute": "npx tsx scripts/redistribute-care-tasks.ts"
+    "care-tasks:redistribute": "npx tsx scripts/redistribute-care-tasks.ts",
+    "care-tasks:prepaid": "npx tsx scripts/generate-prepaid-care-tasks.ts"
   },
   "devDependencies": {
     "@types/node": "^20",

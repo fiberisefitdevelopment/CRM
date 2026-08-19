@@ -32,6 +32,7 @@ export function initializeFirebaseAdmin(): admin.app.App {
         clientEmail,
         privateKey,
       }),
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET || undefined,
     });
 
     console.log('✅ Firebase Admin SDK initialized successfully');

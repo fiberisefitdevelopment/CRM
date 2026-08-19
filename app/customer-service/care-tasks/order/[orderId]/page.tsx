@@ -7,6 +7,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Headphones,
   Loader2,
   MapPin,
   PackagePlus,
@@ -46,10 +47,13 @@ import {
   getCareOrderActivity,
   getCareOrderContext,
   getCareTask,
+  getDeviceRecordingStreamUrl,
   getEscalationTargets,
   listCareTasks,
+  listDeviceCareRecordings,
   updateCareTask,
   type CareTask,
+  type DeviceCallRecording,
 } from '@/lib/careTasksApi'
 import { isAdminRole, isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
@@ -142,6 +146,8 @@ function CareOrderWorkspaceInner() {
       createdAt?: string | null
     }>
   >([])
+  const [deviceRecordings, setDeviceRecordings] = useState<DeviceCallRecording[]>([])
+  const [recordingsLoading, setRecordingsLoading] = useState(false)
 
   const journey = useMemo(() => sortCallJourney(tasks), [tasks])
 
@@ -158,6 +164,32 @@ function CareOrderWorkspaceInner() {
       journey[0]
     )
   }, [journey, activeTaskId])
+
+  const customerPhone = task?.phone || tasks[0]?.phone || ''
+
+  useEffect(() => {
+    if (!customerPhone) {
+      setDeviceRecordings([])
+      return
+    }
+    let cancelled = false
+    setRecordingsLoading(true)
+    listDeviceCareRecordings(customerPhone, orderId)
+      .then((rows) => {
+        if (!cancelled) setDeviceRecordings(rows)
+      })
+      .catch(() => {
+        if (!cancelled) setDeviceRecordings([])
+      })
+      .finally(() => {
+        if (!cancelled) setRecordingsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [customerPhone, orderId])
+
+  const latestDeviceCallAt = deviceRecordings[0]?.createdAt || null
 
   const load = useCallback(async () => {
     if (!orderId) return
@@ -1004,9 +1036,11 @@ function CareOrderWorkspaceInner() {
                   <span className="inline-flex items-center gap-1">
                     <Clock className="w-3 h-3" />
                     Last call:{' '}
-                    {task.lastCall
-                      ? fmtWhen(task.lastCall.startTime || task.lastCall.createdAt)
-                      : 'None'}
+                    {latestDeviceCallAt
+                      ? fmtWhen(latestDeviceCallAt)
+                      : deviceRecordings.length
+                        ? `${deviceRecordings.length} recording${deviceRecordings.length === 1 ? '' : 's'}`
+                        : 'None'}
                   </span>
                   <span>
                     <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
@@ -1176,32 +1210,47 @@ function CareOrderWorkspaceInner() {
                 </div>
 
                 <div>
-                  <p className="text-[10px] font-bold uppercase tracking-wider mb-2" style={{ color: 'var(--foreground-muted)' }}>
-                    Calls
+                  <p
+                    className="text-[10px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1.5"
+                    style={{ color: 'var(--foreground-muted)' }}
+                  >
+                    <Headphones className="w-3 h-3" />
+                    Call recordings
                   </p>
-                  {(task.calls || []).length === 0 ? (
+                  {recordingsLoading && deviceRecordings.length === 0 ? (
+                    <p className="text-sm flex items-center gap-2" style={{ color: 'var(--foreground-muted)' }}>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Loading recordings…
+                    </p>
+                  ) : deviceRecordings.length === 0 ? (
                     <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>
-                      No Salestrail calls linked yet.
+                      No call recordings for this number yet.
                     </p>
                   ) : (
                     <div className="space-y-3">
-                      {(task.calls || []).map((c) => (
+                      {deviceRecordings.map((rec) => (
                         <div
-                          key={c.callId}
+                          key={rec.id}
                           className="py-2 border-t first:border-0"
                           style={{ borderColor: 'var(--border)' }}
                         >
-                          <p className="text-[12px] mb-1.5" style={{ color: 'var(--foreground-muted)' }}>
-                            {fmtWhen(c.startTime || c.createdAt)} · {c.inbound ? 'Inbound' : 'Outbound'} ·{' '}
-                            {c.answered ? 'Answered' : 'Missed'} · {c.duration || 0}s
-                          </p>
-                          {c.hasRecording ? (
-                            <CallAudioPlayer callId={c.callId} />
-                          ) : (
-                            <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
-                              Recording not available
+                          <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                            <p className="text-[12px]" style={{ color: 'var(--foreground-muted)' }}>
+                              {rec.createdAt ? fmtWhen(rec.createdAt) : `Call ${rec.callLogId}`}
+                              {' · '}
+                              {rec.direction === 'inbound' ? 'Inbound' : 'Outbound'}
+                              {' · '}
+                              {rec.durationSec || 0}s
                             </p>
-                          )}
+                            {rec.orderName ? (
+                              <span className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
+                                {rec.orderName}
+                              </span>
+                            ) : null}
+                          </div>
+                          <CallAudioPlayer
+                            callId={rec.id}
+                            streamUrl={getDeviceRecordingStreamUrl(rec.id)}
+                          />
                         </div>
                       ))}
                     </div>

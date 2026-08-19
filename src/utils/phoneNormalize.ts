@@ -1,5 +1,5 @@
 /**
- * Digits-only phone keys for matching CRM orders ↔ care tasks ↔ Salestrail.
+ * Digits-only phone keys for matching CRM orders ↔ care tasks ↔ device call logs.
  * Returns last-10 Indian mobile digits when possible, else full digit string.
  */
 

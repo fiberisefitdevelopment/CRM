@@ -91,7 +91,7 @@ export default function CustomerServiceDashboardPage() {
               Customer Service
             </h1>
             <p className="text-white/50 text-sm mt-1">
-              Call history, recordings, and integration analytics
+              Call history, recordings, and analytics
             </p>
           </div>
 

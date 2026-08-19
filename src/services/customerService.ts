@@ -1,7 +1,14 @@
 /**
- * Salestrail Call Export API client (server-side).
- * Docs: https://www.salestrail.io/knowledge-base/how-to-use-salestrail-pull-api
+ * Customer-service call logs from Firestore `counters` (cs_call_* device recordings).
  */
+
+import {
+  downloadDeviceRecording,
+  getDeviceRecordingById,
+  getDeviceRecordingSignedUrl,
+  listDeviceRecordingsInRange,
+  type DeviceCallRecording,
+} from '@/src/services/careTasks/deviceRecordings'
 
 export interface CallData {
   answered: boolean
@@ -84,122 +91,39 @@ export class CustomerServiceApiError extends Error {
   }
 }
 
-const BASE_URL = () =>
-  process.env.SALESTRAIL_API_BASE_URL || 'https://standalone-api.salestrail.io'
-
-function getAuthHeader(): string {
-  const username = process.env.SALESTRAIL_API_USERNAME
-  const password = process.env.SALESTRAIL_API_PASSWORD
-  if (!username || !password) {
-    throw new CustomerServiceApiError(
-      'Salestrail API credentials are not configured (SALESTRAIL_API_USERNAME / SALESTRAIL_API_PASSWORD).',
-      500,
-    )
-  }
-  return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`
-}
-
-async function salestrailFetch(
-  path: string,
-  init?: RequestInit & { expectRedirect?: boolean },
-): Promise<Response> {
-  const url = `${BASE_URL().replace(/\/$/, '')}${path}`
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 60_000)
-
-  try {
-    const res = await fetch(url, {
-      ...init,
-      headers: {
-        Authorization: getAuthHeader(),
-        Accept: 'application/json',
-        ...(init?.headers || {}),
-      },
-      cache: 'no-store',
-      signal: controller.signal,
-      redirect: init?.expectRedirect ? 'manual' : 'follow',
-    })
-    return res
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
-      throw new CustomerServiceApiError('Request to Salestrail API timed out.', 504)
-    }
-    throw new CustomerServiceApiError(
-      err?.message || 'Network failure contacting Salestrail API.',
-      502,
-    )
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-function mapHttpError(status: number, bodyText: string): CustomerServiceApiError {
-  if (status === 401) return new CustomerServiceApiError('Unauthorized — check Salestrail API credentials.', 401)
-  if (status === 403) return new CustomerServiceApiError('Forbidden — you do not have access to this Salestrail resource.', 403)
-  if (status === 404) return new CustomerServiceApiError('Resource not found.', 404)
-  if (status >= 500) return new CustomerServiceApiError(`Salestrail API error (${status}). ${bodyText.slice(0, 200)}`, status)
-  return new CustomerServiceApiError(bodyText || `Salestrail request failed (${status}).`, status)
-}
-
-function normalizeCall(raw: any): CallData {
+function toCallData(row: DeviceCallRecording): CallData {
+  const phone = row.phone || ''
   return {
-    answered: Boolean(raw?.answered),
-    callId: String(raw?.callId ?? raw?.call_id ?? ''),
-    createdAt: String(raw?.createdAt ?? raw?.created_at ?? ''),
-    duration: Number(raw?.duration ?? 0) || 0,
-    formattedNumber: String(raw?.formattedNumber ?? raw?.formatted_number ?? ''),
-    inbound: Boolean(raw?.inbound),
-    integrated: Boolean(raw?.integrated),
-    number: String(raw?.number ?? ''),
-    phonebookName: String(raw?.phonebookName ?? raw?.phonebook_name ?? ''),
-    recType: String(raw?.recType ?? raw?.rec_type ?? ''),
-    recUrl: String(raw?.recUrl ?? raw?.rec_url ?? ''),
-    source: String(raw?.source ?? ''),
-    sourceDetail: String(raw?.sourceDetail ?? raw?.source_detail ?? ''),
-    startTime: String(raw?.startTime ?? raw?.start_time ?? ''),
-    userEmail: String(raw?.userEmail ?? raw?.user_email ?? ''),
-    userId: String(raw?.userId ?? raw?.user_id ?? ''),
-    userName: String(raw?.userName ?? raw?.user_name ?? ''),
-    userPhone: String(raw?.userPhone ?? raw?.user_phone ?? ''),
-    userTeams: Array.isArray(raw?.userTeams)
-      ? raw.userTeams
-      : Array.isArray(raw?.user_teams)
-        ? raw.user_teams
-        : [],
+    answered: row.answered,
+    callId: row.id || row.callLogId,
+    createdAt: row.createdAt || row.startTime || '',
+    duration: row.durationSec || 0,
+    formattedNumber: phone,
+    inbound: row.direction === 'inbound',
+    integrated: Boolean(row.orderId || row.orderName),
+    number: phone,
+    phonebookName: row.customerName || '',
+    recType: row.hasRecording ? 'device' : 'none',
+    recUrl: row.firebaseStoragePath || '',
+    source: row.platform || 'device',
+    sourceDetail: row.orderName || row.orderId || '',
+    startTime: row.startTime || row.createdAt || '',
+    userEmail: row.userEmail || '',
+    userId: row.userId || '',
+    userName: row.userName || '',
+    userPhone: row.userPhone || '',
+    userTeams: [],
+    customerName: row.customerName || undefined,
+    orderId: row.orderId || undefined,
+    orderName: row.orderName || undefined,
   }
 }
 
-function normalizeIntegration(raw: any): IntegrationData {
-  return {
-    callFormatted: String(raw?.callFormatted ?? raw?.call_formatted ?? ''),
-    callId: String(raw?.callId ?? raw?.call_id ?? ''),
-    callNumber: String(raw?.callNumber ?? raw?.call_number ?? ''),
-    callStartTime: String(raw?.callStartTime ?? raw?.call_start_time ?? ''),
-    integrationLogCreated: String(raw?.integrationLogCreated ?? raw?.integration_log_created ?? ''),
-    integrationLogErrorMessage: String(
-      raw?.integrationLogErrorMessage ?? raw?.integration_log_error_message ?? '',
-    ),
-    integrationLogStatus: String(raw?.integrationLogStatus ?? raw?.integration_log_status ?? ''),
-    integrationLogUpdated: String(raw?.integrationLogUpdated ?? raw?.integration_log_updated ?? ''),
-    userEmail: String(raw?.userEmail ?? raw?.user_email ?? ''),
-    userId: String(raw?.userId ?? raw?.user_id ?? ''),
-    userName: String(raw?.userName ?? raw?.user_name ?? ''),
-    userPhone: String(raw?.userPhone ?? raw?.user_phone ?? ''),
-  }
+function csvEscape(value: unknown): string {
+  const s = value == null ? '' : String(value)
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
 }
-
-function parseJsonArray(data: unknown): any[] {
-  if (Array.isArray(data)) return data
-  if (data && typeof data === 'object') {
-    const obj = data as Record<string, unknown>
-    for (const key of ['calls', 'data', 'items', 'results', 'integrations', 'logs']) {
-      if (Array.isArray(obj[key])) return obj[key] as any[]
-    }
-  }
-  return []
-}
-
-// ─── Simple TTL cache ────────────────────────────────────────────────────────
 
 type CacheEntry<T> = { expires: number; value: T }
 const cache = new Map<string, CacheEntry<unknown>>()
@@ -219,30 +143,14 @@ function setCached<T>(key: string, value: T) {
   cache.set(key, { expires: Date.now() + CACHE_TTL_MS, value })
 }
 
-// ─── API methods ─────────────────────────────────────────────────────────────
-
 export async function getCalls(params: CallQueryParams): Promise<CallData[]> {
-  const { from, to, byCreated = false } = params
-  const cacheKey = `calls:${byCreated ? 'created' : 'start'}:${from}:${to}`
+  const { from, to } = params
+  const cacheKey = `calls:counters:${from}:${to}`
   const cached = getCached<CallData[]>(cacheKey)
   if (cached) return cached
 
-  const path = byCreated
-    ? `/export/calls/byCreated/json?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-    : `/export/calls/json?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-
-  const res = await salestrailFetch(path)
-  const text = await res.text().catch(() => '')
-  if (!res.ok) throw mapHttpError(res.status, text)
-
-  let data: unknown = []
-  try {
-    data = text ? JSON.parse(text) : []
-  } catch {
-    throw new CustomerServiceApiError('Invalid JSON from Salestrail calls API.', 502)
-  }
-
-  const calls = parseJsonArray(data).map(normalizeCall).filter((c) => c.callId)
+  const rows = await listDeviceRecordingsInRange(from, to)
+  const calls = rows.map(toCallData).filter((c) => c.callId)
   setCached(cacheKey, calls)
   return calls
 }
@@ -252,203 +160,82 @@ export async function getCallsByCreated(from: string, to: string): Promise<CallD
 }
 
 export async function exportCallsCsv(params: CallQueryParams): Promise<string> {
-  const { from, to, byCreated = false } = params
-  const path = byCreated
-    ? `/export/calls/byCreated/csv?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-    : `/export/calls/csv?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-
-  const res = await salestrailFetch(path, {
-    headers: { Accept: 'text/csv, application/octet-stream, */*' },
-  })
-  const text = await res.text().catch(() => '')
-  if (!res.ok) throw mapHttpError(res.status, text)
-  return text
+  const calls = await getCalls(params)
+  const headers = [
+    'callId',
+    'number',
+    'customerName',
+    'orderName',
+    'orderId',
+    'userName',
+    'userEmail',
+    'startTime',
+    'createdAt',
+    'duration',
+    'answered',
+    'inbound',
+    'integrated',
+    'source',
+    'sourceDetail',
+  ]
+  return [
+    headers.join(','),
+    ...calls.map((c) =>
+      [
+        c.callId,
+        c.number,
+        c.customerName || c.phonebookName,
+        c.orderName,
+        c.orderId,
+        c.userName,
+        c.userEmail,
+        c.startTime,
+        c.createdAt,
+        c.duration,
+        c.answered,
+        c.inbound,
+        c.integrated,
+        c.source,
+        c.sourceDetail,
+      ]
+        .map(csvEscape)
+        .join(','),
+    ),
+  ].join('\n')
 }
 
 export async function exportCallsCsvByCreated(from: string, to: string): Promise<string> {
   return exportCallsCsv({ from, to, byCreated: true })
 }
 
-async function fetchRecordingResponse(callId: string): Promise<Response> {
-  // Must NOT send Accept: application/json — Salestrail returns a 302 to blob audio.
-  return salestrailFetch(`/export/calls/${encodeURIComponent(callId)}/recording`, {
-    expectRedirect: true,
-    headers: { Accept: '*/*' },
-  })
-}
-
-function extractUrlFromBody(text: string): string | null {
-  const trimmed = text.trim()
-  if (!trimmed) return null
-  if (/^https?:\/\//i.test(trimmed)) return trimmed
-  try {
-    const data = JSON.parse(trimmed)
-    const candidate =
-      data?.url ||
-      data?.location ||
-      data?.recordingUrl ||
-      data?.recUrl ||
-      data?.data?.url
-    if (typeof candidate === 'string' && /^https?:\/\//i.test(candidate)) return candidate
-  } catch {
-    // not JSON
-  }
-  return null
-}
-
-/**
- * Resolve the temporary blob URL for a call recording (Salestrail 302 Location).
- */
 export async function getRecordingUrl(callId: string): Promise<string | null> {
-  const res = await fetchRecordingResponse(callId)
-
-  if (res.status === 404) return null
-
-  if (res.status >= 300 && res.status < 400) {
-    const location = res.headers.get('Location') || res.headers.get('location')
-    if (location) return location
-  }
-
-  // Some runtimes expose the final URL after an opaque/auto redirect
-  if (res.url && !res.url.includes('/export/calls/')) {
-    return res.url
-  }
-
-  // Some environments return the URL in the body instead of a redirect
-  const text = await res.text().catch(() => '')
-  if (!res.ok && res.status !== 200) {
-    if (res.status >= 400) {
-      throw mapHttpError(res.status, text)
-    }
-    // Fallback: follow redirects and use the final response URL
-    try {
-      const followed = await salestrailFetch(
-        `/export/calls/${encodeURIComponent(callId)}/recording`,
-        { headers: { Accept: '*/*' } },
-      )
-      if (followed.ok && followed.url && !followed.url.includes('/export/calls/')) {
-        return followed.url
-      }
-      const followedText = await followed.text().catch(() => '')
-      const fromBody = extractUrlFromBody(followedText)
-      if (fromBody) return fromBody
-    } catch {
-      // ignore and throw original
-    }
-    throw mapHttpError(res.status, text)
-  }
-
-  const fromBody = extractUrlFromBody(text)
-  if (fromBody) return fromBody
-
-  // 200 with audio body and final URL on response
-  if (res.ok && res.url && !res.url.includes('/export/calls/')) {
-    return res.url
-  }
-
-  return null
+  const recording = await getDeviceRecordingById(callId)
+  if (!recording?.hasRecording) return null
+  return getDeviceRecordingSignedUrl(recording)
 }
 
-/**
- * Fetch recording bytes. Salestrail returns 302 Location to blob storage.
- */
 export async function getRecording(callId: string): Promise<{
   body: ArrayBuffer
   contentType: string
   location?: string
 }> {
-  // Prefer resolving blob URL, then downloading from storage
+  const recording = await getDeviceRecordingById(callId)
+  if (!recording?.hasRecording) {
+    throw new CustomerServiceApiError('Recording not available.', 404)
+  }
   try {
-    const location = await getRecordingUrl(callId)
-    if (location) {
-      const audioRes = await fetch(location, {
-        cache: 'no-store',
-        redirect: 'follow',
-        headers: { Accept: '*/*' },
-      })
-
-      if (audioRes.ok) {
-        const body = await audioRes.arrayBuffer()
-        if (body && body.byteLength > 0) {
-          return {
-            body,
-            contentType: audioRes.headers.get('content-type') || 'audio/mpeg',
-            location,
-          }
-        }
-      }
-    }
-  } catch (error) {
-    if (error instanceof CustomerServiceApiError) {
-      throw error
-    }
-    // fall through to direct follow fetch
-  }
-
-  // Fallback: follow redirects from Salestrail and return the audio body
-  const followed = await salestrailFetch(
-    `/export/calls/${encodeURIComponent(callId)}/recording`,
-    { headers: { Accept: '*/*' } },
-  )
-
-  if (followed.status === 404) {
-    throw new CustomerServiceApiError('Recording not available.', 404)
-  }
-  if (!followed.ok) {
-    const text = await followed.text().catch(() => '')
-    throw mapHttpError(followed.status, text)
-  }
-
-  const contentType = followed.headers.get('content-type') || 'audio/mpeg'
-  if (contentType.includes('application/json') || contentType.includes('text/')) {
-    const text = await followed.text().catch(() => '')
-    const url = extractUrlFromBody(text)
-    if (url) {
-      const audioRes = await fetch(url, { cache: 'no-store', redirect: 'follow', headers: { Accept: '*/*' } })
-      if (!audioRes.ok) {
-        throw new CustomerServiceApiError('Failed to download recording from storage.', audioRes.status)
-      }
-      const body = await audioRes.arrayBuffer()
-      return { body, contentType: audioRes.headers.get('content-type') || 'audio/mpeg', location: url }
-    }
-    throw new CustomerServiceApiError('Recording not available.', 404)
-  }
-
-  const body = await followed.arrayBuffer()
-  if (!body || body.byteLength === 0) {
-    throw new CustomerServiceApiError('Recording file is empty.', 404)
-  }
-
-  return {
-    body,
-    contentType,
-    location: followed.url && !followed.url.includes('/export/calls/') ? followed.url : undefined,
+    const { body, contentType } = await downloadDeviceRecording(recording)
+    const bytes = new Uint8Array(body)
+    return { body: bytes.buffer, contentType }
+  } catch (error: any) {
+    const status = error?.status || 500
+    throw new CustomerServiceApiError(error?.message || 'Recording not available.', status)
   }
 }
 
-export async function getIntegrationLogs(from: string, to: string): Promise<IntegrationData[]> {
-  const cacheKey = `integration:${from}:${to}`
-  const cached = getCached<IntegrationData[]>(cacheKey)
-  if (cached) return cached
-
-  const path = `/export/integration/json?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
-  const res = await salestrailFetch(path)
-  const text = await res.text().catch(() => '')
-  if (!res.ok) throw mapHttpError(res.status, text)
-
-  let data: unknown = []
-  try {
-    data = text ? JSON.parse(text) : []
-  } catch {
-    throw new CustomerServiceApiError('Invalid JSON from Salestrail integration API.', 502)
-  }
-
-  const logs = parseJsonArray(data).map(normalizeIntegration)
-  setCached(cacheKey, logs)
-  return logs
+export async function getIntegrationLogs(_from: string, _to: string): Promise<IntegrationData[]> {
+  return []
 }
-
-// ─── Filtering / summarization helpers ───────────────────────────────────────
 
 export function hasRecording(call: CallData): boolean {
   const url = (call.recUrl || '').trim()
@@ -503,6 +290,9 @@ export function filterCalls(calls: CallData[], filters: CallFilters = {}): CallD
         call.number,
         call.formattedNumber,
         call.phonebookName,
+        call.customerName,
+        call.orderName,
+        call.orderId,
         call.userName,
         call.userEmail,
         call.source,

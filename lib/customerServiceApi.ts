@@ -208,8 +208,7 @@ export async function fetchIntegrationLogs(query: {
 
 /**
  * Recording stream URL via CRM proxy (authenticated server-side).
- * Salestrail `recUrl` is an API endpoint that requires Basic auth — never use it
- * directly in <audio src> or browser download.
+ * Storage paths are not playable in the browser — always stream through this endpoint.
  */
 export function getRecordingStreamUrl(
   callId: string,
@@ -218,12 +217,11 @@ export function getRecordingStreamUrl(
   return `/api/customer-service/calls/${encodeURIComponent(callId)}/recording?mode=${mode}`
 }
 
-/** True blob/CDN URL only — not the Salestrail /export/calls/.../recording API path. */
+/** True public audio URL only — not a Firebase Storage path. */
 export function isDirectRecordingUrl(url?: string | null): boolean {
   const value = (url || '').trim()
   if (!/^https?:\/\//i.test(value)) return false
-  if (/\/export\/calls\//i.test(value)) return false
-  if (/standalone-api\.salestrail\.io/i.test(value)) return false
+  if (/firebasestorage\.googleapis\.com/i.test(value)) return false
   return true
 }
 

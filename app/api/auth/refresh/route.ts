@@ -12,6 +12,7 @@ import {
   type DeviceMeta,
 } from '@/src/services/auth'
 import { logAction } from '@/src/services/auditLogService'
+import { roleSatisfiesRequired } from '@/src/utils/accessControl'
 
 export async function POST(req: NextRequest) {
   try {
@@ -43,6 +44,20 @@ export async function POST(req: NextRequest) {
     if (!user) {
       recordAuthFailure(ip, 'refresh')
       return NextResponse.json({ error: 'Invalid or expired refresh token.' }, { status: 401 })
+    }
+
+    const requiredRole = body.requiredRole ? String(body.requiredRole).toLowerCase().trim() : ''
+    if (requiredRole && !roleSatisfiesRequired(user.role, requiredRole)) {
+      return NextResponse.json(
+        {
+          error:
+            requiredRole === 'care_executive'
+              ? 'This app is only available to customer care executives.'
+              : 'Your account does not have access to this app.',
+          role: user.role,
+        },
+        { status: 403 },
+      )
     }
 
     const device: DeviceMeta = {

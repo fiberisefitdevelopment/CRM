@@ -1,7 +1,6 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { OrderRepository } from '@/src/repositories/orderRepository'
-import { syncSalestrailCallsToCareTasks } from './callLinker'
 import { processOrdersForCareTasks } from './generator'
 import { getCareTaskConfig } from './followupPlans'
 import { logCareAction } from './logger'
@@ -13,7 +12,6 @@ function getDb() {
 
 export interface CareSchedulerResult {
   ordersProcessed: Awaited<ReturnType<typeof processOrdersForCareTasks>>
-  callsSynced: Awaited<ReturnType<typeof syncSalestrailCallsToCareTasks>>
   overdueMarked: number
   promotedReschedules: number
 }
@@ -89,7 +87,6 @@ async function promoteDueReschedules(): Promise<number> {
 export async function runCareTaskScheduler(): Promise<CareSchedulerResult> {
   const orders = (await OrderRepository.getCachedOrders()) || []
   const ordersProcessed = await processOrdersForCareTasks(orders)
-  const callsSynced = await syncSalestrailCallsToCareTasks(48)
   const promotedReschedules = await promoteDueReschedules()
   const overdueMarked = await sweepOverdue()
   invalidateCareTasksCache()
@@ -100,12 +97,11 @@ export async function runCareTaskScheduler(): Promise<CareSchedulerResult> {
       scanned: ordersProcessed.scanned,
       confirmationCreated: ordersProcessed.confirmationCreated,
       followupsCreated: ordersProcessed.followupsCreated,
-      callsAttached: callsSynced.attached,
       promotedReschedules,
       overdueMarked,
     },
     status: 'success',
   })
 
-  return { ordersProcessed, callsSynced, overdueMarked, promotedReschedules }
+  return { ordersProcessed, overdueMarked, promotedReschedules }
 }

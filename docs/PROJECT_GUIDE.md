@@ -2,7 +2,7 @@
 
 A single reference for **what** this system does, **when** things run, **how** they are wired, and **why** each piece exists.
 
-> **Related:** For mobile client API contracts, see [MOBILE_API.md](./MOBILE_API.md).
+> **Related:** For mobile client API contracts, see [MOBILE_API.md](./MOBILE_API.md). For the **customer care executive** mobile app, see [CARE_EXECUTIVE_MOBILE_API.md](./CARE_EXECUTIVE_MOBILE_API.md).
 
 ---
 
@@ -178,7 +178,8 @@ CRM/
 │
 ├── docs/
 │   ├── PROJECT_GUIDE.md    # This file
-│   └── MOBILE_API.md       # Mobile integration reference
+│   ├── MOBILE_API.md                    # General mobile integration reference
+│   └── CARE_EXECUTIVE_MOBILE_API.md     # Care-executive mobile app API
 │
 ├── middleware.ts           # API JWT gate
 ├── instrumentation.ts      # Server startup hook (cron init — currently disabled)
@@ -281,7 +282,9 @@ Copy `.env.example` to `.env` and fill in values. Grouped by purpose:
 | `employee` | `/orders` | General staff (route guards may vary) |
 | `care_executive` / `support` | `/customer-service/care-tasks` | Care tasks + customer-service APIs only |
 
-Care executives are restricted by `src/utils/accessControl.ts` — only paths under `/customer-service/care-tasks`, `/api/care-tasks`, `/api/customer-service`, and `/api/auth` are allowed.
+Care executives are restricted by `src/utils/accessControl.ts` — only paths under `/customer-service/care-tasks`, `/customer-service/delivered-orders`, `/customer-service/created-orders`, `/customer-service/create-order`, `/api/care-tasks`, `/api/customer-service`, and `/api/auth` are allowed.
+
+The care-executive **mobile app** must send `requiredRole: "care_executive"` on login and refresh. Non-executive accounts get `403` and no tokens. Full contract: [CARE_EXECUTIVE_MOBILE_API.md](./CARE_EXECUTIVE_MOBILE_API.md).
 
 ### Rate limiting
 
@@ -649,7 +652,9 @@ Next.js serverless deployments restart frequently; in-process `node-cron` is unr
 
 **Public (no JWT):** auth login/refresh/logout, webhooks, cron routes.
 
-**Full mobile-oriented reference:** [MOBILE_API.md](./MOBILE_API.md)
+**Care-executive mobile app:** [CARE_EXECUTIVE_MOBILE_API.md](./CARE_EXECUTIVE_MOBILE_API.md) (role-gated login + care panel APIs)
+
+**Full CRM mobile-oriented reference:** [MOBILE_API.md](./MOBILE_API.md)
 
 ---
 
@@ -749,4 +754,4 @@ curl http://localhost:3000/api/cron/customer-journey
 
 ---
 
-*Last updated: August 2026. For API request/response schemas, see [MOBILE_API.md](./MOBILE_API.md).*
+*Last updated: August 2026. For API request/response schemas, see [MOBILE_API.md](./MOBILE_API.md) and [CARE_EXECUTIVE_MOBILE_API.md](./CARE_EXECUTIVE_MOBILE_API.md).*

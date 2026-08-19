@@ -5,6 +5,9 @@ import type {
   CareOrderGroup,
   ExecutivePerformance,
 } from '@/src/services/careTasks/types'
+import type { DeviceCallRecording } from '@/src/services/careTasks/deviceRecordings'
+
+export type { DeviceCallRecording }
 
 async function parseJson(res: Response) {
   const text = await res.text().catch(() => '')
@@ -114,6 +117,24 @@ export async function addCareTaskNote(id: string, text: string): Promise<CareTas
   })
   const data = await parseJson(res)
   return data.task
+}
+
+export function getDeviceRecordingStreamUrl(id: string): string {
+  return `/api/care-tasks/device-recordings/${encodeURIComponent(id)}?mode=proxy`
+}
+
+export async function listDeviceCareRecordings(
+  phone: string,
+  orderId?: string,
+): Promise<DeviceCallRecording[]> {
+  const qs = new URLSearchParams()
+  if (phone) qs.set('phone', phone)
+  if (orderId) qs.set('orderId', orderId)
+  const res = await apiFetch(`/api/care-tasks/device-recordings?${qs.toString()}`, {
+    cache: 'no-store',
+  })
+  const data = await parseJson(res)
+  return Array.isArray(data.recordings) ? data.recordings : []
 }
 
 export async function syncCareTaskCalls(hoursBack = 48) {

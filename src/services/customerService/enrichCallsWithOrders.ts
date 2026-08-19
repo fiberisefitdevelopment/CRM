@@ -1,5 +1,5 @@
 /**
- * Enrich Salestrail call rows with CRM customerName / orderId / orderName
+ * Fill missing customerName / orderId / orderName on device call rows
  * by matching phone → careTasks (preferred) → OrderRepository (fallback).
  */
 
@@ -221,9 +221,9 @@ export async function enrichCallsWithOrders(calls: CallData[]): Promise<CallData
     if (!match) return call
     return {
       ...call,
-      customerName: match.customerName || undefined,
-      orderId: match.orderId || undefined,
-      orderName: match.orderName || undefined,
+      customerName: call.customerName || match.customerName || undefined,
+      orderId: call.orderId || match.orderId || undefined,
+      orderName: call.orderName || match.orderName || undefined,
     }
   })
 }

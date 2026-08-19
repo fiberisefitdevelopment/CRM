@@ -89,7 +89,7 @@ export default function CustomerServiceAnalyticsPage() {
               Call Analytics
             </h1>
             <p className="text-white/50 text-sm mt-1">
-              Trends, ratios, and agent performance from call export data
+              Trends, ratios, and agent performance from device call logs
             </p>
           </div>
 

@@ -9,11 +9,13 @@ import { cn } from '@/lib/utils'
 interface CallAudioPlayerProps {
   callId: string
   recUrl?: string
+  /** Override the default recording proxy, e.g. care-task device recordings. */
+  streamUrl?: string
   compact?: boolean
   className?: string
 }
 
-export function CallAudioPlayer({ callId, className }: CallAudioPlayerProps) {
+export function CallAudioPlayer({ callId, streamUrl, className }: CallAudioPlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const blobUrlRef = useRef<string | null>(null)
   const [src, setSrc] = useState('')
@@ -45,7 +47,7 @@ export function CallAudioPlayer({ callId, className }: CallAudioPlayerProps) {
       setError(null)
       try {
         // <audio src> cannot send Authorization — fetch via apiFetch then play a blob URL
-        const res = await apiFetch(getRecordingStreamUrl(callId, 'proxy'), {
+        const res = await apiFetch(streamUrl || getRecordingStreamUrl(callId, 'proxy'), {
           cache: 'no-store',
         })
         if (!res.ok) {
@@ -87,16 +89,16 @@ export function CallAudioPlayer({ callId, className }: CallAudioPlayerProps) {
       cancelled = true
       revoke()
     }
-  }, [callId])
+  }, [callId, streamUrl])
 
   const handleDownload = async () => {
     if (!callId || downloading) return
     setDownloading(true)
     try {
-      const res = await apiFetch(
-        `${getRecordingStreamUrl(callId, 'proxy')}&download=1`,
-        { cache: 'no-store' },
-      )
+      const downloadUrl = streamUrl
+        ? `${streamUrl}${streamUrl.includes('?') ? '&' : '?'}download=1`
+        : `${getRecordingStreamUrl(callId, 'proxy')}&download=1`
+      const res = await apiFetch(downloadUrl, { cache: 'no-store' })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
         throw new Error((data as { error?: string })?.error || 'Download failed')

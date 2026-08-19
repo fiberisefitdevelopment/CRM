@@ -1,6 +1,6 @@
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
-import { getCalls, type CallData } from '@/src/services/customerService'
+import { type CallData } from '@/src/services/customerService'
 import { phoneMatchKey } from '@/src/utils/phoneNormalize'
 import { logCareAction } from './logger'
 import type { CareLinkedCall } from './types'
@@ -101,29 +101,7 @@ export interface SyncCallsResult {
   errors: number
 }
 
-/** Pull recent Salestrail calls and attach by phone. */
-export async function syncSalestrailCallsToCareTasks(hoursBack = 48): Promise<SyncCallsResult> {
-  const result: SyncCallsResult = { fetched: 0, attached: 0, errors: 0 }
-  try {
-    const to = new Date()
-    const from = new Date(to.getTime() - hoursBack * 60 * 60 * 1000)
-    const calls = await getCalls({
-      from: from.toISOString(),
-      to: to.toISOString(),
-      byCreated: true,
-    })
-    result.fetched = calls.length
-
-    for (const call of calls) {
-      try {
-        result.attached += await linkCallByPhone(call)
-      } catch {
-        result.errors += 1
-      }
-    }
-  } catch (err: any) {
-    result.errors += 1
-    console.error('careTasks: Salestrail sync failed', err?.message || err)
-  }
-  return result
+/** Device call logs live in Firestore `counters` and are listed on demand. */
+export async function syncSalestrailCallsToCareTasks(_hoursBack = 48): Promise<SyncCallsResult> {
+  return { fetched: 0, attached: 0, errors: 0 }
 }

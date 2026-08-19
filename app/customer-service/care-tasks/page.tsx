@@ -35,7 +35,6 @@ import {
   getCarePerformance,
   getCareTaskSummary,
   listCareTasks,
-  syncCareTaskCalls,
   updateCareTask,
   type CareTask,
   type CareTaskSummary,
@@ -481,27 +480,6 @@ export default function CareTasksPage() {
                     }}
                   >
                     {generating ? 'Syncing…' : 'Sync Shopify + generate tasks'}
-                  </button>
-                  <button
-                    className="w-full text-left px-3 py-2 text-sm hover:bg-purple-500/10"
-                    style={{ color: 'var(--foreground)' }}
-                    onClick={() => {
-                      setShowMoreTools(false)
-                      ;(async () => {
-                        try {
-                          setLoading(true)
-                          const data = await syncCareTaskCalls(48)
-                          setSuccess(`Calls synced (${data?.result?.attached ?? 0} linked)`)
-                          await load()
-                        } catch (err: any) {
-                          setError(err?.message || 'Call sync failed')
-                        } finally {
-                          setLoading(false)
-                        }
-                      })()
-                    }}
-                  >
-                    Sync Salestrail calls
                   </button>
                 </div>
               )}

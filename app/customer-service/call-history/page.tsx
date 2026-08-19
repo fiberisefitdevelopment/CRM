@@ -303,7 +303,7 @@ export default function CallHistoryPage() {
       case 'sourceDetail':
         return call.sourceDetail || '—'
       case 'recording':
-        return call.recUrl ? (
+        return call.recUrl || (call.recType && call.recType !== 'none') ? (
           <CallStatusBadge label="Available" variant="purple" />
         ) : (
           <span className="text-white/30">—</span>
@@ -328,7 +328,7 @@ export default function CallHistoryPage() {
               Call History
             </h1>
             <p className="text-white/50 text-sm mt-1">
-              Search, filter, and export call records from Salestrail
+              Search, filter, and export device call records
             </p>
           </div>
 

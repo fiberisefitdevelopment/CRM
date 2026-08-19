@@ -2,6 +2,8 @@
 
 API reference for mobile clients (iOS / Android) integrating with the Fiberise CRM backend.
 
+**Care executive app:** use **[CARE_EXECUTIVE_MOBILE_API.md](./CARE_EXECUTIVE_MOBILE_API.md)** instead. It is the complete contract for the customer-care panel (role-gated login, tasks, delivered orders, create order, calls).
+
 **Base URL:** `https://<your-crm-host>` (the Next.js app origin)  
 **Format:** JSON (`Content-Type: application/json`)  
 **Auth:** `Authorization: Bearer <accessToken>` on all protected routes
@@ -204,6 +206,7 @@ Prefer ISO-8601 strings (e.g. `"2026-08-05T06:30:00.000Z"`). Date filters on cus
 {
   "email": "string (required)",
   "password": "string (required)",
+  "requiredRole": "care_executive (optional — required for the care executive app)",
   "deviceId": "string (optional)",
   "deviceName": "string (optional)",
   "platform": "ios | android | web (optional)"
@@ -227,7 +230,9 @@ Prefer ISO-8601 strings (e.g. `"2026-08-05T06:30:00.000Z"`). Date filters on cus
 }
 ```
 
-**Errors:** `400`, `401` (invalid credentials / inactive), `429`, `500`
+**Errors:** `400`, `401` (invalid credentials / inactive), `403` (role mismatch when `requiredRole` is sent), `429`, `500`
+
+The care-executive mobile app **must** send `"requiredRole": "care_executive"`. Wrong-role accounts receive `403` and no tokens. See [CARE_EXECUTIVE_MOBILE_API.md](./CARE_EXECUTIVE_MOBILE_API.md).
 
 ---
 
@@ -240,6 +245,7 @@ Prefer ISO-8601 strings (e.g. `"2026-08-05T06:30:00.000Z"`). Date filters on cus
 ```json
 {
   "refreshToken": "string (required)",
+  "requiredRole": "care_executive (optional — required for the care executive app)",
   "deviceId": "string (optional)",
   "deviceName": "string (optional)",
   "platform": "string (optional)"
@@ -248,7 +254,7 @@ Prefer ISO-8601 strings (e.g. `"2026-08-05T06:30:00.000Z"`). Date filters on cus
 
 **Response `200`:** Same shape as login (new rotated token pair + `user`).
 
-**Errors:** `400`, `401`, `429`, `500`
+**Errors:** `400`, `401`, `403` (role mismatch when `requiredRole` is sent), `429`, `500`
 
 ---
 

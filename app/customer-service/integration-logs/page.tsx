@@ -84,7 +84,7 @@ export default function IntegrationLogsPage() {
               Integration Logs
             </h1>
             <p className="text-white/50 text-sm mt-1">
-              Track CRM integration status for each call
+              This Salestrail integration log is no longer used. Call records now come from device recordings.
             </p>
           </div>
 
