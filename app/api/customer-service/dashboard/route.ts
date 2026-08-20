@@ -24,12 +24,15 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       summary,
       recentCalls,
+      kpis: analytics.kpis,
       charts: {
         callsPerDay: analytics.callsPerDay,
         answeredVsMissed: analytics.answeredVsMissed,
         inboundVsOutbound: analytics.inboundVsOutbound,
         averageDurationTrend: analytics.averageDurationTrend,
         topUsers: analytics.topUsers,
+        hourlyDistribution: analytics.hourlyDistribution,
+        durationHistogram: analytics.durationHistogram,
       },
     })
   } catch (error: any) {

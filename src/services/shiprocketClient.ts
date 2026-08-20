@@ -136,6 +136,58 @@ export async function assignShiprocketAwb(params: {
   return shiprocketPost('/courier/assign/awb', body)
 }
 
+export type ShiprocketCourierOption = {
+  id: number | string
+  name: string
+  rate: number | null
+  etd: string | null
+  rating: number | null
+  cod: boolean
+  freightCharge: number | null
+  courierCompanyId: number | string
+}
+
+/** Check available couriers + rates for a pickup → delivery lane. */
+export async function checkShiprocketServiceability(params: {
+  pickupPostcode: string | number
+  deliveryPostcode: string | number
+  weight: number
+  cod: boolean
+  length?: number
+  breadth?: number
+  height?: number
+}): Promise<ShiprocketCourierOption[]> {
+  const qs = new URLSearchParams({
+    pickup_postcode: String(params.pickupPostcode).replace(/\D/g, ''),
+    delivery_postcode: String(params.deliveryPostcode).replace(/\D/g, ''),
+    weight: String(params.weight || 0.5),
+    cod: params.cod ? '1' : '0',
+  })
+  if (params.length) qs.set('length', String(params.length))
+  if (params.breadth) qs.set('breadth', String(params.breadth))
+  if (params.height) qs.set('height', String(params.height))
+
+  const data = await shiprocketGet(`/courier/serviceability/?${qs.toString()}`)
+  const companies: any[] =
+    data?.data?.available_courier_companies ||
+    data?.available_courier_companies ||
+    []
+
+  return companies
+    .map((c) => ({
+      id: c.courier_company_id ?? c.id,
+      courierCompanyId: c.courier_company_id ?? c.id,
+      name: String(c.courier_name || c.name || 'Courier'),
+      rate: c.rate != null ? Number(c.rate) : null,
+      etd: c.etd || c.estimated_delivery_days || null,
+      rating: c.rating != null ? Number(c.rating) : null,
+      cod: Boolean(c.cod),
+      freightCharge: c.freight_charge != null ? Number(c.freight_charge) : null,
+    }))
+    .filter((c) => c.id != null)
+    .sort((a, b) => (a.rate ?? 999999) - (b.rate ?? 999999))
+}
+
 export async function scheduleShiprocketPickup(params: {
   shipmentId: number | string
   pickupDate?: string

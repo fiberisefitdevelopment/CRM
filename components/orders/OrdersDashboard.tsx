@@ -32,6 +32,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Activity,
+  Plane,
   Plus,
   TrendingDown,
   Info,
@@ -382,6 +383,23 @@ export function OrdersPanel({
   
   // Modal / Drawer Trigger States
   const [activeCourierOrder, setActiveCourierOrder] = useState<ShopifyOrder | null>(null)
+  const [shipLoadingProvider, setShipLoadingProvider] = useState<'shiprocket' | 'air_express' | null>(null)
+  const [shipModalStep, setShipModalStep] = useState<'provider' | 'rates'>('provider')
+  const [shipSelectedProvider, setShipSelectedProvider] = useState<'shiprocket' | 'air_express' | null>(null)
+  const [shipRatesLoading, setShipRatesLoading] = useState(false)
+  const [shipRatesError, setShipRatesError] = useState<string | null>(null)
+  const [shipCourierOptions, setShipCourierOptions] = useState<
+    Array<{
+      id: string
+      name: string
+      rate: number | null
+      rateLabel?: string
+      etd?: string | null
+      rating?: number | null
+      serviceType?: string
+    }>
+  >([])
+  const [selectedShipOptionId, setSelectedShipOptionId] = useState<string | null>(null)
   const [activeTrackingOrder, setActiveTrackingOrder] = useState<ShopifyOrder | null>(null)
   const [activeRtoRiskOrder, setActiveRtoRiskOrder] = useState<ShopifyOrder | null>(null)
   const [activeDetailOrder, setActiveDetailOrder] = useState<ShopifyOrder | null>(null)
@@ -773,14 +791,72 @@ export function OrdersPanel({
 
   // ── Logistics Actions ──
 
-  // 1. Ship Now — real Shiprocket assign AWB on the original order (no clone)
-  const handleAssignCourier = async (orderId: number) => {
+  const resetShipModal = () => {
+    setActiveCourierOrder(null)
+    setShipModalStep('provider')
+    setShipSelectedProvider(null)
+    setShipRatesLoading(false)
+    setShipRatesError(null)
+    setShipCourierOptions([])
+    setSelectedShipOptionId(null)
+    setShipLoadingProvider(null)
+  }
+
+  const openShipRates = async (provider: 'shiprocket' | 'air_express', order: ShopifyOrder) => {
+    setShipSelectedProvider(provider)
+    setShipModalStep('rates')
+    setShipRatesLoading(true)
+    setShipRatesError(null)
+    setShipCourierOptions([])
+    setSelectedShipOptionId(null)
+
+    try {
+      const path =
+        provider === 'shiprocket'
+          ? `/api/shiprocket/courier-serviceability?orderId=${encodeURIComponent(String(order.id))}`
+          : `/api/air-express/courier-options?orderId=${encodeURIComponent(String(order.id))}`
+      const res = await apiFetch(path)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `Failed to load rates (${res.status})`)
+
+      if (provider === 'shiprocket') {
+        const list = (data.couriers || []).map((c: any) => ({
+          id: String(c.courierCompanyId ?? c.id),
+          name: String(c.name || 'Courier'),
+          rate: c.rate != null ? Number(c.rate) : null,
+          etd: c.etd || null,
+          rating: c.rating != null ? Number(c.rating) : null,
+        }))
+        setShipCourierOptions(list)
+        if (list[0]) setSelectedShipOptionId(list[0].id)
+      } else {
+        const list = (data.services || []).map((s: any) => ({
+          id: String(s.id || s.serviceType),
+          name: String(s.name || s.serviceType),
+          rate: s.rate != null ? Number(s.rate) : null,
+          rateLabel: s.rateLabel || 'As per contract',
+          etd: s.etd || null,
+          serviceType: String(s.serviceType || s.id),
+        }))
+        setShipCourierOptions(list)
+        if (list[0]) setSelectedShipOptionId(list[0].id)
+      }
+    } catch (err: any) {
+      setShipRatesError(err?.message || 'Failed to load delivery partners')
+    } finally {
+      setShipRatesLoading(false)
+    }
+  }
+
+  // 1. Ship Now — Shiprocket with selected courier
+  const handleAssignCourier = async (orderId: number, courierId?: string | null) => {
     try {
       setActionLoadingOrderId(orderId)
+      setShipLoadingProvider('shiprocket')
       const res = await apiFetch('/api/shiprocket/ship-confirmed-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId }),
+        body: JSON.stringify({ orderId, courierId: courierId || undefined }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
@@ -793,9 +869,10 @@ export function OrdersPanel({
         )
       }
 
-      setActiveCourierOrder(null)
+      resetShipModal()
       setSelectedOrders({})
       invalidatePageCache()
+      if (!confirmedOnly) setCurrentTab('ready_to_ship')
 
       const awb = data.awb ? String(data.awb) : ''
       const courierName = data.courier ? String(data.courier) : 'Shiprocket'
@@ -813,7 +890,6 @@ export function OrdersPanel({
         )
       }
 
-      // Refresh current page so Confirmed / Ready to Ship tabs update
       try {
         await fetchOrdersPage(currentPage)
       } catch {
@@ -823,6 +899,77 @@ export function OrdersPanel({
       triggerNotification('error', err?.message || 'Failed to ship on Shiprocket')
     } finally {
       setActionLoadingOrderId(null)
+      setShipLoadingProvider(null)
+    }
+  }
+
+  const handleShipViaAirExpress = async (orderId: number, serviceType?: string | null) => {
+    try {
+      setActionLoadingOrderId(orderId)
+      setShipLoadingProvider('air_express')
+      const res = await apiFetch('/api/air-express/ship-confirmed-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          orderId,
+          serviceType: serviceType || 'surface',
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || `Air Express ship failed (${res.status})`)
+      }
+
+      if (data.order) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? ({ ...o, ...data.order } as ShopifyOrder) : o)),
+        )
+      }
+
+      resetShipModal()
+      setSelectedOrders({})
+      invalidatePageCache()
+      if (!confirmedOnly) setCurrentTab('ready_to_ship')
+
+      const awb = data.awb ? String(data.awb) : ''
+      const courierName = data.courier ? String(data.courier) : 'Air Express'
+      if (awb) {
+        triggerNotification(
+          'success',
+          `Shipped ${data.orderName || ''} via Air Express · AWB ${awb} (${courierName})`,
+        )
+      } else if (data.warning) {
+        triggerNotification('error', String(data.warning))
+      } else {
+        triggerNotification(
+          'success',
+          `Order ${data.orderName || ''} pushed to Air Express. Refresh if AWB is still pending.`,
+        )
+      }
+
+      try {
+        await fetchOrdersPage(currentPage)
+      } catch {
+        // local patch already applied
+      }
+    } catch (err: any) {
+      triggerNotification('error', err?.message || 'Failed to ship on Air Express')
+    } finally {
+      setActionLoadingOrderId(null)
+      setShipLoadingProvider(null)
+    }
+  }
+
+  const handleConfirmSelectedShip = () => {
+    if (!activeCourierOrder || !shipSelectedProvider || !selectedShipOptionId) return
+    const option = shipCourierOptions.find((o) => o.id === selectedShipOptionId)
+    if (shipSelectedProvider === 'shiprocket') {
+      void handleAssignCourier(activeCourierOrder.id, selectedShipOptionId)
+    } else {
+      void handleShipViaAirExpress(
+        activeCourierOrder.id,
+        option?.serviceType || selectedShipOptionId,
+      )
     }
   }
 
@@ -3118,30 +3265,43 @@ export function OrdersPanel({
         </div>
       )}
 
-      {/* ── COURIER SELECTION MODAL (Ship Now triggered) ── */}
+      {/* ── SHIP PROVIDER → RATES → CONFIRM ── */}
       {activeCourierOrder && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-[#0e121a] border border-white/10 rounded-3xl w-full max-w-2xl p-6 shadow-2xl relative animate-scale-up">
+          <div className="bg-[#0e121a] border border-white/10 rounded-3xl w-full max-w-2xl p-6 shadow-2xl relative animate-scale-up max-h-[90vh] overflow-y-auto">
             <button
-              onClick={() => setActiveCourierOrder(null)}
+              onClick={resetShipModal}
               className="absolute right-4 top-4 text-white/40 hover:text-white transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
 
             <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
-                <Truck className="w-5 h-5" />
+              <div
+                className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
+                  shipSelectedProvider === 'air_express'
+                    ? 'bg-sky-500/10 border-sky-500/20 text-sky-400'
+                    : 'bg-purple-500/10 border-purple-500/20 text-purple-400'
+                }`}
+              >
+                {shipSelectedProvider === 'air_express' ? (
+                  <Plane className="w-5 h-5" />
+                ) : (
+                  <Truck className="w-5 h-5" />
+                )}
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Confirm Ship</h3>
+                <h3 className="text-lg font-bold text-white">
+                  {shipModalStep === 'provider' ? 'Choose Shipping Provider' : 'Select Delivery Partner'}
+                </h3>
                 <p className="text-xs text-white/50 font-normal">
-                  Assign AWB on Shiprocket for order {activeCourierOrder.name}
+                  {shipModalStep === 'provider'
+                    ? `Ship order ${activeCourierOrder.name} on the original order (no clone)`
+                    : `${shipSelectedProvider === 'air_express' ? 'Air Express' : 'Shiprocket'} · ${activeCourierOrder.name}`}
                 </p>
               </div>
             </div>
 
-            {/* Quick Summary details */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 p-4 rounded-2xl bg-white/5 border border-white/5 mb-6 text-xs font-semibold">
               <div>
                 <p className="text-white/40 font-normal">Customer</p>
@@ -3169,42 +3329,210 @@ export function OrdersPanel({
               </div>
             </div>
 
-            <p className="text-xs font-bold uppercase tracking-wider text-purple-400 mb-3">
-              Ship on Shiprocket
-            </p>
-            <p className="text-xs text-white/50 mb-4">
-              This assigns a courier AWB on the <span className="text-white/80 font-semibold">original</span> order
-              (no clone). Shiprocket picks the courier automatically.
-            </p>
+            {shipModalStep === 'provider' && (
+              <>
+                <p className="text-xs font-bold uppercase tracking-wider text-white/40 mb-3">
+                  Select provider
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div className="rounded-2xl border border-purple-500/25 bg-purple-500/5 p-4 flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-9 h-9 rounded-xl bg-purple-500/15 flex items-center justify-center text-purple-300">
+                        <Truck className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-white">Ship via Shiprocket</p>
+                        <p className="text-[11px] text-white/45">See courier rates, then confirm</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-white/50 leading-relaxed">
+                      Loads available Shiprocket partners with live freight prices for this pincode.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={actionLoadingOrderId === activeCourierOrder.id}
+                      onClick={() => openShipRates('shiprocket', activeCourierOrder)}
+                      className="mt-auto inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white disabled:opacity-50"
+                    >
+                      <Truck className="w-3.5 h-3.5" />
+                      View Shiprocket rates
+                    </button>
+                  </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => setActiveCourierOrder(null)}
-                disabled={actionLoadingOrderId === activeCourierOrder.id}
-                className="flex-1 py-2.5 rounded-xl border border-white/10 text-xs font-bold text-white/70 hover:bg-white/5 disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={actionLoadingOrderId === activeCourierOrder.id}
-                onClick={() => handleAssignCourier(activeCourierOrder.id)}
-                className="flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white disabled:opacity-50"
-              >
-                {actionLoadingOrderId === activeCourierOrder.id ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    Shipping…
-                  </>
-                ) : (
-                  <>
-                    <Truck className="w-3.5 h-3.5" />
-                    Confirm & Ship
-                  </>
+                  <div className="rounded-2xl border border-sky-500/25 bg-sky-500/5 p-4 flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-9 h-9 rounded-xl bg-sky-500/15 flex items-center justify-center text-sky-300">
+                        <Plane className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-white">Ship via Air Express</p>
+                        <p className="text-[11px] text-white/45">Choose service, then confirm</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-white/50 leading-relaxed">
+                      Shows Air Express service options (Surface / Air / Prime), then creates order + AWB.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={actionLoadingOrderId === activeCourierOrder.id}
+                      onClick={() => openShipRates('air_express', activeCourierOrder)}
+                      className="mt-auto inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white disabled:opacity-50"
+                    >
+                      <Plane className="w-3.5 h-3.5" />
+                      View Air Express options
+                    </button>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={resetShipModal}
+                  className="w-full py-2.5 rounded-xl border border-white/10 text-xs font-bold text-white/70 hover:bg-white/5"
+                >
+                  Cancel
+                </button>
+              </>
+            )}
+
+            {shipModalStep === 'rates' && (
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs font-bold uppercase tracking-wider text-white/40">
+                    Delivery partners
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShipModalStep('provider')
+                      setShipSelectedProvider(null)
+                      setShipCourierOptions([])
+                      setSelectedShipOptionId(null)
+                      setShipRatesError(null)
+                    }}
+                    className="text-[11px] font-bold text-white/50 hover:text-white"
+                  >
+                    ← Change provider
+                  </button>
+                </div>
+
+                {shipRatesLoading && (
+                  <div className="flex items-center justify-center gap-2 py-10 text-white/60 text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading rates…
+                  </div>
                 )}
-              </button>
-            </div>
+
+                {!shipRatesLoading && shipRatesError && (
+                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-xs text-red-300 mb-4">
+                    {shipRatesError}
+                  </div>
+                )}
+
+                {!shipRatesLoading && !shipRatesError && shipCourierOptions.length === 0 && (
+                  <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-6 text-center text-xs text-white/50 mb-4">
+                    No delivery partners available for this destination.
+                  </div>
+                )}
+
+                {!shipRatesLoading && shipCourierOptions.length > 0 && (
+                  <div className="space-y-2 mb-4 max-h-[40vh] overflow-y-auto pr-1">
+                    {shipCourierOptions.map((opt, idx) => {
+                      const selected = selectedShipOptionId === opt.id
+                      const accent =
+                        shipSelectedProvider === 'air_express' ? 'sky' : 'purple'
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setSelectedShipOptionId(opt.id)}
+                          className={`w-full text-left rounded-xl border px-4 py-3 transition-all ${
+                            selected
+                              ? accent === 'sky'
+                                ? 'border-sky-500/50 bg-sky-500/10'
+                                : 'border-purple-500/50 bg-purple-500/10'
+                              : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-3 min-w-0">
+                              <span
+                                className={`mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 ${
+                                  selected
+                                    ? accent === 'sky'
+                                      ? 'border-sky-400 bg-sky-400'
+                                      : 'border-purple-400 bg-purple-400'
+                                    : 'border-white/30'
+                                }`}
+                              />
+                              <div className="min-w-0">
+                                <p className="text-sm font-bold text-white truncate">{opt.name}</p>
+                                <p className="text-[11px] text-white/45 mt-0.5">
+                                  {opt.etd ? `ETD: ${opt.etd}` : 'Standard transit'}
+                                  {opt.rating != null ? ` · ★ ${opt.rating}` : ''}
+                                  {idx === 0 && opt.rate != null ? ' · Lowest' : ''}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="text-right flex-shrink-0">
+                              {opt.rate != null ? (
+                                <p className="text-base font-bold text-white">
+                                  ₹{Number(opt.rate).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                                </p>
+                              ) : (
+                                <p className="text-xs font-bold text-white/70">
+                                  {opt.rateLabel || 'As per contract'}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={resetShipModal}
+                    disabled={actionLoadingOrderId === activeCourierOrder.id}
+                    className="flex-1 py-2.5 rounded-xl border border-white/10 text-xs font-bold text-white/70 hover:bg-white/5 disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={
+                      actionLoadingOrderId === activeCourierOrder.id ||
+                      !selectedShipOptionId ||
+                      shipRatesLoading ||
+                      Boolean(shipRatesError)
+                    }
+                    onClick={handleConfirmSelectedShip}
+                    className={`flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold text-white disabled:opacity-50 ${
+                      shipSelectedProvider === 'air_express'
+                        ? 'bg-sky-600 hover:bg-sky-500'
+                        : 'bg-purple-600 hover:bg-purple-500'
+                    }`}
+                  >
+                    {shipLoadingProvider ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Shipping…
+                      </>
+                    ) : (
+                      <>
+                        {shipSelectedProvider === 'air_express' ? (
+                          <Plane className="w-3.5 h-3.5" />
+                        ) : (
+                          <Truck className="w-3.5 h-3.5" />
+                        )}
+                        Confirm & Ship
+                      </>
+                    )}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

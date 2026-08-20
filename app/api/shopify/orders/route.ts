@@ -2,19 +2,23 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getAllShiprocketOrders, cancelShiprocketOrder } from '@/src/services/shiprocketClient'
-import { lookupPhone, lookupPhoneByChannel, storePhone, storePhoneByChannel } from '@/src/services/phoneStore'
-import { parseShiprocketDate } from '@/src/utils/orderPayment'
-
-const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
-const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
-const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
-
 import { OrderRepository } from '@/src/repositories/orderRepository'
+import {
+  buildCustomerNamePhoneIndex,
+  buildNameZipPhoneIndex,
+  enrichOrdersWithShiprocketPhones,
+  resolveShiprocketOrderPhone,
+} from '@/src/services/orders/shiprocketPhone'
 import {
   buildShopifyOrderLookupMap,
   extractShiprocketLogistics,
   matchShiprocketToShopify,
 } from '@/src/services/orders/shiprocketMergeHelpers'
+import { parseShiprocketDate } from '@/src/utils/orderPayment'
+
+const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
+const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
+const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
 
 // Reusable helper to fetch all Shopify orders (handles pagination loop)
 async function fetchAllShopifyOrders(limit: number | null = null): Promise<any[]> {
@@ -110,6 +114,9 @@ export async function GET(_req: NextRequest) {
         : careConfirmRaw === 'aisensy_confirmed' || careConfirmRaw === 'aisensy'
           ? 'aisensy_confirmed'
           : 'all'
+    const logisticsRaw = (searchParams.get('logistics') || 'all').toLowerCase()
+    const logistics: 'all' | 'air_express' =
+      logisticsRaw === 'air_express' ? 'air_express' : 'all'
 
     const filters = {
       tab,
@@ -129,6 +136,7 @@ export async function GET(_req: NextRequest) {
       fulfillmentStatus,
       includeTest,
       careConfirmSource,
+      logistics,
     }
 
     // A. Serve from OrderRepository (cache or Firestore per flag)
@@ -170,13 +178,30 @@ export async function GET(_req: NextRequest) {
       const decorate = (list: any[]) =>
         applyCareAssignmentsToOrders(applyCareTagsToOrders(applyNotesToOrders(list)))
 
+      const phoneEnrichedSource = enrichOrdersWithShiprocketPhones(
+        (await OrderRepository.getCachedOrders()) || [],
+      )
+
+      let airExpressIndex = null
+      if (orderStatusView || logistics === 'air_express') {
+        try {
+          const { loadAirExpressMatchIndex } = await import(
+            '@/src/services/orders/airExpressOrderMatch'
+          )
+          airExpressIndex = await loadAirExpressMatchIndex()
+        } catch (e) {
+          console.warn('⚠️ Air Express index unavailable:', (e as Error)?.message || e)
+        }
+      }
+      const filtersWithAe = { ...filters, airExpressIndex }
+
       if (orderStatusView && !returnAll) {
         const result = await OrderRepository.getOrderStatusPaginated(page, perPage, {
-          ...filters,
+          ...filtersWithAe,
           deliveryStatus: deliveryStatus as any,
           fulfillmentStatusUi: fulfillmentStatus,
           paymentStatusUi: paymentStatusUi || paymentType,
-        })
+        }, phoneEnrichedSource)
         return NextResponse.json(
           {
             orders: decorate(result.orders),
@@ -189,7 +214,7 @@ export async function GET(_req: NextRequest) {
             summary: result.summary,
             couriers: result.couriers,
             channelBreakdown: result.channelBreakdown,
-            tabCounts: await OrderRepository.computeTabCounts(filters),
+            tabCounts: await OrderRepository.computeTabCounts(filtersWithAe),
             isOffline,
             syncing: false,
           },
@@ -197,11 +222,13 @@ export async function GET(_req: NextRequest) {
         )
       }
 
-      const tabCounts = await OrderRepository.computeTabCounts(filters)
+      const tabCounts = await OrderRepository.computeTabCounts(filtersWithAe)
 
       if (returnAll) {
         // Analytics mode: return ALL matching orders, no pagination
-        const allOrders = decorate(await OrderRepository.getCachedOrdersFiltered(filters))
+        const allOrders = decorate(
+          await OrderRepository.getCachedOrdersFiltered(filtersWithAe, phoneEnrichedSource),
+        )
         const total = allOrders.length
         return NextResponse.json(
           {
@@ -218,7 +245,8 @@ export async function GET(_req: NextRequest) {
       const { orders: pageOrders, total } = await OrderRepository.getCachedOrdersPage(
         page,
         perPage,
-        filters,
+        filtersWithAe,
+        phoneEnrichedSource,
       )
       const totalPages = Math.ceil(total / perPage) || 1
       const paginatedSlice = decorate(pageOrders)
@@ -277,6 +305,11 @@ export async function GET(_req: NextRequest) {
         // Match Shiprocket orders to enrich matched Shopify orders and extract custom ones
         const customOrders: any[] = []
         const existingCachedOrders = (await OrderRepository.getCachedOrders()) || []
+        const existingById = new Map(existingCachedOrders.map((o: any) => [String(o.id), o]))
+        const phoneIndexSource = [...shopifyOrders, ...existingCachedOrders]
+        const nameZipIndex = buildNameZipPhoneIndex(phoneIndexSource)
+        const nameOnlyIndex = buildCustomerNamePhoneIndex(phoneIndexSource)
+        const shiprocketPhoneCtx = { shopifyMap, nameZipIndex, nameOnlyIndex, existingById }
 
         shiprocketOrders.forEach((srOrder) => {
           const matchedShopify = matchShiprocketToShopify(srOrder, shopifyMap)
@@ -336,49 +369,7 @@ export async function GET(_req: NextRequest) {
                 }]
               : []
 
-            // Shiprocket masks customer_phone as "xxxxxxxxxx" in list API.
-            // The real unmasked phone is in customer_phone_unmasked.
-            let srPhone = (
-              srOrder.customer_phone_unmasked ||
-              srOrder.billing_phone ||
-              srOrder.phone ||
-              srOrder.billing_customer_phone ||
-              srOrder.shipping_phone ||
-              (typeof srOrder.billing_address === 'object' ? srOrder.billing_address?.phone : '') ||
-              ''
-            )
-            // Treat masked placeholder as empty
-            if (srPhone === 'xxxxxxxxxx') srPhone = ''
-
-            if (!srPhone) {
-              // Fall back to in-memory order phone (from addOrderToCache on creation)
-              if (Array.isArray(existingCachedOrders)) {
-                const match = existingCachedOrders.find((o: any) => String(o.id) === String(srOrder.id))
-                if (match) {
-                  srPhone = match.customer?.phone || match.shipping_address?.phone || ''
-                }
-              }
-            }
-
-            if (!srPhone) {
-              // Final fallback: persistent phone store (survives restarts, works for pre-fix cloned orders)
-              const channelId = String(srOrder.channel_order_id || '').replace(/^#/, '').trim()
-              srPhone = lookupPhone(srOrder.id) || lookupPhoneByChannel(channelId)
-
-              // For cloned orders (channel_order_id ends with -C), recover phone from the parent Shopify order
-              if (!srPhone && channelId.toLowerCase().endsWith('-c')) {
-                const parentId = channelId.slice(0, -2).toLowerCase() // strip the "-C" suffix
-                const parentOrder = shopifyMap.get(parentId)
-                if (parentOrder) {
-                  srPhone = parentOrder.shipping_address?.phone || parentOrder.customer?.phone || ''
-                  if (srPhone) {
-                    // Persist it so we don't have to look it up again
-                    storePhone(srOrder.id, srPhone)
-                    storePhoneByChannel(channelId, srPhone)
-                  }
-                }
-              }
-            }
+            const srPhone = resolveShiprocketOrderPhone(srOrder, shiprocketPhoneCtx)
 
             const formattedCustomOrder = {
               id: srOrder.id,
@@ -420,7 +411,10 @@ export async function GET(_req: NextRequest) {
               fulfillments: enrichFulfillment,
               source: 'shiprocket',
               shiprocket_order_id: logistics.shiprocket_order_id,
-              shiprocket_meta: logistics.shiprocket_meta,
+              shiprocket_meta: {
+                ...logistics.shiprocket_meta,
+                ...(srPhone ? { customer_phone_unmasked: srPhone } : {}),
+              },
             }
 
             customOrders.push(formattedCustomOrder)
@@ -460,14 +454,15 @@ export async function GET(_req: NextRequest) {
           }
         }
 
-        // Enrich combined orders with test status
-        const enrichedOrders = combinedOrders.map((o: any) => {
-          const isTest = o.test === true || testOrderIds.has(String(o.id));
-          return {
-            ...o,
-            is_test_order: isTest
-          };
-        });
+        const enrichedOrders = enrichOrdersWithShiprocketPhones(
+          combinedOrders.map((o: any) => {
+            const isTest = o.test === true || testOrderIds.has(String(o.id))
+            return {
+              ...o,
+              is_test_order: isTest,
+            }
+          }),
+        )
 
         // Short TTL if Shiprocket failed so the next request re-syncs quickly with a working fetch
         const ttl = shiprocketOrders.length === 0 ? 30 * 1000 : OrderRepository.CACHE_TTL_MS

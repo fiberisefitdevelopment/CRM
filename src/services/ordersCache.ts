@@ -26,6 +26,10 @@ import {
   getCloneParentBase,
   getOperationalOrder,
 } from '@/src/utils/cloneOrders'
+import { pickFirstRealPhone } from '@/src/utils/orderPhone'
+import type { AirExpressMatchIndex } from '@/src/services/orders/airExpressOrderMatch'
+import { enrichOrderWithAirExpress } from '@/src/services/orders/airExpressOrderMatch'
+import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
 import { isCodOrder } from '@/src/utils/orderPayment'
 import { hasCodConfirmation, resolveCodConfirmationKind } from '@/src/utils/careOrderTags'
 import { lookupCareOrderTag } from '@/src/services/careOrderTagStore'
@@ -153,6 +157,10 @@ export interface OrderFilters {
   includeTest?: boolean
   /** Confirmed tab sub-filter: Care vs AiSensy. */
   careConfirmSource?: 'care_confirmed' | 'aisensy_confirmed' | 'all'
+  /** Order Status: only orders linked to Aaysh Air Express logistics. */
+  logistics?: 'all' | 'air_express'
+  /** Live Aaysh API match index (when cache lacks airExpressOrderId). */
+  airExpressIndex?: AirExpressMatchIndex | null
 }
 
 export function getCachedOrdersCount(filters: OrderFilters = {}, sourceOrders?: any[] | null): number {
@@ -484,7 +492,11 @@ export function getCachedOrdersFiltered(
         ? `${o.customer.first_name || ''} ${o.customer.last_name || ''}`.toLowerCase()
         : ''
       const customerEmail = o.customer?.email?.toLowerCase() || ''
-      const phone = String(o.customer?.phone || o.shipping_address?.phone || '').toLowerCase()
+      const phone = pickFirstRealPhone(
+        o.customer?.phone,
+        o.shipping_address?.phone,
+        o.shiprocket_meta?.customer_phone_unmasked,
+      ).toLowerCase()
       const awb = String(o.fulfillments?.[0]?.tracking_number || '').toLowerCase()
 
       return (
@@ -527,6 +539,11 @@ export function getCachedOrdersFiltered(
       if (filters.channel === 'shopify') return !isSrOnly
       return true
     })
+  }
+
+  // 4c. Logistics provider (Air Express)
+  if (filters.logistics === 'air_express') {
+    list = list.filter((o) => orderTrailUsesAirExpress(o, undefined, undefined, filters.airExpressIndex))
   }
 
   // 5. Courier Partner
@@ -640,6 +657,7 @@ export function addOrderToCache(order: any) {
 
 /** Merge fields onto an existing cached order (keeps same id — no clone). */
 export function patchOrderInCache(id: string | number, patch: Record<string, unknown>): any | null {
+  if (!cachedOrders?.length) hydrateFromDisk()
   if (!cachedOrders?.length) return null
   let updated: any | null = null
   cachedOrders = cachedOrders.map((o) => {
@@ -647,6 +665,7 @@ export function patchOrderInCache(id: string | number, patch: Record<string, unk
     updated = { ...o, ...patch }
     return updated
   })
+  if (updated) persistToDisk(cachedOrders)
   return updated
 }
 
@@ -751,14 +770,20 @@ export function getOrderStatusPaginated(
   const byClean = new Map<string, any>()
   const clonesByParent = new Map<string, any[]>()
 
+  // Stamp Air Express AWB / status onto cache rows *before* bucketing so
+  // Not Shipped / Ready for Pickup cards see live Aaysh logistics.
+  const aeIndex = filters.airExpressIndex
+  const withAe = (o: any) => (aeIndex ? enrichOrderWithAirExpress(o, aeIndex) : o)
+
   for (const o of raw) {
-    const clean = cleanOrderName(o.name)
+    const enriched = withAe(o)
+    const clean = cleanOrderName(enriched.name)
     if (!clean) continue
-    byClean.set(clean, o)
-    const parentBase = getCloneParentBase(o.name)
+    byClean.set(clean, enriched)
+    const parentBase = getCloneParentBase(enriched.name)
     if (!parentBase) continue
     const list = clonesByParent.get(parentBase) || []
-    list.push(o)
+    list.push(enriched)
     clonesByParent.set(parentBase, list)
   }
 
@@ -770,7 +795,7 @@ export function getOrderStatusPaginated(
   })
 
   // Parents only — clones with a known parent are folded into the parent card
-  let parents = raw.filter((o) => {
+  let parents = Array.from(byClean.values()).filter((o) => {
     const parentBase = getCloneParentBase(o.name)
     return !(parentBase && byClean.has(parentBase))
   })
@@ -790,6 +815,12 @@ export function getOrderStatusPaginated(
       ''
     const activeRto = trailHasActiveRto(o, relatedClones)
 
+    if (
+      filters.logistics === 'air_express' &&
+      !orderTrailUsesAirExpress(o, live, relatedClones, filters.airExpressIndex)
+    ) {
+      return false
+    }
     if (filters.courier && filters.courier !== 'all' && company !== filters.courier) return false
     if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
     if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
@@ -844,6 +875,12 @@ export function getOrderStatusPaginated(
       live.fulfillments?.[0]?.tracking_company ||
       o.fulfillments?.[0]?.tracking_company ||
       ''
+    if (
+      filters.logistics === 'air_express' &&
+      !orderTrailUsesAirExpress(o, live, relatedClones, filters.airExpressIndex)
+    ) {
+      return false
+    }
     if (filters.courier && filters.courier !== 'all' && company !== filters.courier) return false
     if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
     if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false

@@ -10,34 +10,46 @@ function getAayshConfig() {
   }
 }
 
-export interface AayshOrderItem {
-  name: string
-  sku: string
-  units: number
-  selling_price: number
+export interface AayshOrderAddress {
+  firstName: string
+  lastName?: string
+  phone: string
+  address1: string
+  address2?: string
+  city: string
+  province: string
+  zip: string
+  country?: string
+}
+
+export interface AayshOrderLineItem {
+  variantId?: number | null
+  title?: string
+  quantity: number
+  price?: string
+  sku?: string
   discount?: number
   tax?: number
   hsn?: string | number
 }
 
+/** Matches CRM CreateShopifyOrderInput + Aaysh logistics extensions */
 export interface AayshCreateOrderPayload {
-  order_id: string
-  order_date?: string
+  email?: string | null
+  phone: string
+  note?: string | null
+  tags?: string[]
+  payment: 'cod' | 'paid'
+  shipping: AayshOrderAddress
+  billing?: AayshOrderAddress | null
+  lineItems: AayshOrderLineItem[]
+  createdByEmail?: string | null
+  /** Aaysh-specific */
   pickup_location: string
+  order_id?: string
+  order_date?: string
   consignor_name?: string
-  billing_customer_name?: string
-  billing_last_name?: string
-  billing_address?: string
-  billing_address_2?: string
-  billing_city?: string
-  billing_state?: string
-  billing_pincode?: string | number
-  billing_country?: string
-  billing_email?: string
-  billing_phone?: string | number
-  payment_method?: string
-  comment?: string
-  order_items: AayshOrderItem[]
+  consignor_phone?: string | number
   sub_total?: number
   shipping_charges?: number
   giftwrap_charges?: number
@@ -47,6 +59,10 @@ export interface AayshCreateOrderPayload {
   length?: number
   breadth?: number
   height?: number
+  no_of_boxes?: number
+  invoice_no?: string
+  invoice_value?: number
+  company_id?: string
 }
 
 export interface AayshListParams {

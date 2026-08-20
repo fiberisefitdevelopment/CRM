@@ -115,6 +115,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}))
     const orderId = body.orderId ?? body.id
+    const courierId = body.courierId ?? body.courier_id ?? null
     if (orderId == null || orderId === '') {
       return NextResponse.json({ error: 'orderId is required' }, { status: 400 })
     }
@@ -200,7 +201,7 @@ export async function POST(req: NextRequest) {
       try {
         assignResult = await assignShiprocketAwb({
           shipmentId,
-          courierId: body.courierId,
+          courierId: courierId || body.courierId,
         })
         const response = assignResult?.response?.data || assignResult?.data || assignResult
         awb = response?.awb_code || response?.awb || awb

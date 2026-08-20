@@ -62,13 +62,12 @@ const DISK_PATH = path.join(process.cwd(), '.firestore-orders-cache.json')
 /** Metadata added during migration — strip when serving so clients see cache-shaped orders. */
 const SERVE_STRIP_KEYS = new Set([
   'shopifyOrderId',
-  'shiprocketOrderId',
-  'airExpressOrderId',
   'shopifyUpdatedAt',
   'shiprocketUpdatedAt',
   'airExpressUpdatedAt',
   'updatedAt',
   'nameLower',
+  // Top-level mirrors that duplicate fulfillments[0] — keep nested fulfillments for tabs.
   'awb',
   'tracking_number',
   'tracking_url',
@@ -356,9 +355,92 @@ function addOrderToCache(order: any) {
 }
 
 function patchOrderInCache(id: string | number, patch: Record<string, unknown>) {
-  const updated = cachePatchOrderInCache(id, patch)
-  if (updated) mirrorOrderIntoFirestoreSnapshot(updated)
+  // Always try the Shopify merge cache first.
+  let updated = cachePatchOrderInCache(id, patch)
+
+  // When Firestore is the read source, also patch the FS snapshot directly.
+  // cachePatch can no-op if `cachedOrders` is empty/out of sync — that left shipped
+  // orders stuck in the "New" tab (fulfillment_status never became fulfilled).
+  if (isOrdersReadFromFirestoreEnabled()) {
+    hydrateFirestoreFromDisk()
+    const idStr = String(id)
+    const existing =
+      updated ||
+      firestoreOrders?.find((o) => String(o.id) === idStr) ||
+      null
+
+    if (existing) {
+      const merged = stripForClient({ ...existing, ...patch })
+      if (!firestoreOrders) {
+        firestoreOrders = [merged]
+      } else {
+        const idx = firestoreOrders.findIndex((o) => String(o.id) === idStr)
+        if (idx >= 0) {
+          firestoreOrders[idx] = { ...firestoreOrders[idx], ...merged }
+        } else {
+          firestoreOrders = [merged, ...firestoreOrders]
+          firestoreOrders = sortNewestFirst(firestoreOrders)
+        }
+      }
+      // Keep FS snapshot authoritative for a bit so a background refresh doesn't wipe the ship.
+      firestoreExpiresAt = Date.now() + FIRESTORE_READ_TTL_MS
+      persistFirestoreDisk(firestoreOrders)
+      updated = firestoreOrders.find((o) => String(o.id) === idStr) || merged
+    }
+  } else if (updated) {
+    mirrorOrderIntoFirestoreSnapshot(updated)
+  }
+
+  // Persist logistics onto Firestore docs so reloads keep Ready To Ship bucketing.
+  if (updated) {
+    void persistShipLogisticsToFirestore(id, patch, updated).catch((err) => {
+      console.warn('⚠️ Ship logistics Firestore write failed:', (err as Error)?.message || err)
+    })
+  }
+
   return updated
+}
+
+async function persistShipLogisticsToFirestore(
+  id: string | number,
+  patch: Record<string, unknown>,
+  order: any,
+) {
+  const { isOrdersWriteToFirestoreEnabled } = await import(
+    '@/src/services/orders/shopifyFirestoreUpsert'
+  )
+  if (!isOrdersWriteToFirestoreEnabled()) return
+
+  const nowIso = new Date().toISOString()
+  const payload: Record<string, unknown> = {
+    fulfillment_status: patch.fulfillment_status ?? order.fulfillment_status ?? null,
+    fulfillments: patch.fulfillments ?? order.fulfillments ?? [],
+    updatedAt: nowIso,
+  }
+  if (patch.shiprocket_order_id != null || patch.shiprocketOrderId != null) {
+    payload.shiprocket_order_id = patch.shiprocket_order_id ?? patch.shiprocketOrderId
+    payload.shiprocketOrderId = patch.shiprocketOrderId ?? patch.shiprocket_order_id
+    payload.shiprocketUpdatedAt = nowIso
+  }
+  if (patch.shiprocket_meta != null) payload.shiprocket_meta = patch.shiprocket_meta
+  if (patch.airExpressOrderId != null) {
+    payload.airExpressOrderId = patch.airExpressOrderId
+    payload.airExpressUpdatedAt = nowIso
+  }
+  if (patch.logistics != null) payload.logistics = patch.logistics
+
+  const f0 = (payload.fulfillments as any[])?.[0]
+  if (f0) {
+    payload.shipment_status = f0.shipment_status || null
+    payload.tracking_number = f0.tracking_number || null
+    payload.tracking_url = f0.tracking_url || null
+    payload.awb = f0.tracking_number || null
+  }
+
+  await getDb()
+    .collection(COLLECTION)
+    .doc(String(id))
+    .set(payload, { merge: true })
 }
 
 function getCacheExpiresAt() {
@@ -398,28 +480,41 @@ async function getCachedOrderById(id: string | number) {
   return order
 }
 
-async function getCachedOrdersFiltered(filters: OrderFilters = {}) {
-  const source = await resolveSourceOrders()
+async function getCachedOrdersFiltered(filters: OrderFilters = {}, sourceOrders?: any[] | null) {
+  const source = sourceOrders ?? (await resolveSourceOrders())
   return cacheGetFiltered(filters, source)
 }
 
-async function getCachedOrdersCount(filters: OrderFilters = {}) {
-  const source = await resolveSourceOrders()
+async function getCachedOrdersCount(filters: OrderFilters = {}, sourceOrders?: any[] | null) {
+  const source = sourceOrders ?? (await resolveSourceOrders())
   return cacheGetCount(filters, source)
 }
 
-async function getCachedOrdersPaginated(page: number, perPage: number, filters: OrderFilters = {}) {
-  const source = await resolveSourceOrders()
+async function getCachedOrdersPaginated(
+  page: number,
+  perPage: number,
+  filters: OrderFilters = {},
+  sourceOrders?: any[] | null,
+) {
+  const source = sourceOrders ?? (await resolveSourceOrders())
   return cacheGetPaginated(page, perPage, filters, source)
 }
 
-async function getCachedOrdersPage(page: number, perPage: number, filters: OrderFilters = {}) {
-  const source = await resolveSourceOrders()
+async function getCachedOrdersPage(
+  page: number,
+  perPage: number,
+  filters: OrderFilters = {},
+  sourceOrders?: any[] | null,
+) {
+  const source = sourceOrders ?? (await resolveSourceOrders())
   return cacheGetPage(page, perPage, filters, source)
 }
 
-async function computeTabCounts(filters: Omit<OrderFilters, 'tab'> = {}) {
-  const source = await resolveSourceOrders()
+async function computeTabCounts(
+  filters: Omit<OrderFilters, 'tab'> = {},
+  sourceOrders?: any[] | null,
+) {
+  const source = sourceOrders ?? (await resolveSourceOrders())
   return cacheComputeTabCounts(filters, source)
 }
 
@@ -427,8 +522,9 @@ async function getOrderStatusPaginated(
   page: number,
   perPage: number,
   filters: OrderStatusListFilters = {},
+  sourceOrders?: any[] | null,
 ) {
-  const source = await resolveSourceOrders()
+  const source = sourceOrders ?? (await resolveSourceOrders())
   return cacheGetOrderStatusPaginated(page, perPage, filters, source)
 }
 

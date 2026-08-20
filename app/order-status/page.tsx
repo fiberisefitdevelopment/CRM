@@ -39,6 +39,7 @@ import {
   isCreatedInDateRange,
   isNotShippedStatus,
   isOrderDelayed,
+  isReadyForPickupStatus,
   isShiprocketDeliveredStatus,
   isShiprocketInTransitStatus,
   normalizeShipmentStatus,
@@ -48,6 +49,10 @@ import {
   type TimelineStep,
 } from '@/src/utils/orderTimeline'
 import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
+import { AirExpressBadge } from '@/components/orders/AirExpressBadge'
+import { AirExpressOrderDetails } from '@/components/orders/AirExpressOrderDetails'
+import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
+import { formatOrderPhoneDisplay } from '@/src/utils/orderPhone'
 import { CareExecutiveBadge } from '@/components/orders/CareExecutiveBadge'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
 import type { CareOrderAssignmentEntry } from '@/src/services/careAssignmentStore'
@@ -93,6 +98,7 @@ interface OrderRow {
   shiprocket_meta?: any
   source?: string
   note?: string | null
+  airExpressOrderId?: string | null
 }
 
 function fmtWhen(value?: string | null) {
@@ -142,8 +148,11 @@ function customerName(o: OrderRow) {
   return `${s?.first_name || ''} ${s?.last_name || ''}`.trim() || 'Guest'
 }
 
-function customerPhone(o: OrderRow) {
-  return o.customer?.phone || o.shipping_address?.phone || '—'
+function customerPhone(
+  o: OrderRow,
+  related?: { live?: OrderRow; parent?: OrderRow | null; clones?: OrderRow[] },
+) {
+  return formatOrderPhoneDisplay(o, related)
 }
 
 /** Strip leading # and lowercase for clone/parent matching. */
@@ -317,6 +326,7 @@ function OrderStatusCard({
   const liveShipmentDate = usingClone ? opShipmentDate : shipmentDate
   const liveDelayDays = usingClone ? opDelayDays : delayDays
   const liveAlerts = usingClone ? buildAlerts(operational) : alerts
+  const isAirExpress = orderTrailUsesAirExpress(order, operational, relatedClones)
   const timeline = useMemo(
     () => buildTimeline(usingClone ? operational : order, tracking),
     [order, operational, usingClone, tracking],
@@ -332,7 +342,7 @@ function OrderStatusCard({
   }, [order.id, liveAwb])
 
   useEffect(() => {
-    if (!expanded || !liveAwb || tracking) return
+    if (!expanded || !liveAwb || tracking || isAirExpress) return
     let cancelled = false
     ;(async () => {
       try {
@@ -351,7 +361,7 @@ function OrderStatusCard({
     return () => {
       cancelled = true
     }
-  }, [expanded, liveAwb, tracking])
+  }, [expanded, liveAwb, tracking, isAirExpress])
 
   const saveNote = async () => {
     try {
@@ -426,6 +436,7 @@ function OrderStatusCard({
                     Shiprocket
                   </span>
                 )}
+                <AirExpressBadge order={order} live={operational} relatedClones={relatedClones} />
                 {hasClones && (
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('emerald')}`}>
                     {relatedClones.length} clone{relatedClones.length === 1 ? '' : 's'}
@@ -458,7 +469,12 @@ function OrderStatusCard({
                 {customerName(order)}
               </p>
               <p className="text-[11px] flex items-center gap-1" style={{ color: 'var(--foreground-muted)' }}>
-                <Phone className="w-3 h-3" /> {customerPhone(order)}
+                <Phone className="w-3 h-3" />{' '}
+                {customerPhone(order, {
+                  live: operational,
+                  parent: parentOrder,
+                  clones: relatedClones,
+                })}
               </p>
             </div>
             <div>
@@ -474,6 +490,7 @@ function OrderStatusCard({
                 </span>
                 <CareOrderTagBadge tag={(order as OrderRow).care_tag} />
                 <CareExecutiveBadge assignment={(order as OrderRow).care_executive} />
+                <AirExpressBadge order={order} live={operational} relatedClones={relatedClones} />
               </div>
               <p className="text-sm font-bold mt-1" style={{ color: 'var(--foreground)' }}>
                 ₹{order.total_price}
@@ -487,7 +504,9 @@ function OrderStatusCard({
                 {fulfillmentStageLabel(liveStatus)}
               </span>
               <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--foreground-muted)' }}>
-                {liveFulfillment?.tracking_company || 'No courier yet'}
+                {isAirExpress && !liveFulfillment?.tracking_company
+                  ? 'Air Express (Aaysh)'
+                  : liveFulfillment?.tracking_company || 'No courier yet'}
                 {liveAwb ? ` · ${liveAwb}` : ''}
               </p>
             </div>
@@ -501,8 +520,14 @@ function OrderStatusCard({
         >
           <span className="inline-flex items-center gap-1.5">
             <Truck className="w-3.5 h-3.5 opacity-70" />
-            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>Shipped</span>
-            {fmtDay(liveShipmentDate)}
+            <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+              {liveAwb
+                ? isReadyForPickupStatus(usingClone ? operational : order)
+                  ? 'Ready for pickup'
+                  : fulfillmentStageLabel(liveStatus)
+                : 'Not shipped'}
+            </span>
+            {liveAwb ? fmtDay(liveShipmentDate) : null}
           </span>
           {liveMeta.etd_date && (
             <span className="inline-flex items-center gap-1.5">
@@ -658,63 +683,77 @@ function OrderStatusCard({
               <TimelineRail steps={timeline} />
             </section>
 
-            {/* Shipping + Delivery */}
+            {/* Shipping + Delivery — Shiprocket blocks hidden for Air Express orders */}
             <section className="space-y-4">
-              <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
-                <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
-                  <Truck className="w-3.5 h-3.5" /> Shipping Information
-                </h3>
-                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                  {[
-                    ['Courier Partner', liveFulfillment?.tracking_company || '—'],
-                    ['Tracking Number', liveAwb || '—'],
-                    ['Warehouse', liveMeta.pickup_location || '—'],
-                    ['Shipping Method', liveMeta.shipping_method || '—'],
-                    ['Estimated Delivery', fmtWhen(liveMeta.etd_date || tracking?.tracking_data?.etd)],
-                    ['Actual Delivery', fmtWhen(liveMeta.delivered_date || liveFulfillment?.delivery_date)],
-                  ].map(([k, v]) => (
-                    <div key={k as string}>
-                      <dt className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>{k}</dt>
-                      <dd className="font-semibold break-all" style={{ color: 'var(--foreground)' }}>{v as string}</dd>
-                    </div>
-                  ))}
-                </dl>
-                {(liveFulfillment?.tracking_url || tracking?.tracking_data?.track_url) && (
-                  <a
-                    href={liveFulfillment?.tracking_url || tracking?.tracking_data?.track_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-purple-600 hover:underline"
-                  >
-                    Open Tracking URL <ExternalLink className="w-3 h-3" />
-                  </a>
-                )}
-              </div>
+              {!isAirExpress && (
+                <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
+                  <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
+                    <Truck className="w-3.5 h-3.5" /> Shipping Information
+                  </h3>
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    {[
+                      ['Courier Partner', liveFulfillment?.tracking_company || '—'],
+                      ['Tracking Number', liveAwb || '—'],
+                      ['Warehouse', liveMeta.pickup_location || '—'],
+                      ['Shipping Method', liveMeta.shipping_method || '—'],
+                      ['Estimated Delivery', fmtWhen(liveMeta.etd_date || tracking?.tracking_data?.etd)],
+                      ['Actual Delivery', fmtWhen(liveMeta.delivered_date || liveFulfillment?.delivery_date)],
+                    ].map(([k, v]) => (
+                      <div key={k as string}>
+                        <dt className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>{k}</dt>
+                        <dd className="font-semibold break-all" style={{ color: 'var(--foreground)' }}>{v as string}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {(liveFulfillment?.tracking_url || tracking?.tracking_data?.track_url) && (
+                    <a
+                      href={liveFulfillment?.tracking_url || tracking?.tracking_data?.track_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1.5 mt-3 text-xs font-bold text-purple-600 hover:underline"
+                    >
+                      Open Tracking URL <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
+                </div>
+              )}
 
-              <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
-                <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
-                  <MapPin className="w-3.5 h-3.5" /> Delivery Information
-                </h3>
-                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                  {[
-                    ['Current Status', fulfillmentStageLabel(liveStatus)],
-                    ['Delivered', liveStatus === 'delivered' ? 'Yes' : 'No'],
-                    ['Dispatched', liveAwb || liveMeta.picked_up_date ? 'Yes' : 'No'],
-                    ['Recipient', trackInfo?.consignee_name || customerName(order)],
-                    ['Delivery Proof', trackInfo?.pod || trackInfo?.pod_status || '—'],
-                    ['Delivery Notes', liveFulfillment?.shipment_status_reason || liveMeta.delay_reason || '—'],
-                  ].map(([k, v]) => (
-                    <div key={k as string}>
-                      <dt className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>{k}</dt>
-                      <dd className="font-semibold break-words" style={{ color: 'var(--foreground)' }}>{v as string}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </div>
+              {isAirExpress && (
+                <AirExpressOrderDetails
+                  order={order}
+                  live={operational}
+                  relatedClones={relatedClones}
+                  active={expanded}
+                />
+              )}
+
+              {!isAirExpress && (
+                <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
+                  <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3 flex items-center gap-1.5" style={{ color: 'var(--foreground-muted)' }}>
+                    <MapPin className="w-3.5 h-3.5" /> Delivery Information
+                  </h3>
+                  <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    {[
+                      ['Current Status', fulfillmentStageLabel(liveStatus)],
+                      ['Delivered', liveStatus === 'delivered' ? 'Yes' : 'No'],
+                      ['Dispatched', liveAwb || liveMeta.picked_up_date ? 'Yes' : 'No'],
+                      ['Recipient', trackInfo?.consignee_name || customerName(order)],
+                      ['Delivery Proof', trackInfo?.pod || trackInfo?.pod_status || '—'],
+                      ['Delivery Notes', liveFulfillment?.shipment_status_reason || liveMeta.delay_reason || '—'],
+                    ].map(([k, v]) => (
+                      <div key={k as string}>
+                        <dt className="text-[10px] font-bold uppercase" style={{ color: 'var(--foreground-muted)' }}>{k}</dt>
+                        <dd className="font-semibold break-words" style={{ color: 'var(--foreground)' }}>{v as string}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              )}
             </section>
           </div>
 
-          {/* Attempts + Calls + Live track */}
+          {/* Shiprocket-only: attempts, calls, live trail */}
+          {!isAirExpress && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
               <h3 className="text-xs font-extrabold uppercase tracking-wider mb-2" style={{ color: 'var(--foreground-muted)' }}>
@@ -799,8 +838,7 @@ function OrderStatusCard({
               )}
             </div>
           </div>
-
-          {/* Clone order trail (parent) / parent link (clone) */}
+          )}
           {(hasClones || (isClone && parentOrder)) && (
             <div className="rounded-xl border p-4" style={{ borderColor: 'var(--border)', background: 'var(--card)' }}>
               <h3 className="text-xs font-extrabold uppercase tracking-wider mb-3" style={{ color: 'var(--foreground-muted)' }}>
@@ -987,6 +1025,7 @@ export default function OrderStatusPage() {
   // Default "all" so CUSTOM / Shiprocket-only orders match Shiprocket dashboard counts
   const [channel, setChannel] = useState<'shopify' | 'shiprocket' | 'all'>('all')
   const [courier, setCourier] = useState('all')
+  const [logistics, setLogistics] = useState<'all' | 'air_express'>('all')
   const [paymentStatus, setPaymentStatus] = useState('all')
   const [fulfillmentStatus, setFulfillmentStatus] = useState('all')
   const [deliveryStatus, setDeliveryStatus] = useState('all')
@@ -1016,6 +1055,7 @@ export default function OrderStatusPage() {
         if (debouncedSearch) params.set('search', debouncedSearch)
         if (channel !== 'all') params.set('channel', channel)
         if (courier !== 'all') params.set('courier', courier)
+        if (logistics === 'air_express') params.set('logistics', 'air_express')
         if (paymentStatus !== 'all') params.set('payment_status', paymentStatus)
         if (fulfillmentStatus !== 'all') params.set('fulfillment', fulfillmentStatus)
         if (deliveryStatus !== 'all') params.set('delivery', deliveryStatus)
@@ -1079,6 +1119,7 @@ export default function OrderStatusPage() {
       debouncedSearch,
       channel,
       courier,
+      logistics,
       paymentStatus,
       fulfillmentStatus,
       deliveryStatus,
@@ -1097,6 +1138,7 @@ export default function OrderStatusPage() {
     setDebouncedSearch('')
     setChannel('all')
     setCourier('all')
+    setLogistics('all')
     setPaymentStatus('all')
     setFulfillmentStatus('all')
     setDeliveryStatus('all')
@@ -1120,6 +1162,7 @@ export default function OrderStatusPage() {
     search.trim() !== '' ||
     channel !== 'all' ||
     courier !== 'all' ||
+    logistics !== 'all' ||
     paymentStatus !== 'all' ||
     fulfillmentStatus !== 'all' ||
     deliveryStatus !== 'all' ||
@@ -1379,7 +1422,7 @@ export default function OrderStatusPage() {
                 style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
               />
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-8 gap-2">
               <select
                 value={channel}
                 onChange={(e) => setChannel(e.target.value as 'shopify' | 'shiprocket' | 'all')}
@@ -1389,6 +1432,15 @@ export default function OrderStatusPage() {
                 <option value="all">All channels</option>
                 <option value="shopify">Shopify only</option>
                 <option value="shiprocket">Shiprocket only</option>
+              </select>
+              <select
+                value={logistics}
+                onChange={(e) => setLogistics(e.target.value as 'all' | 'air_express')}
+                className="px-2.5 py-2 rounded-lg border text-xs"
+                style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
+              >
+                <option value="all">All logistics</option>
+                <option value="air_express">Air Express only</option>
               </select>
               <select value={courier} onChange={(e) => setCourier(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
                 <option value="all">All Couriers</option>
