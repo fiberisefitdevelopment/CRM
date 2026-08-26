@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import {
   createShopifyCareOrder,
+  getCareOrderContext,
   listShopifyCareProducts,
   type ShopifyCatalogVariant,
 } from '@/lib/careTasksApi'
@@ -89,6 +90,12 @@ export function CreateShopifyOrderDialog({
   const [city, setCity] = useState('')
   const [province, setProvince] = useState('')
   const [zip, setZip] = useState('')
+  const [country, setCountry] = useState('India')
+
+  const [orderSearch, setOrderSearch] = useState('')
+  const [orderSearchLoading, setOrderSearchLoading] = useState(false)
+  const [orderSearchError, setOrderSearchError] = useState<string | null>(null)
+  const [sourceOrderLabel, setSourceOrderLabel] = useState<string | null>(null)
 
   const [lines, setLines] = useState<LineRow[]>([
     { key: newKey(), variantId: null, label: '', quantity: '1', price: '' },
@@ -115,9 +122,14 @@ export function CreateShopifyOrderDialog({
     setCity(String(p?.city || '').trim())
     setProvince(String(p?.province || '').trim())
     setZip(String(p?.zip || '').trim())
+    setCountry(String(p?.country || 'India').trim() || 'India')
+    const sourceName = p?.sourceOrderName ? String(p.sourceOrderName).trim() : ''
+    setSourceOrderLabel(sourceName || null)
+    setOrderSearch(sourceName.replace(/^#/, ''))
+    setOrderSearchError(null)
     const noteBits = [
       p?.note?.trim() || '',
-      p?.sourceOrderName ? `Reorder / upsell from ${p.sourceOrderName}` : '',
+      sourceName ? `Reorder / upsell from ${sourceName}` : '',
     ].filter(Boolean)
     setNote(noteBits.join('\n'))
     setPayment('cod')
@@ -133,6 +145,52 @@ export function CreateShopifyOrderDialog({
     if (!open) return
     applyPrefill(prefill)
   }, [open, prefill, applyPrefill])
+
+  const searchOrderAndPrefill = useCallback(async () => {
+    const raw = orderSearch.trim()
+    if (!raw) {
+      setOrderSearchError('Enter an order ID')
+      return
+    }
+    const cleaned = raw.replace(/^#/, '').trim()
+    if (!cleaned) {
+      setOrderSearchError('Enter an order ID')
+      return
+    }
+
+    try {
+      setOrderSearchLoading(true)
+      setOrderSearchError(null)
+      const data = await getCareOrderContext(cleaned, `#${cleaned}`)
+      const c = data?.customer
+      if (!c || (!c.firstName && !c.phone && !c.address1)) {
+        throw new Error('Order found but has no customer details to prefill')
+      }
+      const name = String(data?.order?.name || `#${cleaned}`).trim()
+      const fromName = splitName(
+        [c.firstName, c.lastName].filter(Boolean).join(' ') || undefined,
+      )
+      setFirstName(String(c.firstName || fromName.firstName || '').trim())
+      setLastName(String(c.lastName || fromName.lastName || '').trim())
+      setEmail(String(c.email || '').trim())
+      setPhone(String(c.phone || '').trim())
+      setAddress1(String(c.address1 || '').trim())
+      setAddress2(String(c.address2 || '').trim())
+      setCity(String(c.city || data.city || '').trim())
+      setProvince(String(c.province || data.state || '').trim())
+      setZip(String(c.zip || data.pincode || '').trim())
+      setCountry(String(c.country || 'India').trim() || 'India')
+      setSourceOrderLabel(name)
+      setNote(`Reorder / upsell from ${name}`)
+      setError(null)
+      setSuccess(null)
+    } catch (err: any) {
+      setOrderSearchError(err?.message || 'Order not found')
+      setSourceOrderLabel(null)
+    } finally {
+      setOrderSearchLoading(false)
+    }
+  }, [orderSearch])
 
   const loadCatalog = useCallback(async (q?: string) => {
     try {
@@ -260,7 +318,7 @@ export function CreateShopifyOrderDialog({
           city: city.trim(),
           province: province.trim(),
           zip: zip.trim(),
-          country: prefill?.country || 'India',
+          country: country.trim() || 'India',
         },
         lineItems,
       })
@@ -331,8 +389,9 @@ export function CreateShopifyOrderDialog({
               Create Shopify order
             </h2>
             <p className="text-xs mt-0.5" style={{ color: 'var(--foreground-muted)' }}>
-              Customer details prefilled from this order
-              {prefill?.sourceOrderName ? ` (${prefill.sourceOrderName})` : ''}.
+              {sourceOrderLabel
+                ? `Customer details prefilled from ${sourceOrderLabel}.`
+                : 'Search an order ID to prefill customer details, or enter them manually.'}
             </p>
             <p
               className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold"
@@ -355,6 +414,59 @@ export function CreateShopifyOrderDialog({
         </div>
 
         <form onSubmit={handleSubmit} className="p-4 space-y-4">
+          <section className="space-y-2">
+            <h3 className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--foreground-muted)' }}>
+              Prefill from order
+            </h3>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4"
+                  style={{ color: 'var(--foreground-muted)' }}
+                />
+                <input
+                  value={orderSearch}
+                  onChange={(e) => {
+                    setOrderSearch(e.target.value)
+                    if (orderSearchError) setOrderSearchError(null)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      if (!orderSearchLoading && !submitting) void searchOrderAndPrefill()
+                    }
+                  }}
+                  placeholder="Search order ID (e.g. 4104)"
+                  className={`${inputClass} pl-9`}
+                  style={inputStyle}
+                  disabled={orderSearchLoading || submitting}
+                  autoComplete="off"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void searchOrderAndPrefill()}
+                disabled={orderSearchLoading || submitting || !orderSearch.trim()}
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-purple-600 text-white disabled:opacity-40 shrink-0"
+              >
+                {orderSearchLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Search className="w-4 h-4" />
+                )}
+                {orderSearchLoading ? 'Searching…' : 'Search'}
+              </button>
+            </div>
+            {orderSearchError && (
+              <p className="text-xs text-red-500">{orderSearchError}</p>
+            )}
+            {!orderSearchError && sourceOrderLabel && (
+              <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                Loaded customer from {sourceOrderLabel}
+              </p>
+            )}
+          </section>
+
           <section className="space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--foreground-muted)' }}>
               Customer

@@ -35,10 +35,11 @@ export async function GET(req: NextRequest) {
     const live = searchParams.get('live') === '1' || searchParams.get('live') === 'true'
 
     const all = (await OrderRepository.getCachedOrders()) || []
+    const queryName = orderName || orderId
     let order =
       (orderId ? await OrderRepository.getCachedOrderById(orderId) : null) ||
       all.find((o: any) => String(o.id) === String(orderId)) ||
-      all.find((o: any) => cleanOrderName(o.name) === cleanOrderName(orderName)) ||
+      all.find((o: any) => cleanOrderName(o.name) === cleanOrderName(queryName)) ||
       null
 
     if (!order) {
