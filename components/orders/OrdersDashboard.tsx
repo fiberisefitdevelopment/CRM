@@ -47,7 +47,14 @@ import {
   MoreHorizontal
 } from 'lucide-react'
 import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
+import { AirExpressDocumentsButtons } from '@/components/orders/AirExpressDocumentsButtons'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
+import { isAirExpressOrder } from '@/src/utils/airExpressOrder'
+import {
+  downloadAirExpressDocument,
+  openAirExpressPdf,
+} from '@/lib/airExpressApi'
+import type { AayshPdfType } from '@/src/services/aayshExpressClient'
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -125,6 +132,9 @@ interface ShopifyOrder {
   }>
   source?: string
   is_test_order?: boolean
+  airExpressOrderId?: string | null
+  airExpressShipmentId?: string | null
+  logistics?: string | null
 }
 
 interface ManifestRecord {
@@ -152,6 +162,13 @@ function Badge({ label, variant = 'default' }: { label: string; variant?: 'green
       {label}
     </span>
   )
+}
+
+function isAeShippedOrder(order: ShopifyOrder | any): boolean {
+  if (!order) return false
+  if (isAirExpressOrder(order) || order.logistics === 'air_express') return true
+  const company = String(order.fulfillments?.[0]?.tracking_company || '').toLowerCase()
+  return company.includes('air express') || company.includes('aaysh')
 }
 
 function statusVariant(status: string | null): 'green' | 'yellow' | 'red' | 'blue' | 'default' {
@@ -509,6 +526,7 @@ export function OrdersPanel({
   // Shiprocket Actions Loading state
   const [actionLoadingOrderId, setActionLoadingOrderId] = useState<number | null>(null)
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [aeDocLoading, setAeDocLoading] = useState<AayshPdfType | null>(null)
 
   // Manifests Mock Database (starts with some, adds when dispatches are triggered)
   const [manifests, setManifests] = useState<ManifestRecord[]>([
@@ -973,8 +991,41 @@ export function OrdersPanel({
     }
   }
 
-  // 2. Download Manifest (Dispatches Ready To Ship order into In Transit)
+  const handleAirExpressDocuments = async (
+    type: AayshPdfType,
+    orders: ShopifyOrder[],
+  ) => {
+    const aeOrders = orders.filter(isAeShippedOrder)
+    if (!aeOrders.length) {
+      triggerNotification('error', 'No Air Express orders selected to print')
+      return
+    }
+    try {
+      setAeDocLoading(type)
+      const { url, filename } = await downloadAirExpressDocument(
+        type,
+        [],
+        aeOrders.map((o) => o.id),
+      )
+      if (url) openAirExpressPdf(url, filename || `aaysh-${type}.pdf`)
+      const label = type === 'labels' ? 'label' : type === 'manifests' ? 'manifest' : 'invoice'
+      triggerNotification(
+        'success',
+        `Air Express ${label} generated for ${aeOrders.length} order${aeOrders.length === 1 ? '' : 's'}`,
+      )
+    } catch (err: any) {
+      triggerNotification('error', err?.message || `Failed to generate Air Express ${type}`)
+    } finally {
+      setAeDocLoading(null)
+    }
+  }
+
+  // 2. Download Manifest (Air Express prints the real PDF; others keep the dispatch mock)
   const handleManifestDispatch = (order: ShopifyOrder) => {
+    if (isAeShippedOrder(order)) {
+      void handleAirExpressDocuments('manifests', [order])
+      return
+    }
     setActionLoadingOrderId(order.id)
     setTimeout(() => {
       // Move to In Transit
@@ -1937,6 +1988,27 @@ export function OrdersPanel({
                 </span>
               </div>
               <div className="flex gap-2">
+                {paginatedOrders.some((o) => selectedOrders[o.id] && isAeShippedOrder(o)) && (
+                  <>
+                    {(['labels', 'manifests', 'invoices'] as AayshPdfType[]).map((type) => (
+                      <button
+                        key={type}
+                        disabled={aeDocLoading !== null}
+                        onClick={() => {
+                          const selected = paginatedOrders.filter(
+                            (o) => selectedOrders[o.id] && isAeShippedOrder(o),
+                          )
+                          void handleAirExpressDocuments(type, selected)
+                        }}
+                        className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-xs font-bold text-white transition-colors"
+                      >
+                        {aeDocLoading === type
+                          ? `Printing ${type}…`
+                          : `Print ${type === 'labels' ? 'Labels' : type === 'manifests' ? 'Manifests' : 'Invoices'}`}
+                      </button>
+                    ))}
+                  </>
+                )}
                 {isShipQueueTab && (
                   <button
                     onClick={() => {
@@ -1951,10 +2023,11 @@ export function OrdersPanel({
                 {currentTab === 'ready_to_ship' && (
                   <button
                     onClick={() => {
-                      // Trigger mock manifest on all selected
-                      paginatedOrders.forEach((o) => {
-                        if (selectedOrders[o.id]) handleManifestDispatch(o)
-                      })
+                      const selected = paginatedOrders.filter((o) => selectedOrders[o.id])
+                      const ae = selected.filter(isAeShippedOrder)
+                      const other = selected.filter((o) => !isAeShippedOrder(o))
+                      if (ae.length) void handleAirExpressDocuments('manifests', ae)
+                      other.forEach((o) => handleManifestDispatch(o))
                       setSelectedOrders({})
                     }}
                     className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors"
@@ -2537,20 +2610,33 @@ export function OrdersPanel({
 
                                 {/* Action */}
                                 <td className="px-6 py-4 text-right font-medium" onClick={(e) => e.stopPropagation()}>
-                                  <button
-                                    onClick={() => handleManifestDispatch(order)}
-                                    disabled={actionLoadingOrderId === order.id}
-                                    className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-xs font-extrabold text-white transition-all shadow-lg active:scale-95"
-                                  >
-                                    {actionLoadingOrderId === order.id ? (
-                                      <>
-                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                        Dispatched...
-                                      </>
-                                    ) : (
-                                      'Download Manifest'
-                                    )}
-                                  </button>
+                                  {isAeShippedOrder(order) ? (
+                                    <AirExpressDocumentsButtons
+                                      orderIds={[order.id]}
+                                      onError={(msg) => triggerNotification('error', msg)}
+                                      onSuccess={(type) =>
+                                        triggerNotification(
+                                          'success',
+                                          `Air Express ${type === 'labels' ? 'label' : type === 'manifests' ? 'manifest' : 'invoice'} generated`,
+                                        )
+                                      }
+                                    />
+                                  ) : (
+                                    <button
+                                      onClick={() => handleManifestDispatch(order)}
+                                      disabled={actionLoadingOrderId === order.id}
+                                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-xs font-extrabold text-white transition-all shadow-lg active:scale-95"
+                                    >
+                                      {actionLoadingOrderId === order.id ? (
+                                        <>
+                                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                          Dispatched...
+                                        </>
+                                      ) : (
+                                        'Download Manifest'
+                                      )}
+                                    </button>
+                                  )}
                                 </td>
                               </>
                             )}
@@ -2638,12 +2724,20 @@ export function OrdersPanel({
 
                                 {/* Action */}
                                 <td className="px-6 py-4 text-right font-medium" onClick={(e) => e.stopPropagation()}>
-                                  <button
-                                    onClick={() => setActiveTrackingOrder(order)}
-                                    className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-extrabold text-white transition-all shadow-lg shadow-purple-600/10"
-                                  >
-                                    Track Order
-                                  </button>
+                                  <div className="flex flex-col items-end gap-2">
+                                    {isAeShippedOrder(order) && (
+                                      <AirExpressDocumentsButtons
+                                        orderIds={[order.id]}
+                                        onError={(msg) => triggerNotification('error', msg)}
+                                      />
+                                    )}
+                                    <button
+                                      onClick={() => setActiveTrackingOrder(order)}
+                                      className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-extrabold text-white transition-all shadow-lg shadow-purple-600/10"
+                                    >
+                                      Track Order
+                                    </button>
+                                  </div>
                                 </td>
                               </>
                             )}
@@ -2837,7 +2931,11 @@ export function OrdersPanel({
                                           <button
                                             onClick={() => {
                                               setActiveDropdownOrderId(null);
-                                              triggerNotification('success', 'Fetching order invoice PDF...');
+                                              if (isAeShippedOrder(order)) {
+                                                void handleAirExpressDocuments('invoices', [order])
+                                              } else {
+                                                triggerNotification('success', 'Fetching order invoice PDF...');
+                                              }
                                             }}
                                             className="w-full px-4 py-2 text-xs text-white/70 hover:text-white hover:bg-purple-600/20 text-left transition-colors font-medium"
                                           >
@@ -3859,12 +3957,12 @@ export function OrdersPanel({
                 </div>
               </div>
 
-              {/* Shiprocket logistics stats */}
-              {activeDetailOrder.fulfillment_status === 'fulfilled' && (
+              {/* Courier logistics + Air Express documents */}
+              {(activeDetailOrder.fulfillment_status === 'fulfilled' || isAeShippedOrder(activeDetailOrder)) && (
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                     <Truck className="w-3.5 h-3.5" />
-                    Shiprocket Courier Routing
+                    {isAeShippedOrder(activeDetailOrder) ? 'Air Express Documents' : 'Shiprocket Courier Routing'}
                   </p>
                   <div className="order-drawer-surface p-4 rounded-2xl text-xs space-y-2.5 font-semibold">
                     <div className="flex justify-between gap-4">
@@ -3877,10 +3975,32 @@ export function OrdersPanel({
                         {activeDetailOrder.fulfillments?.[0]?.tracking_number}
                       </span>
                     </div>
+                    {isAeShippedOrder(activeDetailOrder) && (activeDetailOrder.airExpressShipmentId || activeDetailOrder.fulfillments?.[0]?.id) && (
+                      <div className="flex justify-between gap-4">
+                        <span className="order-drawer-muted font-normal">Shipment ID</span>
+                        <span className="font-mono">
+                          {activeDetailOrder.airExpressShipmentId || activeDetailOrder.fulfillments?.[0]?.id}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between gap-4">
                       <span className="order-drawer-muted font-normal">Courier Status</span>
                       <span className="text-amber-600 dark:text-yellow-400 uppercase">{activeDetailOrder.fulfillments?.[0]?.shipment_status || 'scheduled'}</span>
                     </div>
+                    {isAeShippedOrder(activeDetailOrder) && (
+                      <div className="pt-2">
+                        <AirExpressDocumentsButtons
+                          orderIds={[activeDetailOrder.id]}
+                          onError={(msg) => triggerNotification('error', msg)}
+                          onSuccess={(type) =>
+                            triggerNotification(
+                              'success',
+                              `Air Express ${type === 'labels' ? 'label' : type === 'manifests' ? 'manifest' : 'invoice'} generated`,
+                            )
+                          }
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

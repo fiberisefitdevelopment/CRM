@@ -159,17 +159,29 @@ export async function cancelAirExpressPickup(shipmentId: string) {
   return parseJson<unknown>(res)
 }
 
-export async function downloadAirExpressDocument(type: AayshPdfType, shipmentIds: string[]) {
+export async function downloadAirExpressDocument(
+  type: AayshPdfType,
+  shipmentIds: string[] = [],
+  orderIds: Array<string | number> = [],
+) {
+  const body: Record<string, unknown> = {}
+  if (shipmentIds.length) body.shipmentIds = shipmentIds.map(String)
+  if (orderIds.length) body.orderIds = orderIds.map(String)
+
   const res = await apiFetch(`/api/air-express/documents/${type}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ shipmentIds }),
+    body: JSON.stringify(body),
   })
 
   const contentType = res.headers.get('content-type') || ''
-  if (contentType.includes('application/pdf')) {
+  const filename =
+    res.headers.get('content-disposition')?.match(/filename="?([^";]+)"?/)?.[1] ||
+    `aaysh-${type}.pdf`
+
+  if (contentType.includes('application/pdf') || contentType.includes('octet-stream')) {
     const blob = await res.blob()
-    return { blob, url: URL.createObjectURL(blob) }
+    return { blob, url: URL.createObjectURL(blob), filename }
   }
 
   const data = await res.json().catch(() => ({}))
@@ -177,9 +189,22 @@ export async function downloadAirExpressDocument(type: AayshPdfType, shipmentIds
   const pdfUrl =
     data?.url || data?.pdf_url || data?.label_url || data?.data?.url || data?.data
   if (typeof pdfUrl === 'string' && pdfUrl.startsWith('http')) {
-    return { url: pdfUrl }
+    return { url: pdfUrl, filename }
   }
   throw new Error(data?.message || `No PDF URL returned for ${type}`)
+}
+
+export function openAirExpressPdf(url: string, filename = 'aaysh-document.pdf') {
+  const opened = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!opened) {
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+  }
 }
 
 export async function trackAirExpressByAwb(awb: string) {

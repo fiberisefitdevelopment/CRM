@@ -43,6 +43,7 @@ function patchOrderWithAirExpress(params: {
 
   return OrderRepository.patchOrderInCache(params.order.id, {
     airExpressOrderId: params.externalOrderId,
+    airExpressShipmentId: params.shipmentId,
     fulfillment_status: 'fulfilled',
     fulfillments: [fulfillment],
     logistics: 'air_express',

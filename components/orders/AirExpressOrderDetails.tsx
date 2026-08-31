@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { AlertCircle, ExternalLink, Loader2, Plane } from 'lucide-react'
 import { fetchAirExpressOrder, trackAirExpressByOrder } from '@/lib/airExpressApi'
+import { AirExpressDocumentsButtons } from '@/components/orders/AirExpressDocumentsButtons'
 import {
   orderTrailUsesAirExpress,
   resolveAirExpressOrderIdForCrmOrder,
@@ -184,6 +185,18 @@ export function AirExpressOrderDetails({
             ))}
           </dl>
 
+          {(shipmentId || order?.id) && (
+            <div className="mt-4 pt-3 border-t border-sky-500/20">
+              <p className="text-[10px] font-bold uppercase mb-2" style={{ color: 'var(--foreground-muted)' }}>
+                Print documents
+              </p>
+              <AirExpressDocumentsButtons
+                shipmentIds={shipmentId ? [String(shipmentId)] : []}
+                orderIds={order?.id != null ? [order.id] : []}
+              />
+            </div>
+          )}
+
           <div className="mt-4 pt-3 border-t border-sky-500/20">
             <p className="text-[10px] font-bold uppercase mb-2" style={{ color: 'var(--foreground-muted)' }}>
               Delivery
@@ -242,6 +255,15 @@ export function AirExpressOrderDetails({
         <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
           No Air Express record found for order {aeOrderId}.
         </p>
+      )}
+
+      {!loading && order?.id && !aeOrder && (
+        <div className="mt-3">
+          <p className="text-[10px] font-bold uppercase mb-2" style={{ color: 'var(--foreground-muted)' }}>
+            Print documents
+          </p>
+          <AirExpressDocumentsButtons orderIds={[order.id]} />
+        </div>
       )}
     </div>
   )

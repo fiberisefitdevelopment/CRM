@@ -19,6 +19,7 @@ export const LOGISTICS_FIELD_BLOCKLIST = [
   'shiprocket_order_id',
   'shiprocketOrderId',
   'airExpressOrderId',
+  'airExpressShipmentId',
   'shiprocketUpdatedAt',
   'airExpressUpdatedAt',
   // Fulfillments in the CRM cache are SR-enriched (AWB, shipment_status, tracking_*).

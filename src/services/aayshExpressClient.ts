@@ -177,6 +177,8 @@ async function aayshRequest(
   const { baseUrl } = getAayshConfig()
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
+    // Aaysh PDF routes also accept the login JWT as a cookie (Postman uses Cookie: token=...).
+    Cookie: `token=${token}`,
   }
 
   const init: RequestInit = {

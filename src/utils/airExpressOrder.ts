@@ -30,6 +30,19 @@ export function airExpressOrderId(order: any): string | null {
   return String(order.airExpressOrderId ?? order.air_express_order_id).trim()
 }
 
+/** Aaysh shipment id used by /api/external/pdf/{labels,manifests,invoices}. */
+export function airExpressShipmentId(order: any): string | null {
+  if (!order) return null
+  const stored = order.airExpressShipmentId ?? order.air_express_shipment_id
+  if (stored != null && String(stored).trim() !== '') return String(stored).trim()
+  if (!isAirExpressOrder(order) && order.logistics !== 'air_express') return null
+  const fromFulfillment = order.fulfillments?.[0]?.id
+  if (fromFulfillment != null && String(fromFulfillment).trim() !== '' && String(fromFulfillment) !== '0') {
+    return String(fromFulfillment).trim()
+  }
+  return null
+}
+
 /** Shopify order name / stored AE id for Aaysh API lookups. */
 export function resolveAirExpressOrderIdForCrmOrder(
   order?: any,

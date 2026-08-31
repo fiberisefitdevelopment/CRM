@@ -173,8 +173,19 @@ function buildAirExpressLogisticsMergePayload(
     aeShipment?.orderId ||
     null
 
+  const shipmentId =
+    aeShipment?.shipment_id ||
+    aeShipment?.shipmentId ||
+    aeShipment?.id ||
+    aeOrder?.shipment_id ||
+    aeOrder?.shipmentId ||
+    aeOrder?.shipment?.shipment_id ||
+    null
+
   const payload: Record<string, any> = {
     airExpressOrderId: aeId != null ? String(aeId) : null,
+    airExpressShipmentId: shipmentId != null ? String(shipmentId) : null,
+    logistics: 'air_express',
     airExpressUpdatedAt: nowIso,
     updatedAt: nowIso,
   }
@@ -182,7 +193,7 @@ function buildAirExpressLogisticsMergePayload(
   if (awb || shipment_status) {
     payload.fulfillments = [
       {
-        id: aeShipment?.id || aeShipment?._id || Math.floor(Math.random() * 10000),
+        id: shipmentId || aeShipment?.id || aeShipment?._id || Math.floor(Math.random() * 10000),
         status: 'success',
         tracking_number: awb,
         tracking_company: courier,

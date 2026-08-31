@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+function isPdfBody(result: unknown): result is ArrayBuffer | Uint8Array | Buffer {
+  if (result instanceof ArrayBuffer) return true
+  if (result instanceof Uint8Array) return true
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(result)) return true
+  return false
+}
+
 export async function withAayshAuth(
   req: NextRequest,
   handler: () => Promise<unknown>,
+  options?: { pdfFilename?: string },
 ): Promise<NextResponse> {
   try {
     const { optionalAuth } = require('@/src/services/auth')
@@ -13,12 +21,15 @@ export async function withAayshAuth(
 
     const result = await handler()
 
-    if (result instanceof ArrayBuffer) {
-      return new NextResponse(result, {
+    if (result instanceof NextResponse) return result
+
+    if (isPdfBody(result)) {
+      const body = result instanceof ArrayBuffer ? result : new Uint8Array(result)
+      return new NextResponse(body, {
         status: 200,
         headers: {
           'Content-Type': 'application/pdf',
-          'Content-Disposition': 'inline; filename="document.pdf"',
+          'Content-Disposition': `inline; filename="${options?.pdfFilename || 'air-express-document.pdf'}"`,
         },
       })
     }

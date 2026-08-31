@@ -78,7 +78,11 @@ function extractCourier(row: any): string | null {
 }
 
 function extractShipmentId(row: any): string | null {
-  const id = row?.shipmentId ?? row?.shipment_id ?? row?.shipment?.shipment_id
+  const id =
+    row?.shipmentId ??
+    row?.shipment_id ??
+    row?.shipment?.shipment_id ??
+    row?.shipment?.id
   const s = id != null ? String(id).trim() : ''
   return s || null
 }
@@ -317,6 +321,7 @@ export function enrichOrderWithAirExpress(
 
   let next = { ...order }
   if (aeId) next.airExpressOrderId = aeId
+  if (logistics?.shipmentId) next.airExpressShipmentId = logistics.shipmentId
 
   // Only overwrite empty / AE-shaped fulfillments — don't clobber a real Shiprocket AWB.
   const existingCompany = String(order?.fulfillments?.[0]?.tracking_company || '').toLowerCase()
