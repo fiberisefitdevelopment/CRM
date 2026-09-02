@@ -398,7 +398,7 @@ function OrderStatusCard({
 
   return (
     <div
-      className={`crm-card overflow-hidden border ${
+      className={`crm-card overflow-visible border ${
         liveDelayed ? 'ring-1 ring-red-500/40' : hasClones || isClone ? 'ring-1 ring-emerald-500/35' : ''
       }`}
       style={{

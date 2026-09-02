@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Loader2 } from 'lucide-react'
 import { assignCareOrderExecutive } from '@/lib/careTasksApi'
 import type { CareOrderAssignmentEntry } from '@/src/services/careAssignmentStore'
@@ -105,51 +104,9 @@ export function CareExecutiveAssignControl({
   }
 
   const assigned = Boolean(currentEmail)
-  const menu =
-    open && typeof document !== 'undefined'
-      ? createPortal(
-          <div
-            ref={menuRef}
-            data-care-assign="1"
-            role="listbox"
-            className="rounded-lg border shadow-xl py-1 min-w-[10rem]"
-            style={{
-              position: 'fixed',
-              top: menuPos.top,
-              left: menuPos.left,
-              zIndex: 80,
-              backgroundColor: 'var(--card)',
-              borderColor: 'var(--border)',
-            }}
-          >
-            {options.map((exec) => {
-              const selected = exec.email === currentEmail
-              return (
-                <button
-                  key={exec.email}
-                  type="button"
-                  role="option"
-                  aria-selected={selected}
-                  onClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    void pick(exec.email)
-                  }}
-                  className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[11px] font-semibold hover:bg-purple-500/10"
-                  style={{ color: 'var(--foreground)' }}
-                >
-                  {exec.name}
-                  {selected ? <Check className="w-3 h-3 text-sky-600" /> : null}
-                </button>
-              )
-            })}
-          </div>,
-          document.body,
-        )
-      : null
 
   return (
-    <>
+    <span className="relative inline-flex z-30" data-care-assign="1">
       <button
         ref={btnRef}
         type="button"
@@ -188,7 +145,44 @@ export function CareExecutiveAssignControl({
           <ChevronDown className="w-2.5 h-2.5 opacity-70" />
         )}
       </button>
-      {menu}
-    </>
+      {open ? (
+        <div
+          ref={menuRef}
+          data-care-assign="1"
+          role="listbox"
+          className="rounded-lg border shadow-xl py-1 min-w-[10rem]"
+          style={{
+            position: 'fixed',
+            top: menuPos.top,
+            left: menuPos.left,
+            zIndex: 80,
+            backgroundColor: 'var(--card)',
+            borderColor: 'var(--border)',
+          }}
+        >
+          {options.map((exec) => {
+            const selected = exec.email === currentEmail
+            return (
+              <button
+                key={exec.email}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  void pick(exec.email)
+                }}
+                className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[11px] font-semibold hover:bg-purple-500/10"
+                style={{ color: 'var(--foreground)' }}
+              >
+                {exec.name}
+                {selected ? <Check className="w-3 h-3 text-sky-600" /> : null}
+              </button>
+            )
+          })}
+        </div>
+      ) : null}
+    </span>
   )
 }
