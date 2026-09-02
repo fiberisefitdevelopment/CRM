@@ -3,10 +3,12 @@ import path from 'path'
 import type { CareTask } from './types'
 import { normalizeCareScheduleDay, normalizeCareTaskLabel } from './types'
 
+/** Bump this to ignore stale disk snapshots on live after assignment restores. */
+const CACHE_GENERATION = 4
 /** Fresh window — serve without hitting Firestore. */
 const FRESH_TTL_MS = 2 * 60 * 1000
 /** Serve stale instantly while a background refresh runs. */
-const STALE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+const STALE_MAX_AGE_MS = 10 * 60 * 1000
 
 const DISK_PATH = path.join(process.cwd(), '.care-tasks-cache.json')
 
@@ -47,7 +49,7 @@ function persist(key: BucketKey, tasks: CareTask[]) {
     try {
       fs.writeFileSync(
         diskPath(key),
-        JSON.stringify({ savedAt: Date.now(), tasks }),
+        JSON.stringify({ generation: CACHE_GENERATION, savedAt: Date.now(), tasks }),
         'utf-8',
       )
     } catch (e) {
@@ -64,6 +66,14 @@ function hydrateFromDisk() {
       const file = diskPath(key)
       if (!fs.existsSync(file)) continue
       const raw = JSON.parse(fs.readFileSync(file, 'utf-8'))
+      if (Number(raw?.generation) !== CACHE_GENERATION) {
+        try {
+          fs.unlinkSync(file)
+        } catch {
+          // ignore
+        }
+        continue
+      }
       const tasks = Array.isArray(raw?.tasks) ? raw.tasks : null
       const savedAt = typeof raw?.savedAt === 'number' ? raw.savedAt : 0
       if (!tasks?.length) continue
@@ -118,6 +128,7 @@ export function invalidateCareTasksCache(): void {
   // Drop cached snapshots after mutations so list views never serve stale assignees/status.
   memory.active = null
   memory.full = null
+  hydratedFromDisk = false
   for (const key of ['active', 'full'] as BucketKey[]) {
     try {
       const file = diskPath(key)
@@ -224,10 +235,6 @@ function refreshInBackground(key: BucketKey, loader: () => Promise<CareTask[]>) 
     })
     .catch((err) => {
       console.warn(`⚠️ Care tasks (${key}) refresh failed:`, err?.message || err)
-      // Keep serving existing snapshot a bit longer
-      if (memory[key]?.tasks?.length) {
-        memory[key] = { ...memory[key]!, fetchedAt: Date.now() - FRESH_TTL_MS + 30_000 }
-      }
       throw err
     })
     .finally(() => {
