@@ -39,6 +39,10 @@ export async function GET(req: NextRequest) {
 
     const assigneeParam = searchParams.get('assignee')
     const assigneeEmail = resolveCareTaskAssigneeFilter(session, assigneeParam)
+    if (searchParams.get('refresh') === '1' || searchParams.get('refresh') === 'true') {
+      const { invalidateCareTasksCache } = await import('@/src/services/careTasks/queries')
+      invalidateCareTasksCache()
+    }
 
     const result = await listCareTasks({
       status,

@@ -352,15 +352,21 @@ async function commitBatch(
   return { batch: db.batch(), batchCount: 0 }
 }
 
-/** Split open tasks evenly across all 3 executives, keeping each customer on one executive. */
-export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
+/** Split open tasks evenly across Shubham / Kawalnain, keeping each customer on one executive. */
+export async function redistributeOpenTasksAmongExecutives(
+  opts?: { forceEven?: boolean },
+): Promise<number> {
+  const forceEven = opts?.forceEven === true
   const pool = await resolveCareExecutivePool()
   if (!pool.length) return 0
 
   const db = getDb()
-  const openStatuses = ['pending', 'rescheduled', 'unreachable'] as const
-  const tasksByPhone = new Map<string, Array<{ ref: admin.firestore.DocumentReference; data: Record<string, any> }>>()
-  const noPhoneTasks: Array<{ ref: admin.firestore.DocumentReference; data: Record<string, any> }> = []
+  const openStatuses = ['pending', 'rescheduled', 'unreachable', 'escalated'] as const
+  type TaskEntry = { ref: admin.firestore.DocumentReference; data: Record<string, any> }
+  type Group = { phoneKey?: string; tasks: TaskEntry[] }
+
+  const tasksByPhone = new Map<string, TaskEntry[]>()
+  const noPhoneTasks: TaskEntry[] = []
 
   for (const status of openStatuses) {
     const snap = await db.collection('careTasks').where('status', '==', status).get()
@@ -378,14 +384,81 @@ export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
     }
   }
 
-  const customerGroups = [...tasksByPhone.entries()].sort((a, b) => b[1].length - a[1].length)
+  const groups: Group[] = [
+    ...[...tasksByPhone.entries()]
+      .sort((a, b) => b[1].length - a[1].length)
+      .map(([phoneKey, tasks]) => ({ phoneKey, tasks })),
+    ...noPhoneTasks.map((task) => ({ tasks: [task] })),
+  ]
+
   const loads = new Map<string, number>()
   for (const exec of pool) loads.set(exec.email, 0)
 
-  const pickLeastLoaded = (): CareAssignee => {
-    return pool.reduce((best, exec) =>
+  const pickLeastLoaded = (): CareAssignee =>
+    pool.reduce((best, exec) =>
       (loads.get(exec.email) || 0) < (loads.get(best.email) || 0) ? exec : best,
     )
+
+  const currentExecFor = (tasks: TaskEntry[]): CareAssignee | null => {
+    if (forceEven) return null
+    const emails = new Set(
+      tasks
+        .map((t) => normalizeEmail(t.data.assignedTo?.email))
+        .filter((email) => email && pool.some((e) => e.email === email)),
+    )
+    if (emails.size !== 1) return null
+    return pool.find((e) => e.email === [...emails][0]) || null
+  }
+
+  const assignment = new Map<Group, CareAssignee>()
+  for (const group of groups) {
+    const current = currentExecFor(group.tasks)
+    if (!current) continue
+    assignment.set(group, current)
+    loads.set(current.email, (loads.get(current.email) || 0) + group.tasks.length)
+  }
+
+  const unassigned = groups
+    .filter((g) => !assignment.has(g))
+    .sort((a, b) => b.tasks.length - a.tasks.length)
+  for (const group of unassigned) {
+    const assignee = pickLeastLoaded()
+    assignment.set(group, assignee)
+    loads.set(assignee.email, (loads.get(assignee.email) || 0) + group.tasks.length)
+  }
+
+  if (!forceEven && pool.length >= 2) {
+    const maxIter = groups.length * 4
+    for (let i = 0; i < maxIter; i++) {
+      const heavy = pool.reduce((a, b) =>
+        (loads.get(a.email) || 0) >= (loads.get(b.email) || 0) ? a : b,
+      )
+      const light = pool.reduce((a, b) =>
+        (loads.get(a.email) || 0) <= (loads.get(b.email) || 0) ? a : b,
+      )
+      const gap = (loads.get(heavy.email) || 0) - (loads.get(light.email) || 0)
+      if (gap <= 1) break
+
+      const candidates = groups
+        .filter((g) => assignment.get(g)?.email === heavy.email)
+        .sort((a, b) => a.tasks.length - b.tasks.length)
+
+      let moved = false
+      for (const group of candidates) {
+        const n = group.tasks.length
+        const newGap = Math.abs(
+          (loads.get(heavy.email) || 0) - n - ((loads.get(light.email) || 0) + n),
+        )
+        if (newGap < gap) {
+          assignment.set(group, light)
+          loads.set(heavy.email, (loads.get(heavy.email) || 0) - n)
+          loads.set(light.email, (loads.get(light.email) || 0) + n)
+          moved = true
+          break
+        }
+      }
+      if (!moved) break
+    }
   }
 
   let updated = 0
@@ -393,13 +466,9 @@ export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
   let batch = db.batch()
   let batchCount = 0
 
-  const queueAssignee = async (
-    assignee: CareAssignee,
-    tasks: Array<{ ref: admin.firestore.DocumentReference; data: Record<string, any> }>,
-    phoneKey?: string,
-  ) => {
+  const queueAssignee = async (assignee: CareAssignee, group: Group) => {
     const seenOrders = new Set<string>()
-    for (const { ref, data } of tasks) {
+    for (const { ref, data } of group.tasks) {
       const current = normalizeEmail(data.assignedTo?.email)
       if (current !== assignee.email) {
         batch.update(ref, {
@@ -437,15 +506,15 @@ export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
       }
     }
 
-    if (phoneKey) {
+    if (group.phoneKey) {
       batch.set(
-        db.collection('careCustomerAssignments').doc(phoneKey),
+        db.collection('careCustomerAssignments').doc(group.phoneKey),
         {
-          phoneKey,
+          phoneKey: group.phoneKey,
           userId: assignee.userId,
           email: assignee.email,
           name: assignee.name,
-          firstOrderId: tasks[0]?.data?.orderId || null,
+          firstOrderId: group.tasks[0]?.data?.orderId || null,
           updatedAt: now,
           updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
         },
@@ -458,27 +527,28 @@ export async function redistributeOpenTasksAmongExecutives(): Promise<number> {
     }
   }
 
-  for (const [phoneKey, tasks] of customerGroups) {
-    const currentEmails = new Set(
-      tasks
-        .map((t) => normalizeEmail(t.data.assignedTo?.email))
-        .filter((email) => email && pool.some((e) => e.email === email)),
-    )
-    const assignee =
-      currentEmails.size === 1
-        ? pool.find((e) => e.email === [...currentEmails][0]) || pickLeastLoaded()
-        : pickLeastLoaded()
-    loads.set(assignee.email, (loads.get(assignee.email) || 0) + tasks.length)
-    await queueAssignee(assignee, tasks, phoneKey)
-  }
-
-  for (const task of noPhoneTasks) {
-    const assignee = pickLeastLoaded()
-    loads.set(assignee.email, (loads.get(assignee.email) || 0) + 1)
-    await queueAssignee(assignee, [task])
+  for (const group of groups) {
+    const assignee = assignment.get(group)
+    if (!assignee) continue
+    await queueAssignee(assignee, group)
   }
 
   ;({ batch, batchCount } = await commitBatch(db, batch, batchCount))
+
+  try {
+    const { invalidateCareTasksCache } = require('./taskCache') as {
+      invalidateCareTasksCache: () => void
+    }
+    invalidateCareTasksCache()
+  } catch {
+    // cache module unavailable in some scripts
+  }
+
+  console.log(
+    `careTasks: redistributed ${updated} tasks — ${pool
+      .map((e) => `${e.name}:${loads.get(e.email) || 0}`)
+      .join(' · ')}`,
+  )
   return updated
 }
 

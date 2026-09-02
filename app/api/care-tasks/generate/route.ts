@@ -115,14 +115,18 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const redistribute = body?.redistribute === true
+    const redistribute = body?.redistribute !== false
     let tasksRedistributed = 0
+
+    const result = await processOrdersForCareTasks(orders, { maxOrders })
+
     if (redistribute) {
-      tasksRedistributed = await redistributeOpenTasksAmongExecutives()
+      tasksRedistributed = await redistributeOpenTasksAmongExecutives({
+        forceEven: body?.forceEven === true,
+      })
       console.log(`careTasks: redistributed ${tasksRedistributed} open tasks across executives`)
     }
 
-    const result = await processOrdersForCareTasks(orders, { maxOrders })
     invalidateCareTasksCache()
     return NextResponse.json({
       success: true,

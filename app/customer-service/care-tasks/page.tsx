@@ -152,7 +152,7 @@ export default function CareTasksPage() {
   }, [role, panelKind])
 
   // Server-paginated list — only the current page is returned.
-  const load = useCallback(async (silent = false) => {
+  const load = useCallback(async (silent = false, refresh = false) => {
     const seq = ++loadSeq.current
     if (!silent) {
       setLoading(true)
@@ -168,6 +168,7 @@ export default function CareTasksPage() {
         pageSize,
         assignee: isAdmin && executiveFilter ? executiveFilter : undefined,
         groupBy: 'order',
+        refresh,
       })
       if (seq !== loadSeq.current) return null
 
@@ -185,6 +186,14 @@ export default function CareTasksPage() {
           if (seq === loadSeq.current) setSummary(sum)
         })
         .catch(() => {})
+
+      if (isAdmin && refresh) {
+        void getCarePerformance()
+          .then((rows) => {
+            if (seq === loadSeq.current) setPerformance(rows)
+          })
+          .catch(() => {})
+      }
 
       return listRes.total
     } catch (err: any) {
@@ -455,7 +464,7 @@ export default function CareTasksPage() {
                 {generating ? 'Syncing…' : 'Sync new orders'}
               </button>
               <button
-                onClick={() => load()}
+                onClick={() => load(false, true)}
                 disabled={loading || generating}
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm border disabled:opacity-50"
                 style={{
@@ -950,6 +959,12 @@ export default function CareTasksPage() {
                               <span className={badge(st.tone)}>{st.label}</span>
                               {group.tasks.some((t) => t.priority === 'high' && !isCareTaskCodConfirmed(t)) && (
                                 <span className={badge('red')}>High</span>
+                              )}
+                              {(group.assignedTo?.name || group.assignedTo?.email) && (
+                                <span className={badge('blue')}>
+                                  {group.assignedTo.name ||
+                                    group.assignedTo.email.split('@')[0]}
+                                </span>
                               )}
                             </div>
                             <p className="text-sm font-extrabold" style={{ color: 'var(--foreground)' }}>

@@ -74,6 +74,20 @@ function hydrateFromDisk() {
       console.warn(`⚠️ Failed to hydrate care-tasks ${key} disk cache:`, (e as Error)?.message || e)
     }
   }
+  // Truncated "full" snapshot is worse than none — it under-counts Assigned.
+  const activeCount = memory.active?.tasks.length || 0
+  const fullCount = memory.full?.tasks.length || 0
+  if (fullCount > 0 && activeCount > 0 && fullCount < activeCount) {
+    console.warn(
+      `⚠️ Discarding truncated care-tasks full cache (${fullCount} < ${activeCount} active)`,
+    )
+    memory.full = null
+    try {
+      if (fs.existsSync(diskPath('full'))) fs.unlinkSync(diskPath('full'))
+    } catch {
+      // ignore
+    }
+  }
 }
 
 hydrateFromDisk()
@@ -104,6 +118,14 @@ export function invalidateCareTasksCache(): void {
   // Drop cached snapshots after mutations so list views never serve stale assignees/status.
   memory.active = null
   memory.full = null
+  for (const key of ['active', 'full'] as BucketKey[]) {
+    try {
+      const file = diskPath(key)
+      if (fs.existsSync(file)) fs.unlinkSync(file)
+    } catch {
+      // ignore
+    }
+  }
 }
 
 /** Insert/update one task in memory+disk so lists show it without a full Firestore reload. */
@@ -114,6 +136,9 @@ export function upsertCareTaskInCache(task: CareTask): void {
   for (const key of ['active', 'full'] as BucketKey[]) {
     const entry = memory[key]
     if (!entry?.tasks?.length) {
+      // Never seed the "full" universe from a single upsert — that truncated
+      // Team Performance Assigned to ~50 (24 vs 26) while thousands of tasks existed.
+      if (key === 'full') continue
       if (key === 'active' && !['pending', 'rescheduled', 'escalated', 'unreachable'].includes(normalized.status)) {
         continue
       }

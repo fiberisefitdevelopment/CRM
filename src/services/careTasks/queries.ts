@@ -960,8 +960,9 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
   }
 
   // History totals from a warm full snapshot only — never wait on Firestore.
+  // Ignore truncated full snapshots (smaller than the open queue).
   const full = peekCachedCareTasks('full')
-  if (full?.length) {
+  if (full && full.length >= tasks.length) {
     let completed = 0
     let notInterested = 0
     let unreachable = 0
@@ -989,11 +990,15 @@ export async function summarizeCareTasks(assigneeEmail?: string | null): Promise
 }
 
 export async function getExecutivePerformance(): Promise<ExecutivePerformance[]> {
-  const tasks = await loadOrgTasks()
+  // Open queue is the source of truth for Assigned (thousands of tasks).
+  const active = await loadActiveTasks()
+  const fullPeek = peekCachedCareTasks('full') || []
+  const fullUsable = fullPeek.length >= active.length ? fullPeek : []
+  const tasks = unionTasks(active, fullUsable)
   const byEmail = new Map<string, CareTask[]>()
 
   for (const t of tasks) {
-    const email = t.assignedTo?.email || 'unassigned'
+    const email = normalizeCareExecutiveEmail(t.assignedTo?.email) || 'unassigned'
     if (!byEmail.has(email)) byEmail.set(email, [])
     byEmail.get(email)!.push(t)
   }
@@ -1011,6 +1016,9 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
     const list = byEmail.get(email) || []
     const poolExec = poolByEmail.get(email)
     const completed = list.filter((t) => t.status === 'completed')
+    const open = list.filter((t) =>
+      ['pending', 'rescheduled', 'escalated', 'unreachable'].includes(t.status),
+    )
     const pending = list.filter(
       (t) => t.status === 'pending' || t.status === 'rescheduled' || t.status === 'escalated',
     )
@@ -1038,13 +1046,15 @@ export async function getExecutivePerformance(): Promise<ExecutivePerformance[]>
     rows.push({
       email,
       name: careExecutiveDisplayName(email, list[0]?.assignedTo?.name || poolExec?.name),
-      assigned: list.length,
+      assigned: open.length,
       completed: completed.length,
       pending: pending.length,
       overdue: overdue.length,
       callsMade,
       avgCompletionHours,
-      completionPct: list.length ? Math.round((completed.length / list.length) * 100) : 0,
+      completionPct: open.length + completed.length
+        ? Math.round((completed.length / (open.length + completed.length)) * 100)
+        : 0,
       lastActivity,
     })
   }

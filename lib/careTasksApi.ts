@@ -35,6 +35,7 @@ export async function listCareTasks(params?: {
   day?: 'all' | '5' | '23' | '28' | '90' | 'manual'
   pack?: 'all' | '7' | '30' | '90'
   groupBy?: 'task' | 'order'
+  refresh?: boolean
 }): Promise<{
   tasks: CareTask[]
   groups: CareOrderGroup[]
@@ -56,6 +57,7 @@ export async function listCareTasks(params?: {
   if (params?.day && params.day !== 'all') qs.set('day', params.day)
   if (params?.pack && params.pack !== 'all') qs.set('pack', params.pack)
   if (params?.groupBy === 'order') qs.set('groupBy', 'order')
+  if (params?.refresh) qs.set('refresh', '1')
   const res = await apiFetch(`/api/care-tasks?${qs.toString()}`, { cache: 'no-store' })
   const data = await parseJson(res)
   return {
@@ -146,11 +148,19 @@ export async function syncCareTaskCalls(hoursBack = 48) {
   return parseJson(res)
 }
 
-export async function generateCareTasks(maxOrders = 200, refresh = true) {
+export async function generateCareTasks(
+  maxOrders = 200,
+  refresh = true,
+  opts?: { forceEven?: boolean },
+) {
   const res = await apiFetch('/api/care-tasks/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ maxOrders, refresh }),
+    body: JSON.stringify({
+      maxOrders,
+      refresh,
+      forceEven: opts?.forceEven === true,
+    }),
   })
   return parseJson(res)
 }
