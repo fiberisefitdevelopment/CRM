@@ -631,7 +631,8 @@ export function OrdersPanel({
       else setPageLoading(true)
 
       const res = await apiFetch(`/api/shopify/orders?${cacheKey}`, {
-        signal: controller.signal
+        signal: controller.signal,
+        cache: 'no-store',
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to fetch Shopify orders')
@@ -762,11 +763,11 @@ export function OrdersPanel({
       const newOrder = customEvent.detail
       if (newOrder && newOrder.id) {
         setOrders((prev) => {
-          // Avoid duplicate appends
           if (prev.some(o => o.id === newOrder.id || o.name === newOrder.name)) return prev
           return [newOrder, ...prev]
         })
-        triggerNotification('success', `Live Feed: Simulated Shopify order ${newOrder.name} imported!`)
+        invalidatePageCache()
+        fetchOrdersPage(1, false)
       }
     }
 
@@ -803,7 +804,7 @@ export function OrdersPanel({
       window.removeEventListener('shopify_new_order_received', handleLiveOrderReceived)
       window.removeEventListener('shopify_view_live_order', handleViewLiveOrder)
     }
-  }, [])
+  }, [invalidatePageCache, fetchOrdersPage])
 
 
 

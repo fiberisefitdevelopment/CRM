@@ -14,7 +14,7 @@ import {
 } from './generator'
 import { resolveCareExecutivePool } from './assignmentEngine'
 import { careExecutiveDisplayName, normalizeCareExecutiveEmail } from './executiveConfig'
-import { invalidateCareTasksCache, loadCareTasksCached, peekCachedCareTasks } from './taskCache'
+import { invalidateCareTasksCache, loadCareTasksCached, peekCachedCareTasks, upsertCareTaskInCache } from './taskCache'
 import {
   getCareTaskKind,
   isUpsellCareTask,
@@ -27,6 +27,62 @@ import {
 } from './types'
 
 export { invalidateCareTasksCache } from './taskCache'
+
+let recentCarePullAt = 0
+let recentCareInflight: Promise<CareTask[]> | null = null
+
+/** Newest care tasks from Firestore — cheap complement to the 2-minute SWR snapshot. */
+async function pullRecentCareTasks(): Promise<CareTask[]> {
+  const now = Date.now()
+  if (now - recentCarePullAt < 2_000 && !recentCareInflight) {
+    return []
+  }
+  if (recentCareInflight) return recentCareInflight
+
+  recentCareInflight = (async () => {
+    const col = getDb().collection('careTasks')
+    let snap: admin.firestore.QuerySnapshot | null = null
+    try {
+      snap = await col.orderBy('createdAt', 'desc').limit(40).get()
+    } catch {
+      try {
+        snap = await col.orderBy('createdAtTs', 'desc').limit(40).get()
+      } catch {
+        snap = null
+      }
+    }
+    recentCarePullAt = Date.now()
+    if (!snap || snap.empty) return []
+    const tasks = snap.docs.map((d) => serializeCareTask(d.id, d.data()))
+    for (const t of tasks) {
+      try {
+        upsertCareTaskInCache(t)
+      } catch {
+        // ignore
+      }
+    }
+    return tasks
+  })()
+    .catch((err) => {
+      console.warn('careTasks: recent pull failed', err?.message || err)
+      return [] as CareTask[]
+    })
+    .finally(() => {
+      recentCareInflight = null
+    })
+
+  return recentCareInflight
+}
+
+function unionTasks(base: CareTask[], extra: CareTask[]): CareTask[] {
+  if (!extra.length) return base
+  const map = new Map(base.map((t) => [t.id, t]))
+  for (const t of extra) {
+    if (!map.has(t.id)) map.set(t.id, t)
+    else map.set(t.id, { ...map.get(t.id)!, ...t })
+  }
+  return [...map.values()]
+}
 
 function getDb() {
   return admin.firestore(getFirebaseAdmin())
@@ -446,14 +502,18 @@ async function loadActiveTasks(): Promise<CareTask[]> {
 }
 
 async function resolveTaskUniverse(params: ListCareTasksParams): Promise<CareTask[]> {
-  const tasks = needsFullHistory(params) ? await loadOrgTasks() : await loadActiveTasks()
+  const [tasks, recent] = await Promise.all([
+    needsFullHistory(params) ? loadOrgTasks() : loadActiveTasks(),
+    pullRecentCareTasks(),
+  ])
+  const merged = unionTasks(tasks, recent)
   if (params.assigneeEmail) {
     const email = params.assigneeEmail.toLowerCase()
-    return tasks.filter(
+    return merged.filter(
       (t) => normalizeCareExecutiveEmail(t.assignedTo?.email) === email,
     )
   }
-  return tasks
+  return merged
 }
 
 function filterTasksClient(
@@ -849,7 +909,8 @@ export async function getCareTaskById(id: string): Promise<CareTask | null> {
 /** Org-wide summary — same numbers for admin and care executives. */
 export async function summarizeCareTasks(assigneeEmail?: string | null): Promise<CareTaskSummary> {
   // Open-queue counts from active universe — never block first paint on full history.
-  let tasks = await loadActiveTasks()
+  const [active, recent] = await Promise.all([loadActiveTasks(), pullRecentCareTasks()])
+  let tasks = unionTasks(active, recent)
   if (assigneeEmail) {
     const email = assigneeEmail.toLowerCase()
     tasks = tasks.filter(

@@ -46,6 +46,7 @@ import {
   scheduleShadowCompareOne,
   scheduleThrottledFullShadowCompare,
 } from '@/src/services/orders/shadowCompare'
+import { mergeOrderLists, mergeShopifyOrderIntoExisting } from '@/src/services/orders/mergeOrders'
 
 export type {
   OrderFilters,
@@ -219,17 +220,22 @@ function refreshFirestoreInBackground() {
   if (firestoreLoadPromise) return
   firestoreLoadPromise = fetchAllFirestoreOrdersRaw()
     .then((orders) => {
-      if (localSnapshotIsFresherThan(orders)) {
-        // Keep merge/webhook-fresh local data; do not roll back to stale Firestore
+      hydrateFirestoreFromDisk()
+      const local = firestoreOrders || []
+      // Union remote + local so webhook/live Shopify orders never disappear
+      // and a slower dump never rolls back newer local rows.
+      const merged = mergeOrderLists(orders, local)
+      if (localSnapshotIsFresherThan(orders) && merged.length === local.length) {
         firestoreExpiresAt = Date.now() + FIRESTORE_READ_TTL_MS
         console.log(
-          `⚡ Skipping stale Firestore refresh (${orders.length} docs, newest ${new Date(newestCreatedAtMs(orders)).toISOString()}) — local snapshot is newer (${firestoreOrders!.length} orders, newest ${new Date(newestCreatedAtMs(firestoreOrders)).toISOString()})`,
+          `⚡ Firestore dump merged (kept local-fresh snapshot: ${merged.length} orders)`,
         )
-        return firestoreOrders!
+        adoptFirestoreOrders(merged)
+        return merged
       }
-      adoptFirestoreOrders(orders)
-      console.log(`⚡ Firestore orders snapshot refreshed: ${orders.length}`)
-      return orders
+      adoptFirestoreOrders(merged)
+      console.log(`⚡ Firestore orders snapshot refreshed: ${merged.length}`)
+      return merged
     })
     .catch((err) => {
       console.warn('⚠️ Firestore orders refresh failed:', err?.message || err)
@@ -324,9 +330,40 @@ async function pushRecentShopifyOrdersToFirestore(orders: any[], limit = 40) {
 /** Instant local apply after Shopify webhook / Admin upsert (cache + FS read snapshot). */
 function applyShopifyOrderToLocalSnapshot(shopifyOrder: Record<string, any>) {
   if (!shopifyOrder?.id) return
-  const order = stripForClient({ ...shopifyOrder })
+  const incoming = stripForClient({ ...shopifyOrder })
+  const existing =
+    cacheGetById(incoming.id) ||
+    firestoreOrders?.find((o) => String(o.id) === String(incoming.id)) ||
+    null
+  const order = mergeShopifyOrderIntoExisting(existing, incoming)
   cacheAddOrderToCache(order)
   mirrorOrderIntoFirestoreSnapshot(order)
+}
+
+/** Merge a batch of orders (live Shopify pull) into both snapshots without a full replace. */
+function mergeOrdersIntoSnapshot(incoming: any[]) {
+  if (!Array.isArray(incoming) || incoming.length === 0) return
+  const cleaned = incoming.map((o) => stripForClient({ ...o }))
+
+  const cacheAll = cacheGetAll() || []
+  if (cacheAll.length > 0) {
+    const mergedCache = mergeOrderLists(cacheAll, cleaned)
+    const ttl = cacheGetExpiresAt()
+    cacheSetCachedOrders(mergedCache, ttl > Date.now() ? ttl : Date.now() + CACHE_TTL_MS)
+  } else {
+    // Don't let a 50-order live pull become the entire cache on cold start
+    for (const o of cleaned) cacheAddOrderToCache(o)
+  }
+
+  if (isOrdersReadFromFirestoreEnabled()) {
+    hydrateFirestoreFromDisk()
+    if (firestoreOrders && firestoreOrders.length > 0) {
+      firestoreOrders = mergeOrderLists(firestoreOrders, cleaned)
+      persistFirestoreDisk(firestoreOrders)
+    } else {
+      for (const o of cleaned) mirrorOrderIntoFirestoreSnapshot(o)
+    }
+  }
 }
 
 /** When reading Firestore, keep the in-memory FS snapshot aligned with a single-order write. */
@@ -350,8 +387,13 @@ function mirrorOrderIntoFirestoreSnapshot(order: any) {
 }
 
 function addOrderToCache(order: any) {
-  cacheAddOrderToCache(order)
-  mirrorOrderIntoFirestoreSnapshot(order)
+  const existing =
+    cacheGetById(order?.id) ||
+    firestoreOrders?.find((o) => String(o.id) === String(order?.id)) ||
+    null
+  const merged = mergeShopifyOrderIntoExisting(existing, order)
+  cacheAddOrderToCache(merged)
+  mirrorOrderIntoFirestoreSnapshot(merged)
 }
 
 function patchOrderInCache(id: string | number, patch: Record<string, unknown>) {
@@ -553,6 +595,7 @@ export const OrderRepository = {
   updateOrderNoteInCache,
   expireFirestoreOrdersSnapshot,
   applyShopifyOrderToLocalSnapshot,
+  mergeOrdersIntoSnapshot,
   isOrdersReadFromFirestoreEnabled,
 } as const
 

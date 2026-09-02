@@ -11,7 +11,7 @@ import {
   persistOrderAssignment,
 } from './assignmentEngine'
 import { isCareConfirmedOutcome, isCareCancelledOutcome } from './actorLabel'
-import { invalidateCareTasksCache } from './taskCache'
+import { invalidateCareTasksCache, upsertCareTaskInCache } from './taskCache'
 import { ensureCareTaskConfigSeeded, getCareTaskConfig } from './followupPlans'
 import { logCareAction } from './logger'
 import { resolvePackFromOrder } from './packResolver'
@@ -276,6 +276,13 @@ async function createTaskIfMissing(params: {
     }
   }
 
+  const created = { id: dedupeKey, ...doc }
+  try {
+    upsertCareTaskInCache(created)
+  } catch {
+    // cache miss is non-fatal
+  }
+
   if (!params.quiet) {
     await logCareAction({
       action: 'TASK_CREATED',
@@ -291,7 +298,7 @@ async function createTaskIfMissing(params: {
     })
   }
 
-  return { id: dedupeKey, ...doc }
+  return created
 }
 
 /** Manual upsell from Delivered Orders page — one open task per order. */
@@ -446,7 +453,7 @@ export async function ensureCodConfirmationTask(
     await persistOrderAssignment(orderId, orderName, assignee)
   }
   const pack = resolvePackFromOrder(order, await getCareTaskConfig())
-  return createTaskIfMissing({
+  const task = await createTaskIfMissing({
     order,
     taskType: 'cod_confirmation',
     taskLabel: 'COD Confirmation Call',
@@ -458,6 +465,7 @@ export async function ensureCodConfirmationTask(
     assignee,
     quiet: assigneeOverride !== undefined,
   })
+  return task
 }
 
 /** After delivery: introduction (prepaid) or pack follow-ups (COD skips day-0 intro — they already had COD confirmation). */

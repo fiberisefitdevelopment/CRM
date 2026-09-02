@@ -1038,12 +1038,13 @@ export default function OrderStatusPage() {
   }, [search])
 
   const loadOrders = useCallback(
-    async (force = false) => {
+    async (force = false, silent = false) => {
       try {
-        if (force) setRefreshing(true)
-        else setLoading(true)
+        if (!silent) {
+          if (force) setRefreshing(true)
+          else setLoading(true)
+        }
         setError(null)
-        setOrders([])
 
         const params = new URLSearchParams({
           view: 'order_status',
@@ -1062,14 +1063,14 @@ export default function OrderStatusPage() {
         if (startDate) params.set('start_date', startDate)
         if (endDate) params.set('end_date', endDate)
 
-        const res = await apiFetch(`/api/shopify/orders?${params.toString()}`)
+        const res = await apiFetch(`/api/shopify/orders?${params.toString()}`, { cache: 'no-store' })
         const data = await res.json().catch(() => ({}))
         if (!res.ok) throw new Error(data.error || 'Failed to load orders')
 
         // Cold start: keep polling until cache is seeded
         if (data.syncing && (!data.orders || data.orders.length === 0)) {
-          setLoading(true)
-          setTimeout(() => loadOrders(false), 1500)
+          if (!silent) setLoading(true)
+          setTimeout(() => loadOrders(false, true), 1500)
           return
         }
 
@@ -1108,9 +1109,11 @@ export default function OrderStatusPage() {
         setLoading(false)
         setRefreshing(false)
       } catch (err: any) {
-        setError(err.message || 'Failed to load order status')
-        setLoading(false)
-        setRefreshing(false)
+        if (!silent) {
+          setError(err.message || 'Failed to load order status')
+          setLoading(false)
+          setRefreshing(false)
+        }
       }
     },
     [
@@ -1130,6 +1133,21 @@ export default function OrderStatusPage() {
 
   useEffect(() => {
     loadOrders(false)
+  }, [loadOrders])
+
+  // Live feed: TopBar latest-poll + 5s silent refresh so new Shopify orders appear instantly
+  useEffect(() => {
+    const onNewOrder = () => {
+      void loadOrders(false, true)
+    }
+    window.addEventListener('shopify_new_order_received', onNewOrder)
+    const interval = window.setInterval(() => {
+      void loadOrders(false, true)
+    }, 5000)
+    return () => {
+      window.removeEventListener('shopify_new_order_received', onNewOrder)
+      window.clearInterval(interval)
+    }
   }, [loadOrders])
 
   const clearFilters = () => {

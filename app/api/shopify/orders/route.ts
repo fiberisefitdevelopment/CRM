@@ -15,6 +15,7 @@ import {
   matchShiprocketToShopify,
 } from '@/src/services/orders/shiprocketMergeHelpers'
 import { parseShiprocketDate } from '@/src/utils/orderPayment'
+import { pullLiveShopifyOrdersIntoSnapshot, triggerLiveShopifyPull } from '@/src/services/orders/liveOrderSync'
 
 const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
@@ -148,6 +149,14 @@ export async function GET(_req: NextRequest) {
     const cacheClockFresh = now < expiresAt
     // When reading Firestore, any non-empty snapshot is servable; still refresh cache in background if stale
     const sourceIsFresh = readFromFs ? cacheHasData : cacheHasData && cacheClockFresh
+
+    // Order Status: wait briefly for a live Shopify pull so new orders appear this request
+    if (orderStatusView && cacheHasData) {
+      await Promise.race([
+        pullLiveShopifyOrdersIntoSnapshot(50),
+        new Promise((resolve) => setTimeout(resolve, 1500)),
+      ])
+    }
 
     // Helper: build a paginated JSON response from current repository source
     async function serveCachedResponse(isOffline = false) {
@@ -541,6 +550,7 @@ export async function GET(_req: NextRequest) {
 
     // ─── FAST PATH A: Source is fresh → serve instantly ───
     if (sourceIsFresh) {
+      triggerLiveShopifyPull(50)
       // Keep rollback cache warm, but only occasionally (avoid Shiprocket stampede)
       if (readFromFs && !cacheClockFresh) {
         const lastBg = (globalThis as any).__ordersBgSyncAt || 0
@@ -554,6 +564,7 @@ export async function GET(_req: NextRequest) {
 
     // ─── FAST PATH B: Cache exists but is stale → serve stale immediately + refresh in background ───
     if (cacheHasData) {
+      triggerLiveShopifyPull(50)
       triggerBackgroundSync() // Fire-and-forget, does NOT block
       return serveCachedResponse() // Serve stale data instantly
     }

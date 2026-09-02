@@ -161,11 +161,11 @@ export function TopBar() {
 
   // ── 3. Silent Shopify Live Polling Listener ───────────────────────────────
   useEffect(() => {
-    if (!user || isCareExecutiveRole(user.role)) return
+    if (!user) return
 
     const checkNewOrders = async (isFirstRun: boolean) => {
       try {
-        const res = await apiFetch('/api/shopify/orders/latest')
+        const res = await apiFetch('/api/shopify/orders/latest', { cache: 'no-store' })
         if (!res.ok) return
 
         const data = await res.json().catch(() => ({}))
@@ -241,7 +241,7 @@ export function TopBar() {
 
     let interval: ReturnType<typeof setInterval> | undefined
     checkNewOrders(true).then(() => {
-      interval = setInterval(() => checkNewOrders(false), 15000)
+      interval = setInterval(() => checkNewOrders(false), 5000)
     })
     return () => {
       if (interval) clearInterval(interval)

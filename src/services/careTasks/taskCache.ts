@@ -106,6 +106,33 @@ export function invalidateCareTasksCache(): void {
   memory.full = null
 }
 
+/** Insert/update one task in memory+disk so lists show it without a full Firestore reload. */
+export function upsertCareTaskInCache(task: CareTask): void {
+  if (!task?.id) return
+  hydrateFromDisk()
+  const normalized = normalizeCachedTask(task)
+  for (const key of ['active', 'full'] as BucketKey[]) {
+    const entry = memory[key]
+    if (!entry?.tasks?.length) {
+      if (key === 'active' && !['pending', 'rescheduled', 'escalated', 'unreachable'].includes(normalized.status)) {
+        continue
+      }
+      memory[key] = { tasks: [normalized], fetchedAt: Date.now() }
+      persist(key, memory[key]!.tasks)
+      continue
+    }
+    const idx = entry.tasks.findIndex(
+      (t) => t.id === normalized.id || (normalized.dedupeKey && t.dedupeKey === normalized.dedupeKey),
+    )
+    const next =
+      idx >= 0
+        ? entry.tasks.map((t, i) => (i === idx ? { ...t, ...normalized } : t))
+        : [normalized, ...entry.tasks]
+    memory[key] = { tasks: next, fetchedAt: Date.now() }
+    persist(key, next)
+  }
+}
+
 function getBucket(key: BucketKey, allowStale: boolean): CareTask[] | null {
   hydrateFromDisk()
   // One-shot remap for snapshots hydrated before D28→D23

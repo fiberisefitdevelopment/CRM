@@ -3,19 +3,61 @@
  *
  * POST /api/webhooks/shopify/order-created
  *
- *  1. Verifies HMAC-SHA256 signature
- *  2. Phase 3: merge-upserts Shopify fields into Firestore `orders` (if flagged)
- *  3. Creates WhatsApp journey in Firestore (unchanged)
- *  4. Triggers Day 0 order confirmation via AiSensy (unchanged)
+ * Critical path (must finish before we reply — Shopify 5s timeout):
+ *  1. HMAC verify
+ *  2. Merge order into live snapshot + Firestore so Order Status shows it instantly
+ *  3. Create COD confirmation care task immediately
  *
- * Shopify has a 5-second timeout for webhook responses,
- * so we keep processing lean.
+ * Slow path (after response): WhatsApp journey / AiSensy Day 0.
  */
 
-import { NextRequest, NextResponse } from 'next/server'
+import { after, NextRequest, NextResponse } from 'next/server'
 import { createJourneyFromOrder } from '@/src/services/journey.service'
 import { readAndVerifyShopifyWebhook } from '@/src/services/orders/shopifyWebhookVerify'
 import { upsertShopifyOrderToFirestore } from '@/src/services/orders/shopifyFirestoreUpsert'
+import { OrderRepository } from '@/src/repositories/orderRepository'
+import { isCodOrder } from '@/src/utils/orderPayment'
+
+function stampPaymentMethod(order: Record<string, any>) {
+  if (!order.payment_method && isCodOrder(order)) {
+    order.payment_method = 'cod'
+  }
+  if (!order.source) order.source = 'shopify'
+  return order
+}
+
+async function createCodConfirmationImmediately(orderData: Record<string, any>) {
+  if (!isCodOrder(orderData)) return { created: false, reason: 'not_cod' }
+  if (orderData.test === true || orderData.is_test_order === true) {
+    return { created: false, reason: 'test_order' }
+  }
+
+  const { assignCareExecutiveForOrder, resolveDefaultCareAssignee } = await import(
+    '@/src/services/careTasks/assignmentEngine'
+  )
+  const { ensureCodConfirmationTask } = await import('@/src/services/careTasks/generator')
+  const { storeCareOrderAssignment } = await import('@/src/services/careAssignmentStore')
+
+  let assignee = await assignCareExecutiveForOrder(orderData)
+  if (!assignee) {
+    try {
+      assignee = await resolveDefaultCareAssignee()
+    } catch (e) {
+      console.warn('COD task: default assignee unavailable:', e)
+    }
+  }
+
+  if (assignee) {
+    storeCareOrderAssignment({
+      orderId: orderData.id,
+      orderName: orderData.name,
+      assignee,
+    })
+  }
+
+  const task = await ensureCodConfirmationTask(orderData, assignee ?? null)
+  return { created: Boolean(task), taskId: task?.id || null, assignee: assignee?.email || null }
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -25,11 +67,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: verified.error }, { status: verified.status })
     }
 
-    const orderData = verified.order
+    const orderData = stampPaymentMethod(verified.order)
 
     console.log(`\n📦 Shopify Webhook Received: Order ${orderData.name || orderData.id}`)
 
-    // Phase 3: keep Firestore in sync (feature-flagged). Does not affect journey flow.
+    // 1. Instant panel: memory/disk snapshot first so list APIs see the order now
+    try {
+      OrderRepository.applyShopifyOrderToLocalSnapshot(orderData)
+    } catch (e) {
+      console.warn('⚠️ Failed to apply Shopify order to local snapshot:', e)
+    }
+
     try {
       const upsert = await upsertShopifyOrderToFirestore(orderData)
       if (upsert.skipped) {
@@ -38,10 +86,9 @@ export async function POST(req: NextRequest) {
         console.log(`✅ Orders Firestore upserted: ${upsert.docId}`)
       }
     } catch (e) {
-      console.error('⚠️ Shopify→Firestore upsert failed (journey continues):', e)
+      console.error('⚠️ Shopify→Firestore upsert failed (panel snapshot still applied):', e)
     }
 
-    // Extract customer info
     const customer = orderData.customer || {}
     const shippingAddress = orderData.shipping_address || orderData.billing_address || {}
 
@@ -54,23 +101,12 @@ export async function POST(req: NextRequest) {
       customer.phone || shippingAddress.phone || orderData.phone || ''
 
     const customerEmail = customer.email || orderData.email || ''
-
-    // Validate phone — required for WhatsApp
-    if (!customerPhone) {
-      console.warn('⚠️ No phone number found in order — skipping WhatsApp journey')
-      return NextResponse.json(
-        { status: 'skipped', reason: 'no_phone_number' },
-        { status: 200 },
-      )
-    }
-
-    // Check if Shopify test order
     const isTestOrder = orderData.test === true
+
     if (isTestOrder) {
       console.log(
-        `🧪 Shopify Order ${orderData.name || orderData.id} is a test order — skipping WhatsApp journey and registering in Firestore`,
+        `🧪 Shopify Order ${orderData.name || orderData.id} is a test order — skipping WhatsApp journey`,
       )
-
       try {
         const { markOrderAsTest } = require('@/src/services/firestore.service')
         const ipAddress =
@@ -86,72 +122,75 @@ export async function POST(req: NextRequest) {
       } catch (e) {
         console.error('Failed to automatically mark Shopify test order in DB:', e)
       }
-
       return NextResponse.json({ status: 'skipped', reason: 'test_order' }, { status: 200 })
     }
 
-    // Extract product names
+    // 2. COD confirmation task BEFORE WhatsApp — must not wait on AiSensy
+    let codResult: { created: boolean; taskId?: string | null; assignee?: string | null; reason?: string } = {
+      created: false,
+    }
+    try {
+      codResult = await createCodConfirmationImmediately(orderData)
+      if (codResult.created) {
+        console.log(
+          `✅ COD confirmation task created immediately: ${codResult.taskId} (${codResult.assignee || 'unassigned'})`,
+        )
+      } else if (codResult.reason && codResult.reason !== 'not_cod') {
+        console.log(`ℹ️ COD confirmation skipped: ${codResult.reason}`)
+      }
+    } catch (e) {
+      console.warn('Failed to create COD confirmation task:', e)
+    }
+
     const products = (orderData.line_items || []).map(
       (item: any) => item.title || item.name || 'Product',
     )
-
-    // Extract order amount
     const orderAmount = parseFloat(orderData.total_price || '0')
 
-    // Create journey — this handles customer upsert + journey doc + Day 0 confirmation
-    const result = await createJourneyFromOrder({
-      orderId: orderData.name || `#${orderData.id}`,
-      orderAmount,
-      products,
-      customer: {
-        name: customerName,
-        phone: customerPhone,
-        email: customerEmail,
-      },
+    const runJourney = async () => {
+      if (!customerPhone) {
+        console.warn('⚠️ No phone number found in order — skipping WhatsApp journey')
+        return
+      }
+      const result = await createJourneyFromOrder({
+        orderId: orderData.name || `#${orderData.id}`,
+        orderAmount,
+        products,
+        customer: {
+          name: customerName,
+          phone: customerPhone,
+          email: customerEmail,
+        },
+      })
+      console.log(`✅ Webhook journey processed: ${result.journeyId}`)
+      if (result.confirmationSent) {
+        try {
+          const { storeCareOrderTag } = require('@/src/services/careOrderTagStore')
+          storeCareOrderTag({
+            orderId: orderData.id,
+            orderName: orderData.name,
+            kind: 'aisensy_confirmed',
+            byEmail: 'aisensy',
+            byName: 'AiSensy',
+          })
+        } catch (e) {
+          console.warn('Failed to store AiSensy care tag:', e)
+        }
+      }
+    }
+
+    // 3. WhatsApp after we reply so Shopify doesn't time out / delay COD + panel
+    after(() => {
+      void runJourney().catch((e) => console.error('⚠️ WhatsApp journey failed:', e))
     })
-
-    console.log(`✅ Webhook processed: Journey ${result.journeyId} created`)
-
-    // Assign care executive + create COD confirmation task for new orders
-    try {
-      const { assignCareExecutiveForOrder } = require('@/src/services/careTasks/assignmentEngine')
-      const { ensureCodConfirmationTask } = require('@/src/services/careTasks/generator')
-      const { storeCareOrderAssignment } = require('@/src/services/careAssignmentStore')
-      const assignee = await assignCareExecutiveForOrder(orderData)
-      if (assignee) {
-        storeCareOrderAssignment({
-          orderId: orderData.id,
-          orderName: orderData.name,
-          assignee,
-        })
-        await ensureCodConfirmationTask(orderData, assignee)
-      }
-    } catch (e) {
-      console.warn('Failed to assign care executive / create COD task:', e)
-    }
-
-    // Display-only tag on Orders / Order Status when AiSensy confirmation is sent
-    if (result.confirmationSent) {
-      try {
-        const { storeCareOrderTag } = require('@/src/services/careOrderTagStore')
-        storeCareOrderTag({
-          orderId: orderData.id,
-          orderName: orderData.name,
-          kind: 'aisensy_confirmed',
-          byEmail: 'aisensy',
-          byName: 'AiSensy',
-        })
-      } catch (e) {
-        console.warn('Failed to store AiSensy care tag:', e)
-      }
-    }
 
     return NextResponse.json(
       {
         status: 'success',
-        journeyId: result.journeyId,
-        customerId: result.customerId,
-        confirmationSent: result.confirmationSent,
+        orderId: orderData.id,
+        orderName: orderData.name,
+        codTaskCreated: codResult.created,
+        confirmationQueued: Boolean(customerPhone),
       },
       { status: 200 },
     )

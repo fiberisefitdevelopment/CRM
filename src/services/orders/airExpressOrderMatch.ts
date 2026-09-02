@@ -332,8 +332,11 @@ export function enrichOrderWithAirExpress(
     existingCompany.includes('trackon') ||
     Boolean(order.airExpressOrderId || order.logistics === 'air_express')
 
-  if (hasAwb && canStampFulfillment) {
+  if (canStampFulfillment && (hasAwb || aeId || logistics)) {
     const nowIso = new Date().toISOString()
+    // Booked on Air Express without AWB still left "Not Shipped" as `processing`.
+    const effectiveStatus =
+      shipmentStatus === 'processing' && (aeId || logistics) ? 'pickup_scheduled' : shipmentStatus
     next = {
       ...next,
       fulfillment_status: 'fulfilled',
@@ -345,8 +348,9 @@ export function enrichOrderWithAirExpress(
           status: 'success',
           tracking_number: awb,
           tracking_company: courier,
-          shipment_status: shipmentStatus,
-          shipment_status_reason: logistics?.status || 'AWB assigned',
+          shipment_status: effectiveStatus,
+          shipment_status_reason:
+            logistics?.status || (hasAwb ? 'AWB assigned' : 'Booked on Air Express'),
           created_at: order.fulfillments?.[0]?.created_at || nowIso,
           dispatch_date: logistics?.pickupDate || order.fulfillments?.[0]?.dispatch_date || nowIso,
           delivery_date: order.fulfillments?.[0]?.delivery_date || null,

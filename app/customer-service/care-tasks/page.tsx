@@ -152,10 +152,12 @@ export default function CareTasksPage() {
   }, [role, panelKind])
 
   // Server-paginated list — only the current page is returned.
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     const seq = ++loadSeq.current
-    setLoading(true)
-    setError(null)
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
     // Keep previous rows visible while refreshing (no empty flash)
     try {
       const listRes = await listCareTasks({
@@ -187,7 +189,7 @@ export default function CareTasksPage() {
       return listRes.total
     } catch (err: any) {
       if (seq === loadSeq.current) {
-        setError(err?.message || 'Failed to load care tasks')
+        if (!silent) setError(err?.message || 'Failed to load care tasks')
         setLoading(false)
       }
       return null
@@ -259,6 +261,14 @@ export default function CareTasksPage() {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [role, statusFilter, kindFilter, debouncedSearch, page, pageSize, executiveFilter])
+
+  useEffect(() => {
+    if (role === null) return
+    const interval = window.setInterval(() => {
+      void load(true)
+    }, 5000)
+    return () => window.clearInterval(interval)
+  }, [role, load])
 
   useEffect(() => {
     if (!isAdmin) return

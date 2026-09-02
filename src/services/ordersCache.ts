@@ -212,6 +212,30 @@ function isOrderCancelled(order: any): boolean {
   )
 }
 
+/** Air Express already accepted the shipment — wait for pickup, not "not shipped". */
+function isAirExpressBookedAwaitingPickup(
+  order: any,
+  live?: any,
+  relatedClones?: any[],
+  aeIndex?: AirExpressMatchIndex | null,
+): boolean {
+  const op = live || order
+  if (!orderTrailUsesAirExpress(order, op, relatedClones, aeIndex)) return false
+  if (isOrderCancelled(op)) return false
+  if (isShiprocketDeliveredStatus(op) || isShiprocketInTransitStatus(op) || isActiveRtoStatus(op)) {
+    return false
+  }
+  const status = normalizeShipmentStatus(op)
+  if (
+    ['out_for_delivery', 'delivered', 'rto', 'rto_delivered', 'cancelled', 'failed', 'failure'].includes(
+      status,
+    )
+  ) {
+    return false
+  }
+  return true
+}
+
 /** COD with no Care confirmed, no AiSensy confirmed tag, and no AWB assigned yet. */
 function isCodNotConfirmed(order: any, live?: any): boolean {
   if (!isCodOrder(order)) return false
@@ -226,10 +250,17 @@ function isCodNotConfirmed(order: any, live?: any): boolean {
  * Not Shipped bucket: prepaid + not shipped, or COD confirmed via
  * Customer Care / AiSensy + not shipped. Unconfirmed COD stays in COD Not Confirmed.
  * Orders with an AWB / tracking number never belong here.
+ * Air Express bookings are already handed to Aaysh — they are not "not shipped".
  */
-function isNotShippedBucket(order: any, live?: any): boolean {
+function isNotShippedBucket(
+  order: any,
+  live?: any,
+  relatedClones?: any[],
+  aeIndex?: AirExpressMatchIndex | null,
+): boolean {
   const op = live || order
   if (isOrderCancelled(op)) return false
+  if (orderTrailUsesAirExpress(order, op, relatedClones, aeIndex)) return false
   if (hasAssignedTrackingNumber(op) || hasAssignedTrackingNumber(order)) return false
   if (!isNotShippedStatus(op)) return false
   if (!isCodOrder(order)) return true
@@ -641,18 +672,37 @@ export function getCachedOrdersFiltered(
 }
 
 export function addOrderToCache(order: any) {
-  if (cachedOrders) {
-    if (!cachedOrders.some(o => String(o.id) === String(order.id))) {
-      // Prepend and re-sort to maintain newest-first invariant
-      cachedOrders = [order, ...cachedOrders].sort((a, b) => {
-        const dateA = new Date(a.created_at || 0).getTime()
-        const dateB = new Date(b.created_at || 0).getTime()
-        return dateB - dateA
-      })
+  if (!order?.id) return
+  if (!cachedOrders || cachedOrders.length === 0) hydrateFromDisk()
+
+  const id = String(order.id)
+  if (!cachedOrders) {
+    cachedOrders = [order]
+    persistToDisk(cachedOrders)
+    return
+  }
+
+  const idx = cachedOrders.findIndex((o) => String(o.id) === id)
+  if (idx >= 0) {
+    const existing = cachedOrders[idx]
+    cachedOrders[idx] = {
+      ...existing,
+      ...order,
+      // Never drop logistics the Shopify payload doesn't carry
+      fulfillments: order.fulfillments?.length ? order.fulfillments : existing.fulfillments,
+      shiprocket_meta: order.shiprocket_meta ?? existing.shiprocket_meta,
+      payment_method: order.payment_method || existing.payment_method,
+      fulfillment_status: order.fulfillment_status || existing.fulfillment_status,
     }
   } else {
-    cachedOrders = [order]
+    cachedOrders = [order, ...cachedOrders]
   }
+  cachedOrders = [...cachedOrders].sort((a, b) => {
+    const dateA = new Date(a.created_at || 0).getTime()
+    const dateB = new Date(b.created_at || 0).getTime()
+    return dateB - dateA
+  })
+  persistToDisk(cachedOrders)
 }
 
 /** Merge fields onto an existing cached order (keeps same id — no clone). */
@@ -832,10 +882,19 @@ export function getOrderStatusPaginated(
     if (deliveryStatus === 'rto' && !activeRto) return false
     if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
     if (deliveryStatus === 'cancelled' && !isOrderCancelled(live)) return false
-    if (deliveryStatus === 'not_shipped' && !isNotShippedBucket(o, live)) return false
+    if (
+      deliveryStatus === 'not_shipped' &&
+      !isNotShippedBucket(o, live, relatedClones, filters.airExpressIndex)
+    ) {
+      return false
+    }
     if (
       deliveryStatus === 'ready_for_pickup' &&
-      (isOrderCancelled(live) || !isReadyForPickupStatus(live))
+      (isOrderCancelled(live) ||
+        !(
+          isReadyForPickupStatus(live) ||
+          isAirExpressBookedAwaitingPickup(o, live, relatedClones, filters.airExpressIndex)
+        ))
     ) {
       return false
     }
@@ -927,11 +986,14 @@ export function getOrderStatusPaginated(
       summary.codNotConfirmed++
       summary.values.codNotConfirmed += price
     }
-    if (isNotShippedBucket(o, live)) {
+    if (isNotShippedBucket(o, live, relatedClones, filters.airExpressIndex)) {
       summary.notShipped++
       summary.values.notShipped += price
     }
-    if (isReadyForPickupStatus(live)) {
+    if (
+      isReadyForPickupStatus(live) ||
+      isAirExpressBookedAwaitingPickup(o, live, relatedClones, filters.airExpressIndex)
+    ) {
       summary.readyForPickup++
       summary.values.readyForPickup += price
     }
