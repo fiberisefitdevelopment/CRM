@@ -606,14 +606,21 @@ function filterTasksClient(
 
   if (params.search) {
     const q = params.search.toLowerCase().trim()
-    list = list.filter(
-      (t) =>
-        t.customerName.toLowerCase().includes(q) ||
-        t.orderName.toLowerCase().includes(q) ||
-        t.orderId.includes(q) ||
-        t.phone.includes(q) ||
-        t.taskLabel.toLowerCase().includes(q),
-    )
+    const qOrder = q.replace(/^#/, '')
+    list = list.filter((t) => {
+      const name = String(t.customerName || '').toLowerCase()
+      const orderName = String(t.orderName || '').toLowerCase().replace(/^#/, '')
+      const phone = String(t.phone || '')
+      const label = String(t.taskLabel || '').toLowerCase()
+      const orderId = String(t.orderId || '')
+      if (name.includes(q) || label.includes(q)) return true
+      if (phone.includes(q) || phone.includes(qOrder)) return true
+      if (orderName === qOrder || (qOrder.length >= 2 && orderName.startsWith(qOrder))) return true
+      if (orderId === q || orderId === qOrder) return true
+      // Shopify ids are 13+ digits — don't treat "4512" as a hit inside 6945125990675
+      if (qOrder.length >= 8 && orderId.includes(qOrder)) return true
+      return false
+    })
   }
 
   return list

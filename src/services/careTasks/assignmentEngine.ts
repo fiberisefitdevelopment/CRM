@@ -1,3 +1,5 @@
+import fs from 'fs'
+import path from 'path'
 import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { phoneMatchKey } from '@/src/utils/phoneNormalize'
@@ -10,6 +12,8 @@ import {
   normalizeCareExecutiveEmail,
 } from './executiveConfig'
 import type { CareAssignee } from './types'
+import { logCareAction } from './logger'
+import { storeCareOrderAssignment } from '@/src/services/careAssignmentStore'
 
 export interface AssignmentStrategy {
   name: string
@@ -265,6 +269,125 @@ export async function pinCareExecutiveOnTask(
   }
 }
 
+function assigneeFromKnownPool(email: string): CareAssignee | null {
+  const normalized = normalizeCareExecutiveEmail(email)
+  if (!normalized) return null
+  return (
+    FALLBACK_CARE_EXECUTIVES.find((e) => e.email === normalized) ||
+    (CARE_EXECUTIVE_EMAILS.includes(normalized as (typeof CARE_EXECUTIVE_EMAILS)[number])
+      ? careExecutiveAssignee(normalized)
+      : null)
+  )
+}
+
+async function moveOpenTasksForOrder(orderId: string, assignee: CareAssignee): Promise<number> {
+  const db = getDb()
+  const now = new Date().toISOString()
+  let updated = 0
+  try {
+    const snap = await db.collection('careTasks').where('orderId', '==', orderId).get()
+    if (snap.empty) {
+      try {
+        const { reassignCachedTasksForOrder } = require('./taskCache') as {
+          reassignCachedTasksForOrder: typeof import('./taskCache').reassignCachedTasksForOrder
+        }
+        reassignCachedTasksForOrder(orderId, assignee)
+      } catch {
+        // ignore
+      }
+      return 0
+    }
+    let batch = db.batch()
+    let batchCount = 0
+    for (const doc of snap.docs) {
+      const data = doc.data() || {}
+      if (normalizeEmail(data.assignedTo?.email) === assignee.email) continue
+      batch.update(doc.ref, {
+        assignedTo: assignee,
+        updatedAt: now,
+        updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+      })
+      batchCount += 1
+      updated += 1
+    }
+    if (batchCount > 0) await batch.commit()
+    try {
+      const { reassignCachedTasksForOrder } = require('./taskCache') as {
+        reassignCachedTasksForOrder: typeof import('./taskCache').reassignCachedTasksForOrder
+      }
+      reassignCachedTasksForOrder(orderId, assignee)
+    } catch {
+      // ignore
+    }
+  } catch (err) {
+    console.warn('careTasks: failed to move open tasks after reassign', err)
+  }
+  return updated
+}
+
+/**
+ * Manual reassignment from Order Status.
+ * Pins the order immediately; open tasks are moved in the background so the UI does not hang.
+ */
+export async function reassignCareExecutiveForOrder(params: {
+  orderId: string | number
+  orderName?: string | null
+  email: string
+  phone?: string | null
+}): Promise<{ assignee: CareAssignee; tasksUpdated: number }> {
+  const orderId = String(params.orderId || '').trim()
+  if (!orderId) {
+    const err = new Error('Order id is required') as Error & { status: number }
+    err.status = 400
+    throw err
+  }
+
+  const email = normalizeCareExecutiveEmail(params.email)
+  let assignee = assigneeFromKnownPool(email)
+  if (!assignee) {
+    const pool = await resolveCareExecutivePool()
+    assignee = pool.find((e) => e.email === email) || null
+  }
+  if (!assignee) {
+    const err = new Error('Unknown care executive') as Error & { status: number }
+    err.status = 400
+    throw err
+  }
+
+  await persistOrderAssignment(orderId, params.orderName, assignee)
+  const phoneKey = phoneFromOrder({ phone: params.phone })
+  if (phoneKey) {
+    await persistCustomerAssignment(phoneKey, assignee, orderId)
+  }
+
+  setImmediate(() => {
+    try {
+      storeCareOrderAssignment({
+        orderId,
+        orderName: params.orderName,
+        assignee,
+      })
+    } catch {
+      // disk overlay is best-effort
+    }
+    void moveOpenTasksForOrder(orderId, assignee!).then((n) => {
+      void logCareAction({
+        action: 'EXECUTIVE_REASSIGNED',
+        orderId,
+        orderName: params.orderName || undefined,
+        details: {
+          assignedTo: assignee!.email,
+          assignedName: assignee!.name,
+          tasksUpdated: n,
+        },
+        status: 'success',
+      })
+    })
+  })
+
+  return { assignee, tasksUpdated: 0 }
+}
+
 /**
  * Assign a care executive for an order.
  * Repeat customers (same phone) always keep their original executive.
@@ -352,7 +475,10 @@ async function commitBatch(
   return { batch: db.batch(), batchCount: 0 }
 }
 
-/** Split open tasks evenly across Shubham / Kawalnain, keeping each customer on one executive. */
+/**
+ * Fill unassigned open tasks across Shubham / Kawalnain.
+ * Never moves a customer who already has an executive unless forceEven is explicitly set.
+ */
 export async function redistributeOpenTasksAmongExecutives(
   opts?: { forceEven?: boolean },
 ): Promise<number> {
@@ -399,66 +525,66 @@ export async function redistributeOpenTasksAmongExecutives(
       (loads.get(exec.email) || 0) < (loads.get(best.email) || 0) ? exec : best,
     )
 
-  const currentExecFor = (tasks: TaskEntry[]): CareAssignee | null => {
-    if (forceEven) return null
-    const emails = new Set(
-      tasks
-        .map((t) => normalizeEmail(t.data.assignedTo?.email))
-        .filter((email) => email && pool.some((e) => e.email === email)),
+  const assigneeFromEmail = (email: string, data?: Record<string, any>): CareAssignee | null => {
+    const normalized = normalizeCareExecutiveEmail(email)
+    if (!normalized) return null
+    const fromPool = pool.find((e) => e.email === normalized)
+    if (fromPool) return fromPool
+    return careExecutiveAssignee(
+      normalized,
+      String(data?.assignedTo?.userId || normalized.split('@')[0]),
+      data?.assignedTo?.name,
     )
-    if (emails.size !== 1) return null
-    return pool.find((e) => e.email === [...emails][0]) || null
   }
 
   const assignment = new Map<Group, CareAssignee>()
+  const unassigned: Group[] = []
+
   for (const group of groups) {
-    const current = currentExecFor(group.tasks)
-    if (!current) continue
-    assignment.set(group, current)
-    loads.set(current.email, (loads.get(current.email) || 0) + group.tasks.length)
+    if (forceEven) {
+      unassigned.push(group)
+      continue
+    }
+
+    const emails = [
+      ...new Set(
+        group.tasks
+          .map((t) => normalizeCareExecutiveEmail(t.data.assignedTo?.email))
+          .filter(Boolean),
+      ),
+    ]
+
+    if (emails.length === 0) {
+      unassigned.push(group)
+      continue
+    }
+
+    if (emails.length === 1) {
+      const assignee = assigneeFromEmail(emails[0], group.tasks[0]?.data)
+      if (assignee && loads.has(assignee.email)) {
+        assignment.set(group, assignee)
+        loads.set(assignee.email, (loads.get(assignee.email) || 0) + group.tasks.length)
+        continue
+      }
+      // Inactive executives (Support, etc.) get filled like unassigned.
+      unassigned.push(group)
+      continue
+    }
+
+    // Mixed assignees on one phone — keep each task as-is, never steal the group.
+    for (const task of group.tasks) {
+      const email = normalizeCareExecutiveEmail(task.data.assignedTo?.email)
+      if (email && loads.has(email)) {
+        loads.set(email, (loads.get(email) || 0) + 1)
+      }
+    }
   }
 
-  const unassigned = groups
-    .filter((g) => !assignment.has(g))
-    .sort((a, b) => b.tasks.length - a.tasks.length)
+  unassigned.sort((a, b) => b.tasks.length - a.tasks.length)
   for (const group of unassigned) {
     const assignee = pickLeastLoaded()
     assignment.set(group, assignee)
     loads.set(assignee.email, (loads.get(assignee.email) || 0) + group.tasks.length)
-  }
-
-  if (!forceEven && pool.length >= 2) {
-    const maxIter = groups.length * 4
-    for (let i = 0; i < maxIter; i++) {
-      const heavy = pool.reduce((a, b) =>
-        (loads.get(a.email) || 0) >= (loads.get(b.email) || 0) ? a : b,
-      )
-      const light = pool.reduce((a, b) =>
-        (loads.get(a.email) || 0) <= (loads.get(b.email) || 0) ? a : b,
-      )
-      const gap = (loads.get(heavy.email) || 0) - (loads.get(light.email) || 0)
-      if (gap <= 1) break
-
-      const candidates = groups
-        .filter((g) => assignment.get(g)?.email === heavy.email)
-        .sort((a, b) => a.tasks.length - b.tasks.length)
-
-      let moved = false
-      for (const group of candidates) {
-        const n = group.tasks.length
-        const newGap = Math.abs(
-          (loads.get(heavy.email) || 0) - n - ((loads.get(light.email) || 0) + n),
-        )
-        if (newGap < gap) {
-          assignment.set(group, light)
-          loads.set(heavy.email, (loads.get(heavy.email) || 0) - n)
-          loads.set(light.email, (loads.get(light.email) || 0) + n)
-          moved = true
-          break
-        }
-      }
-      if (!moved) break
-    }
   }
 
   let updated = 0
@@ -550,6 +676,309 @@ export async function redistributeOpenTasksAmongExecutives(
       .join(' · ')}`,
   )
   return updated
+}
+
+const FORCE_SPLIT_CUTOFF_ISO = '2026-09-02T08:16:00.000Z'
+/** Last known-good assignment file, committed 2026-09-02 12:30:50 IST. */
+const PRE_SPLIT_SNAPSHOT_ISO = '2026-09-02T07:00:50.000Z'
+const LOCAL_ASSIGNMENTS_PATH = path.join(process.cwd(), '.care-order-assignments.json')
+
+function millisFromUnknown(value: unknown): number {
+  if (!value) return 0
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const t = new Date(value).getTime()
+    return Number.isNaN(t) ? 0 : t
+  }
+  if (value instanceof Date) return value.getTime()
+  if (
+    typeof value === 'object' &&
+    value &&
+    'toDate' in value &&
+    typeof (value as { toDate?: unknown }).toDate === 'function'
+  ) {
+    try {
+      return (value as admin.firestore.Timestamp).toDate().getTime()
+    } catch {
+      return 0
+    }
+  }
+  return 0
+}
+
+function emailFromLogDetails(details: unknown): string {
+  if (!details || typeof details !== 'object') return ''
+  return emailFromUnknown((details as Record<string, unknown>).assignedTo)
+}
+
+function emailFromUnknown(raw: unknown): string {
+  if (typeof raw === 'string') return normalizeCareExecutiveEmail(raw)
+  if (raw && typeof raw === 'object' && 'email' in (raw as object)) {
+    return normalizeCareExecutiveEmail((raw as { email?: string }).email)
+  }
+  return ''
+}
+
+type OriginalAssignee = { email: string; name?: string; at: number; source: string }
+
+function considerOriginal(
+  map: Map<string, OriginalAssignee>,
+  key: string,
+  email: string,
+  at: number,
+  source: string,
+  name?: string,
+) {
+  const normalized = normalizeCareExecutiveEmail(email)
+  if (!key || !normalized) return
+  const prev = map.get(key)
+  const rank = (s: string) =>
+    s === 'local' ? 3 : s === 'recent_log' ? 2 : s === 'snapshot' ? 1 : 0
+  if (!prev) {
+    map.set(key, { email: normalized, name, at, source })
+    return
+  }
+  if (rank(source) > rank(prev.source)) {
+    map.set(key, { email: normalized, name, at, source })
+    return
+  }
+  if (rank(source) === rank(prev.source) && at > 0 && at >= prev.at) {
+    map.set(key, { email: normalized, name, at, source })
+  }
+}
+
+function ingestAssignmentStore(
+  byOrder: Map<string, OriginalAssignee>,
+  store: Record<string, any>,
+  source: string,
+  cutoffMs: number,
+) {
+  for (const value of Object.values(store || {})) {
+    if (!value || typeof value !== 'object') continue
+    const orderId = String((value as any).orderId || '').trim()
+    const email = normalizeCareExecutiveEmail((value as any).email)
+    const at = millisFromUnknown((value as any).updatedAt)
+    if (!orderId || !email) continue
+    if (source !== 'snapshot' && at >= cutoffMs) continue
+    considerOriginal(byOrder, orderId, email, at, source, String((value as any).name || ''))
+  }
+}
+
+export type RestoreCareAssignmentsResult = {
+  dryRun: boolean
+  originals: number
+  restoredTasks: number
+  restoredOrders: number
+  restoredCustomers: number
+  alreadyCorrect: number
+  byEmail: Record<string, number>
+}
+
+/**
+ * Restore pre-split executive ownership onto care tasks + order/customer assignment docs.
+ * Sources: git/local snapshot (before the 50/50 rewrite) and TASK_CREATED logs.
+ */
+export async function restoreOriginalCareAssignments(opts?: {
+  cutoffIso?: string
+  dryRun?: boolean
+  orderSnapshot?: Record<string, any>
+}): Promise<RestoreCareAssignmentsResult> {
+  const cutoffMs = new Date(opts?.cutoffIso || FORCE_SPLIT_CUTOFF_ISO).getTime()
+  const snapshotMs = new Date(PRE_SPLIT_SNAPSHOT_ISO).getTime()
+  const dryRun = opts?.dryRun === true
+  const db = getDb()
+  const pool = await resolveCareExecutivePool()
+  const byEmailPool = new Map(pool.map((e) => [e.email, e]))
+
+  const resolveAssignee = (email: string, name?: string, userId?: string): CareAssignee => {
+    const normalized = normalizeCareExecutiveEmail(email)
+    const fromPool = byEmailPool.get(normalized)
+    if (fromPool) return fromPool
+    return careExecutiveAssignee(normalized, userId, name)
+  }
+
+  const byOrder = new Map<string, OriginalAssignee>()
+  const byTask = new Map<string, OriginalAssignee>()
+
+  if (opts?.orderSnapshot) {
+    ingestAssignmentStore(byOrder, opts.orderSnapshot, 'snapshot', cutoffMs)
+  }
+
+  try {
+    if (fs.existsSync(LOCAL_ASSIGNMENTS_PATH)) {
+      const local = JSON.parse(fs.readFileSync(LOCAL_ASSIGNMENTS_PATH, 'utf-8')) as Record<string, any>
+      ingestAssignmentStore(byOrder, local, 'local', cutoffMs)
+    }
+  } catch (err) {
+    console.warn('careTasks: could not read local assignment snapshot', err)
+  }
+
+  let last: admin.firestore.QueryDocumentSnapshot | undefined
+  let scannedLogs = 0
+  while (true) {
+    let q = db
+      .collection('careTaskLogs')
+      .orderBy(admin.firestore.FieldPath.documentId())
+      .limit(500)
+    if (last) q = q.startAfter(last)
+    const snap = await q.get()
+    if (snap.empty) break
+    for (const doc of snap.docs) {
+      scannedLogs += 1
+      const data = doc.data() || {}
+      const at = millisFromUnknown(data.createdAt)
+      // Ignore logs from before the last good snapshot — those still point at
+      // Support / round-robin from months ago, not the pre-split owners.
+      if (!at || at < snapshotMs || at >= cutoffMs) continue
+      const email = emailFromLogDetails(data.details)
+      if (!email) continue
+      const source = 'recent_log'
+      const taskId = String(data.taskId || '').trim()
+      const orderId = String(data.orderId || '').trim()
+      if (taskId) considerOriginal(byTask, taskId, email, at, source)
+      if (orderId) considerOriginal(byOrder, orderId, email, at, source)
+    }
+    last = snap.docs[snap.docs.length - 1]
+    if (snap.size < 500) break
+  }
+  console.log(
+    `careTasks: restore scanned ${scannedLogs} logs · ${byOrder.size} orders · ${byTask.size} tasks`,
+  )
+
+  const now = new Date().toISOString()
+  let batch = db.batch()
+  let batchCount = 0
+  let restoredTasks = 0
+  let restoredOrders = 0
+  let restoredCustomers = 0
+  let alreadyCorrect = 0
+  const counts: Record<string, number> = {}
+  const phoneAssignee = new Map<string, { assignee: CareAssignee; n: number }>()
+
+  const queueSet = async (
+    ref: admin.firestore.DocumentReference,
+    data: Record<string, unknown>,
+    merge = true,
+  ) => {
+    if (dryRun) return
+    if (merge) batch.set(ref, data, { merge: true })
+    else batch.set(ref, data)
+    batchCount += 1
+    if (batchCount >= 400) {
+      ;({ batch, batchCount } = await commitBatch(db, batch, batchCount))
+    }
+  }
+
+  const tasksSnap = await db.collection('careTasks').get()
+  for (const doc of tasksSnap.docs) {
+    const data = doc.data() || {}
+    const original =
+      byTask.get(doc.id) ||
+      byTask.get(String(data.dedupeKey || '')) ||
+      byOrder.get(String(data.orderId || '').trim())
+    if (!original) continue
+    counts[original.email] = (counts[original.email] || 0) + 1
+    const current = normalizeCareExecutiveEmail(data.assignedTo?.email)
+    const assignee = resolveAssignee(original.email, original.name, data.assignedTo?.userId)
+
+    const phoneKey = phoneMatchKey(data.phone)
+    if (phoneKey) {
+      const prev = phoneAssignee.get(phoneKey)
+      if (!prev) phoneAssignee.set(phoneKey, { assignee, n: 1 })
+      else if (prev.assignee.email === assignee.email) prev.n += 1
+      else if (assignee.email && prev.n < 1) phoneAssignee.set(phoneKey, { assignee, n: 1 })
+    }
+
+    if (current === assignee.email) {
+      alreadyCorrect += 1
+      continue
+    }
+    restoredTasks += 1
+    await queueSet(doc.ref, {
+      assignedTo: assignee,
+      updatedAt: now,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+
+  for (const [orderId, original] of byOrder) {
+    const assignee = resolveAssignee(original.email, original.name)
+    restoredOrders += 1
+    await queueSet(db.collection('careOrderAssignments').doc(orderId), {
+      orderId,
+      userId: assignee.userId,
+      email: assignee.email,
+      name: assignee.name,
+      updatedAt: now,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+
+  for (const [phoneKey, { assignee }] of phoneAssignee) {
+    restoredCustomers += 1
+    await queueSet(db.collection('careCustomerAssignments').doc(phoneKey), {
+      phoneKey,
+      userId: assignee.userId,
+      email: assignee.email,
+      name: assignee.name,
+      updatedAt: now,
+      updatedAtTs: admin.firestore.FieldValue.serverTimestamp(),
+    })
+  }
+
+  if (!dryRun) {
+    ;({ batch, batchCount } = await commitBatch(db, batch, batchCount))
+    try {
+      const { invalidateCareTasksCache } = require('./taskCache') as {
+        invalidateCareTasksCache: () => void
+      }
+      invalidateCareTasksCache()
+    } catch {
+      // ignore
+    }
+    try {
+      const store = fs.existsSync(LOCAL_ASSIGNMENTS_PATH)
+        ? (JSON.parse(fs.readFileSync(LOCAL_ASSIGNMENTS_PATH, 'utf-8')) as Record<string, any>)
+        : {}
+      for (const [orderId, original] of byOrder) {
+        const assignee = resolveAssignee(original.email, original.name)
+        const entry = {
+          orderId,
+          orderName: store[orderId]?.orderName || null,
+          email: assignee.email,
+          name: assignee.name,
+          label: careExecutiveDisplayName(assignee.email, assignee.name),
+          updatedAt: now,
+        }
+        store[orderId] = entry
+        const nameKey = entry.orderName
+          ? `name:${String(entry.orderName).replace(/^#/, '').trim().toLowerCase()}`
+          : ''
+        if (nameKey) store[nameKey] = entry
+      }
+      fs.writeFileSync(LOCAL_ASSIGNMENTS_PATH, JSON.stringify(store, null, 2), 'utf-8')
+    } catch (err) {
+      console.warn('careTasks: could not rewrite local assignment file', err)
+    }
+  }
+
+  console.log(
+    `careTasks: restore ${dryRun ? 'dry-run ' : ''}${restoredTasks} tasks · ${restoredOrders} orders · ${restoredCustomers} phones — ${Object.entries(
+      counts,
+    )
+      .map(([email, n]) => `${email}:${n}`)
+      .join(' · ')}`,
+  )
+
+  return {
+    dryRun,
+    originals: byOrder.size,
+    restoredTasks,
+    restoredOrders,
+    restoredCustomers,
+    alreadyCorrect,
+    byEmail: counts,
+  }
 }
 
 /** Migrate legacy executive1/2 emails + display names across Firestore. */

@@ -168,7 +168,7 @@ export async function ensureCareAssignmentsHydrated(): Promise<void> {
       let changed = false
 
       try {
-        const snap = await db.collection('careOrderAssignments').limit(1000).get()
+        const snap = await db.collection('careOrderAssignments').get()
         for (const doc of snap.docs) {
           const data = doc.data() || {}
           const email = String(data.email || '').trim()
@@ -188,7 +188,7 @@ export async function ensureCareAssignmentsHydrated(): Promise<void> {
       }
 
       try {
-        const snap = await db.collection('careTasks').limit(1000).get()
+        const snap = await db.collection('careTasks').get()
         const added = syncAssignmentsFromCareTasks(
           snap.docs.map((d) => {
             const data = d.data() || {}

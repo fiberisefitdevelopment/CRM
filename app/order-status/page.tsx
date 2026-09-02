@@ -53,7 +53,7 @@ import { AirExpressBadge } from '@/components/orders/AirExpressBadge'
 import { AirExpressOrderDetails } from '@/components/orders/AirExpressOrderDetails'
 import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
 import { formatOrderPhoneDisplay } from '@/src/utils/orderPhone'
-import { CareExecutiveBadge } from '@/components/orders/CareExecutiveBadge'
+import { CareExecutiveAssignControl } from '@/components/orders/CareExecutiveAssignControl'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
 import type { CareOrderAssignmentEntry } from '@/src/services/careAssignmentStore'
 
@@ -277,6 +277,7 @@ function OrderStatusCard({
   expanded,
   onToggle,
   onNoteSaved,
+  onExecutiveAssigned,
   relatedClones = [],
   parentOrder = null,
   onOpenRelated,
@@ -285,6 +286,7 @@ function OrderStatusCard({
   expanded: boolean
   onToggle: () => void
   onNoteSaved: (orderId: number, note: string) => void
+  onExecutiveAssigned?: (orderId: number, assignment: CareOrderAssignmentEntry) => void
   relatedClones?: OrderRow[]
   parentOrder?: OrderRow | null
   onOpenRelated?: (orderId: number) => void
@@ -408,10 +410,21 @@ function OrderStatusCard({
       }}
     >
       <div className="relative">
-        <button
-          type="button"
-          onClick={onToggle}
-          className="w-full text-left p-4 lg:p-5 pr-24 hover:bg-purple-500/[0.03] transition-colors"
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest('[data-care-assign]')) return
+            onToggle()
+          }}
+          onKeyDown={(e) => {
+            if ((e.target as HTMLElement).closest('[data-care-assign]')) return
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              onToggle()
+            }
+          }}
+          className="w-full text-left p-4 lg:p-5 pr-24 hover:bg-purple-500/[0.03] transition-colors cursor-pointer"
         >
         <div className="flex items-start gap-3">
           <div className="mt-1 text-[var(--foreground-muted)]">
@@ -489,7 +502,20 @@ function OrderStatusCard({
                   {payMethod}
                 </span>
                 <CareOrderTagBadge tag={(order as OrderRow).care_tag} />
-                <CareExecutiveBadge assignment={(order as OrderRow).care_executive} />
+                <CareExecutiveAssignControl
+                  orderId={order.id}
+                  orderName={order.name}
+                  phone={
+                    order.customer?.phone ||
+                    order.shipping_address?.phone ||
+                    order.shiprocket_meta?.customer_phone ||
+                    operational.customer?.phone ||
+                    operational.shipping_address?.phone ||
+                    null
+                  }
+                  assignment={(order as OrderRow).care_executive}
+                  onAssigned={(entry) => onExecutiveAssigned?.(order.id, entry)}
+                />
                 <AirExpressBadge order={order} live={operational} relatedClones={relatedClones} />
               </div>
               <p className="text-sm font-bold mt-1" style={{ color: 'var(--foreground)' }}>
@@ -572,7 +598,7 @@ function OrderStatusCard({
             {' '}· expand for details
           </p>
         )}
-      </button>
+      </div>
 
         {/* Action buttons — do not expand the card */}
         <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
@@ -1644,6 +1670,13 @@ export default function OrderStatusPage() {
                       onNoteSaved={(orderId, note) => {
                         setOrders((prev) =>
                           prev.map((o) => (o.id === orderId ? { ...o, note: note || null } : o)),
+                        )
+                      }}
+                      onExecutiveAssigned={(orderId, assignment) => {
+                        setOrders((prev) =>
+                          prev.map((o) =>
+                            o.id === orderId ? { ...o, care_executive: assignment } : o,
+                          ),
                         )
                       }}
                     />

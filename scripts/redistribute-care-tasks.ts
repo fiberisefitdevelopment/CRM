@@ -1,5 +1,7 @@
 /**
- * Split open care tasks evenly across Shubham and Kawalnain.
+ * Assign remaining unassigned open care tasks across Shubham and Kawalnain.
+ * Does not move customers who already have an executive.
+ *
  * Usage: npx tsx scripts/redistribute-care-tasks.ts
  */
 import dotenv from 'dotenv'
@@ -10,8 +12,8 @@ dotenv.config({ path: path.join(process.cwd(), '.env') })
 import { redistributeOpenTasksAmongExecutives } from '../src/services/careTasks/assignmentEngine'
 
 async function main() {
-  const updated = await redistributeOpenTasksAmongExecutives({ forceEven: true })
-  console.log(`✅ Split ${updated} open care tasks 50/50 across Shubham and Kawalnain`)
+  const updated = await redistributeOpenTasksAmongExecutives()
+  console.log(`✅ Assigned ${updated} previously unassigned open care task(s)`)
 }
 
 main().catch((err) => {

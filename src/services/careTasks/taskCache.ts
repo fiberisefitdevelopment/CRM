@@ -158,6 +158,30 @@ export function upsertCareTaskInCache(task: CareTask): void {
   }
 }
 
+/** Update assignee on cached tasks for one order without dropping the whole snapshot. */
+export function reassignCachedTasksForOrder(
+  orderId: string,
+  assignee: { userId: string; email: string; name: string },
+): void {
+  const id = String(orderId || '').trim()
+  if (!id || !assignee?.email) return
+  hydrateFromDisk()
+  const now = new Date().toISOString()
+  for (const key of ['active', 'full'] as BucketKey[]) {
+    const entry = memory[key]
+    if (!entry?.tasks?.length) continue
+    let changed = false
+    const next = entry.tasks.map((t) => {
+      if (String(t.orderId) !== id) return t
+      changed = true
+      return { ...t, assignedTo: assignee, updatedAt: now }
+    })
+    if (!changed) continue
+    memory[key] = { tasks: next, fetchedAt: entry.fetchedAt }
+    persist(key, next)
+  }
+}
+
 function getBucket(key: BucketKey, allowStale: boolean): CareTask[] | null {
   hydrateFromDisk()
   // One-shot remap for snapshots hydrated before D28→D23

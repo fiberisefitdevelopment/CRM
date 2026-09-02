@@ -84,6 +84,41 @@ export async function getCarePerformance(): Promise<ExecutivePerformance[]> {
   return data.executives || []
 }
 
+export async function listCareExecutives(): Promise<
+  Array<{ userId: string; email: string; name: string }>
+> {
+  const res = await apiFetch('/api/care-tasks/assign-order', { cache: 'no-store' })
+  const data = await parseJson(res)
+  return data.executives || []
+}
+
+export async function assignCareOrderExecutive(params: {
+  orderId: string | number
+  orderName?: string | null
+  email: string
+  phone?: string | null
+}): Promise<{
+  email: string
+  name: string
+  label: string
+  orderId: string
+  orderName?: string | null
+  updatedAt?: string
+  tasksUpdated: number
+}> {
+  const res = await apiFetch('/api/care-tasks/assign-order', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+    signal: AbortSignal.timeout(15000),
+  })
+  const data = await parseJson(res)
+  return {
+    ...(data.assignment || {}),
+    tasksUpdated: Number(data.tasksUpdated || 0),
+  }
+}
+
 export async function getEscalationTargets(): Promise<
   Array<{ userId: string; email: string; name: string }>
 > {
