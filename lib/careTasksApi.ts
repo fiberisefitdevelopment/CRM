@@ -194,8 +194,10 @@ export async function generateCareTasks(
     body: JSON.stringify({
       maxOrders,
       refresh,
+      redistribute: false,
       forceEven: opts?.forceEven === true,
     }),
+    signal: AbortSignal.timeout(60_000),
   })
   return parseJson(res)
 }

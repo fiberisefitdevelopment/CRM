@@ -4,7 +4,7 @@ import type { CareTask } from './types'
 import { normalizeCareScheduleDay, normalizeCareTaskLabel } from './types'
 
 /** Bump this to ignore stale disk snapshots on live after assignment restores. */
-const CACHE_GENERATION = 4
+const CACHE_GENERATION = 5
 /** Fresh window — serve without hitting Firestore. */
 const FRESH_TTL_MS = 2 * 60 * 1000
 /** Serve stale instantly while a background refresh runs. */
@@ -146,15 +146,13 @@ export function upsertCareTaskInCache(task: CareTask): void {
   const normalized = normalizeCachedTask(task)
   for (const key of ['active', 'full'] as BucketKey[]) {
     const entry = memory[key]
-    if (!entry?.tasks?.length) {
-      // Never seed the "full" universe from a single upsert — that truncated
-      // Team Performance Assigned to ~50 (24 vs 26) while thousands of tasks existed.
-      if (key === 'full') continue
-      if (key === 'active' && !['pending', 'rescheduled', 'escalated', 'unreachable'].includes(normalized.status)) {
-        continue
-      }
-      memory[key] = { tasks: [normalized], fetchedAt: Date.now() }
-      persist(key, memory[key]!.tasks)
+    // Never seed an empty snapshot from incremental upserts — that replaced
+    // thousands of tasks with ~40 recent CODs and marked them "fresh".
+    if (!entry?.tasks?.length) continue
+    if (
+      key === 'active' &&
+      !['pending', 'rescheduled', 'escalated', 'unreachable'].includes(normalized.status)
+    ) {
       continue
     }
     const idx = entry.tasks.findIndex(
@@ -164,7 +162,8 @@ export function upsertCareTaskInCache(task: CareTask): void {
       idx >= 0
         ? entry.tasks.map((t, i) => (i === idx ? { ...t, ...normalized } : t))
         : [normalized, ...entry.tasks]
-    memory[key] = { tasks: next, fetchedAt: Date.now() }
+    // Keep original fetchedAt so TTL still triggers a full Firestore reload.
+    memory[key] = { tasks: next, fetchedAt: entry.fetchedAt }
     persist(key, next)
   }
 }
@@ -217,12 +216,18 @@ function ensureLegacyDay28Normalized() {
 }
 
 function adopt(key: BucketKey, tasks: CareTask[]) {
-  memory[key] = { tasks: normalizeCachedTasks(tasks), fetchedAt: Date.now() }
-  persist(key, memory[key]!.tasks)
-  // Active refresh also keeps "full" usable for open-queue filters until full reloads
-  if (key === 'full') {
-    // no-op
+  const incoming = normalizeCachedTasks(tasks)
+  const prev = memory[key]?.tasks?.length || 0
+  // A partial Firestore page must not replace a known-good universe.
+  if (prev >= 200 && incoming.length > 0 && incoming.length < prev * 0.5) {
+    console.warn(
+      `⚠️ Ignoring truncated care-tasks ${key} refresh (${incoming.length} < ${prev})`,
+    )
+    if (memory[key]) memory[key] = { ...memory[key]!, fetchedAt: Date.now() }
+    return
   }
+  memory[key] = { tasks: incoming, fetchedAt: Date.now() }
+  persist(key, incoming)
 }
 
 function refreshInBackground(key: BucketKey, loader: () => Promise<CareTask[]>) {
