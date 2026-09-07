@@ -1,7 +1,6 @@
 'use client'
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { Check, ChevronDown, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -200,8 +199,7 @@ export function FilterSelect({
         />
       </button>
 
-      {open && pos && typeof document !== 'undefined'
-        ? createPortal(
+      {open && pos ? (
             <div
               ref={menuRef}
               id={listId}
@@ -282,10 +280,8 @@ export function FilterSelect({
                   })
                 )}
               </div>
-            </div>,
-            document.body,
-          )
-        : null}
+            </div>
+      ) : null}
     </div>
   )
 }
