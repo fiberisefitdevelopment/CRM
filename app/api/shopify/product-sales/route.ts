@@ -3,56 +3,47 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getCareTaskConfig } from '@/src/services/careTasks/followupPlans'
 import { buildSalesAnalytics } from '@/src/services/salesAnalytics'
+import { loadOrdersForAnalytics } from '@/src/services/analyticsOrders'
+import { buildGenderAnalyticsFromOrders } from '@/src/services/genderFromOrders'
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = req.nextUrl
     const includeTest = searchParams.get('include_test') === 'true'
+    const refresh = searchParams.get('refresh') === 'true'
+    const startDate = searchParams.get('start_date')
+    const endDate = searchParams.get('end_date')
+    const datePreset = searchParams.get('date_preset')
 
-    const forwardParams = new URLSearchParams({ all: 'true' })
-    for (const key of ['start_date', 'end_date', 'date_preset', 'refresh']) {
-      const val = searchParams.get(key)
-      if (val) forwardParams.set(key, val)
-    }
-
-    const baseUrl = req.nextUrl.origin
-    const authHeader = req.headers.get('authorization') || ''
-
-    const ordersRes = await fetch(`${baseUrl}/api/shopify/orders?${forwardParams}`, {
-      headers: { authorization: authHeader },
+    const { orders: rawOrders, cacheEmpty } = await loadOrdersForAnalytics({
+      startDate,
+      endDate,
+      datePreset,
+      includeTest,
+      refresh,
     })
 
-    if (!ordersRes.ok) {
-      return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 502 })
-    }
-
-    const data = await ordersRes.json()
-
-    if (data.syncing && (!data.orders || data.orders.length === 0)) {
+    if (cacheEmpty) {
       return NextResponse.json({
         syncing: true,
-        isOffline: data.isOffline || false,
+        isOffline: false,
         dateRange: {
-          startDate: searchParams.get('start_date') || null,
-          endDate: searchParams.get('end_date') || null,
-          preset: searchParams.get('date_preset') || null,
+          startDate: startDate || null,
+          endDate: endDate || null,
+          preset: datePreset || null,
         },
       })
     }
 
-    let orders: any[] = data.orders || []
-    if (!includeTest) {
-      orders = orders.filter((o) => !o.is_test_order)
-    }
-
+    const orders = rawOrders
     const config = await getCareTaskConfig()
     const analytics = buildSalesAnalytics(orders, config)
-
-    const genderRes = await fetch(
-      `${baseUrl}/api/shopify/gender-analytics${searchParams.get('refresh') === 'true' ? '?refresh=true' : ''}`,
-      { headers: { authorization: authHeader } },
-    )
-    const gender = genderRes.ok ? await genderRes.json() : null
+    let gender: ReturnType<typeof buildGenderAnalyticsFromOrders> | null = null
+    try {
+      gender = buildGenderAnalyticsFromOrders(orders)
+    } catch (err) {
+      console.warn('analytics: gender breakdown skipped', err)
+    }
 
     return NextResponse.json({
       ...analytics,
@@ -64,11 +55,11 @@ export async function GET(req: NextRequest) {
           }
         : null,
       dateRange: {
-        startDate: searchParams.get('start_date') || null,
-        endDate: searchParams.get('end_date') || null,
-        preset: searchParams.get('date_preset') || null,
+        startDate: startDate || null,
+        endDate: endDate || null,
+        preset: datePreset || null,
       },
-      isOffline: data.isOffline || false,
+      isOffline: false,
       syncing: false,
     })
   } catch (err: any) {

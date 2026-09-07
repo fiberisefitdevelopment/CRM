@@ -1,7 +1,7 @@
 'use client'
 
 import { apiFetch } from '@/lib/auth'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
@@ -54,6 +54,8 @@ import { AirExpressOrderDetails } from '@/components/orders/AirExpressOrderDetai
 import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
 import { formatOrderPhoneDisplay } from '@/src/utils/orderPhone'
 import { CareExecutiveAssignControl } from '@/components/orders/CareExecutiveAssignControl'
+import { FilterSelect } from '@/components/ui/FilterSelect'
+import { DateRangePicker } from '@/components/ui/DateRangePicker'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
 import type { CareOrderAssignmentEntry } from '@/src/services/careAssignmentStore'
 
@@ -982,6 +984,56 @@ function OrderStatusCard({
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
 
+const CHANNEL_FILTER_OPTIONS = [
+  { value: 'all', label: 'All channels' },
+  { value: 'shopify', label: 'Shopify only' },
+  { value: 'shiprocket', label: 'Shiprocket only' },
+]
+
+const LOGISTICS_FILTER_OPTIONS = [
+  { value: 'all', label: 'All logistics' },
+  { value: 'air_express', label: 'Air Express only' },
+]
+
+const PAYMENT_FILTER_OPTIONS = [
+  { value: 'all', label: 'All Payment Status' },
+  { value: 'paid', label: 'Paid' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'refunded', label: 'Refunded' },
+]
+
+const FULFILLMENT_FILTER_OPTIONS = [
+  { value: 'all', label: 'All Fulfillment' },
+  { value: 'unfulfilled', label: 'Order Created' },
+  { value: 'processing', label: 'Processing' },
+  { value: 'pickup_scheduled', label: 'Ready for Pickup' },
+  { value: 'in_transit', label: 'In Transit' },
+  { value: 'out_for_delivery', label: 'Out for Delivery' },
+  { value: 'attempted_delivery', label: 'Undelivered / Attempted' },
+  { value: 'delivered', label: 'Delivered' },
+  { value: 'failed', label: 'Failed' },
+  { value: 'rto', label: 'RTO Initiated' },
+  { value: 'rto_delivered', label: 'RTO Delivered' },
+  { value: 'cancelled', label: 'Cancelled' },
+]
+
+const DELIVERY_FILTER_OPTIONS = [
+  { value: 'all', label: 'All Delivery Status' },
+  { value: 'not_shipped', label: 'Not Shipped' },
+  { value: 'ready_for_pickup', label: 'Ready for Pickup' },
+  { value: 'cod_not_confirmed', label: 'COD Not Confirmed' },
+  { value: 'delayed', label: 'Delayed Only' },
+  { value: 'delivered', label: 'Delivered' },
+  { value: 'not_delivered', label: 'Not Delivered' },
+  { value: 'in_transit', label: 'In Transit (Shiprocket)' },
+  { value: 'out_for_delivery', label: 'Out for Delivery' },
+  { value: 'rto', label: 'RTO Initiated' },
+  { value: 'rto_delivered', label: 'RTO Delivered' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'rto_alerts', label: 'RTO Initiated + Alerts' },
+]
+
 type OrderStatusSummary = {
   total: number
   delivered: number
@@ -1008,6 +1060,39 @@ type OrderStatusSummary = {
 type OrderStatusRow = OrderRow & {
   _related_clones?: OrderRow[]
   _parent?: OrderRow | null
+}
+
+function isAbortError(err: unknown) {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (typeof err === 'object' && err !== null && (err as { name?: string }).name === 'AbortError')
+  )
+}
+
+/** Card count that should match "X matching filters" for a delivery tab. */
+function countForDeliveryTab(key: string, summary: OrderStatusSummary): number {
+  switch (key) {
+    case 'all':
+      return summary.total
+    case 'not_shipped':
+      return summary.notShipped
+    case 'ready_for_pickup':
+      return summary.readyForPickup
+    case 'cod_not_confirmed':
+      return summary.codNotConfirmed
+    case 'delayed':
+      return summary.delayed
+    case 'delivered':
+      return summary.delivered
+    case 'in_transit':
+      return summary.inTransit
+    case 'rto':
+      return summary.rto
+    case 'cancelled':
+      return summary.cancelled
+    default:
+      return 0
+  }
 }
 
 export default function OrderStatusPage() {
@@ -1058,13 +1143,34 @@ export default function OrderStatusPage() {
   const [startDate, setStartDate] = useState(() => getDefaultDateRange().start)
   const [endDate, setEndDate] = useState(() => getDefaultDateRange().end)
 
+  const fetchGenRef = useRef(0)
+  const abortRef = useRef<AbortController | null>(null)
+
   useEffect(() => {
-    const t = window.setTimeout(() => setDebouncedSearch(search.trim()), 300)
+    const t = window.setTimeout(() => {
+      const next = search.trim()
+      if (next === debouncedSearch) return
+      setDebouncedSearch(next)
+      setPage(1)
+      setExpandedId(null)
+      setOrders([])
+      setLoading(true)
+    }, 300)
     return () => window.clearTimeout(t)
-  }, [search])
+  }, [search, debouncedSearch])
 
   const loadOrders = useCallback(
     async (force = false, silent = false) => {
+      if (silent && abortRef.current) return
+
+      if (!silent) {
+        abortRef.current?.abort()
+      }
+
+      const gen = ++fetchGenRef.current
+      const ac = new AbortController()
+      abortRef.current = ac
+
       try {
         if (!silent) {
           if (force) setRefreshing(true)
@@ -1089,14 +1195,22 @@ export default function OrderStatusPage() {
         if (startDate) params.set('start_date', startDate)
         if (endDate) params.set('end_date', endDate)
 
-        const res = await apiFetch(`/api/shopify/orders?${params.toString()}`, { cache: 'no-store' })
+        const res = await apiFetch(`/api/shopify/orders?${params.toString()}`, {
+          cache: 'no-store',
+          signal: ac.signal,
+        })
         const data = await res.json().catch(() => ({}))
+        if (gen !== fetchGenRef.current) return
         if (!res.ok) throw new Error(data.error || 'Failed to load orders')
 
         // Cold start: keep polling until cache is seeded
         if (data.syncing && (!data.orders || data.orders.length === 0)) {
           if (!silent) setLoading(true)
-          setTimeout(() => loadOrders(false, true), 1500)
+          const scheduled = gen
+          window.setTimeout(() => {
+            if (scheduled !== fetchGenRef.current) return
+            void loadOrders(false, true)
+          }, 1500)
           return
         }
 
@@ -1135,11 +1249,14 @@ export default function OrderStatusPage() {
         setLoading(false)
         setRefreshing(false)
       } catch (err: any) {
+        if (isAbortError(err) || gen !== fetchGenRef.current) return
         if (!silent) {
           setError(err.message || 'Failed to load order status')
           setLoading(false)
           setRefreshing(false)
         }
+      } finally {
+        if (abortRef.current === ac) abortRef.current = null
       }
     },
     [
@@ -1161,6 +1278,12 @@ export default function OrderStatusPage() {
     loadOrders(false)
   }, [loadOrders])
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [])
+
   // Live feed: TopBar latest-poll + 5s silent refresh so new Shopify orders appear instantly
   useEffect(() => {
     const onNewOrder = () => {
@@ -1176,6 +1299,13 @@ export default function OrderStatusPage() {
     }
   }, [loadOrders])
 
+  const resetListForFilterChange = () => {
+    setPage(1)
+    setExpandedId(null)
+    setOrders([])
+    setLoading(true)
+  }
+
   const clearFilters = () => {
     const defaults = getDefaultDateRange()
     setSearch('')
@@ -1188,7 +1318,7 @@ export default function OrderStatusPage() {
     setDeliveryStatus('all')
     setStartDate(defaults.start)
     setEndDate(defaults.end)
-    setPage(1)
+    resetListForFilterChange()
   }
 
   const getRelatedClones = useCallback(
@@ -1211,6 +1341,11 @@ export default function OrderStatusPage() {
     fulfillmentStatus !== 'all' ||
     deliveryStatus !== 'all' ||
     !isLast30Days
+
+  const courierOptions = useMemo(
+    () => [{ value: 'all', label: 'All Couriers' }, ...couriers.map((c) => ({ value: c, label: c }))],
+    [couriers],
+  )
 
   const openRelatedOrder = useCallback(
     (orderId: number) => {
@@ -1249,9 +1384,10 @@ export default function OrderStatusPage() {
   )
 
   const toggleQuickFilter = (key: string) => {
-    setDeliveryStatus((s) => (s === key ? 'all' : key))
-    setPage(1)
-    setExpandedId(null)
+    const next = deliveryStatus === key ? 'all' : key
+    setDeliveryStatus(next)
+    resetListForFilterChange()
+    setTotal(countForDeliveryTab(next, summary))
   }
 
   const ringFor = (key: string, tone: string) => {
@@ -1270,22 +1406,6 @@ export default function OrderStatusPage() {
   const safePage = Math.min(page, totalPages)
   const pageStart = total === 0 ? 0 : (safePage - 1) * pageSize
   const pageOrders = orders
-
-  // Reset to page 1 whenever filters / page size change
-  useEffect(() => {
-    setPage(1)
-    setExpandedId(null)
-  }, [
-    debouncedSearch,
-    channel,
-    courier,
-    paymentStatus,
-    fulfillmentStatus,
-    deliveryStatus,
-    startDate,
-    endDate,
-    pageSize,
-  ])
 
   const goToPage = (next: number) => {
     setExpandedId(null)
@@ -1467,89 +1587,72 @@ export default function OrderStatusPage() {
               />
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-8 gap-2">
-              <select
+              <FilterSelect
                 value={channel}
-                onChange={(e) => setChannel(e.target.value as 'shopify' | 'shiprocket' | 'all')}
-                className="px-2.5 py-2 rounded-lg border text-xs"
-                style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
-              >
-                <option value="all">All channels</option>
-                <option value="shopify">Shopify only</option>
-                <option value="shiprocket">Shiprocket only</option>
-              </select>
-              <select
+                onChange={(v) => {
+                  setChannel(v as 'shopify' | 'shiprocket' | 'all')
+                  resetListForFilterChange()
+                }}
+                options={CHANNEL_FILTER_OPTIONS}
+                aria-label="Sales channel"
+              />
+              <FilterSelect
                 value={logistics}
-                onChange={(e) => setLogistics(e.target.value as 'all' | 'air_express')}
-                className="px-2.5 py-2 rounded-lg border text-xs"
-                style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
-              >
-                <option value="all">All logistics</option>
-                <option value="air_express">Air Express only</option>
-              </select>
-              <select value={courier} onChange={(e) => setCourier(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
-                <option value="all">All Couriers</option>
-                {couriers.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
-                <option value="all">All Payment Status</option>
-                <option value="paid">Paid</option>
-                <option value="pending">Pending</option>
-                <option value="failed">Failed</option>
-                <option value="refunded">Refunded</option>
-              </select>
-              <select value={fulfillmentStatus} onChange={(e) => setFulfillmentStatus(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
-                <option value="all">All Fulfillment</option>
-                <option value="unfulfilled">Order Created</option>
-                <option value="processing">Processing</option>
-                <option value="pickup_scheduled">Ready for Pickup</option>
-                <option value="in_transit">In Transit</option>
-                <option value="out_for_delivery">Out for Delivery</option>
-                <option value="attempted_delivery">Undelivered / Attempted</option>
-                <option value="delivered">Delivered</option>
-                <option value="failed">Failed</option>
-                <option value="rto">RTO Initiated</option>
-                <option value="rto_delivered">RTO Delivered</option>
-                <option value="cancelled">Cancelled</option>
-              </select>
-              <select value={deliveryStatus} onChange={(e) => setDeliveryStatus(e.target.value)} className="px-2.5 py-2 rounded-lg border text-xs" style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}>
-                <option value="all">All Delivery Status</option>
-                <option value="not_shipped">Not Shipped</option>
-                <option value="ready_for_pickup">Ready for Pickup</option>
-                <option value="cod_not_confirmed">COD Not Confirmed</option>
-                <option value="delayed">Delayed Only</option>
-                <option value="delivered">Delivered</option>
-                <option value="not_delivered">Not Delivered</option>
-                <option value="in_transit">In Transit (Shiprocket)</option>
-                <option value="out_for_delivery">Out for Delivery</option>
-                <option value="rto">RTO Initiated</option>
-                <option value="rto_delivered">RTO Delivered</option>
-                <option value="cancelled">Cancelled</option>
-                <option value="rto_alerts">RTO Initiated + Alerts</option>
-              </select>
-              <label className="flex flex-col gap-0.5">
-                <span className="text-[9px] font-bold uppercase tracking-wider px-0.5" style={{ color: 'var(--foreground-muted)' }}>From</span>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                  autoComplete="off"
-                  title="Optional — leave blank for all dates"
-                  className="px-2.5 py-2 rounded-lg border text-xs"
-                  style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                />
-              </label>
-              <label className="flex flex-col gap-0.5">
-                <span className="text-[9px] font-bold uppercase tracking-wider px-0.5" style={{ color: 'var(--foreground-muted)' }}>To</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  autoComplete="off"
-                  title="Optional — leave blank for all dates"
-                  className="px-2.5 py-2 rounded-lg border text-xs"
-                  style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
-                />
-              </label>
+                onChange={(v) => {
+                  setLogistics(v as 'all' | 'air_express')
+                  resetListForFilterChange()
+                }}
+                options={LOGISTICS_FILTER_OPTIONS}
+                aria-label="Logistics"
+              />
+              <FilterSelect
+                value={courier}
+                onChange={(v) => {
+                  setCourier(v)
+                  resetListForFilterChange()
+                }}
+                options={courierOptions}
+                searchable
+                aria-label="Courier"
+              />
+              <FilterSelect
+                value={paymentStatus}
+                onChange={(v) => {
+                  setPaymentStatus(v)
+                  resetListForFilterChange()
+                }}
+                options={PAYMENT_FILTER_OPTIONS}
+                aria-label="Payment status"
+              />
+              <FilterSelect
+                value={fulfillmentStatus}
+                onChange={(v) => {
+                  setFulfillmentStatus(v)
+                  resetListForFilterChange()
+                }}
+                options={FULFILLMENT_FILTER_OPTIONS}
+                aria-label="Fulfillment status"
+              />
+              <FilterSelect
+                value={deliveryStatus}
+                onChange={(v) => {
+                  setDeliveryStatus(v)
+                  resetListForFilterChange()
+                  setTotal(countForDeliveryTab(v, summary))
+                }}
+                options={DELIVERY_FILTER_OPTIONS}
+                aria-label="Delivery status"
+              />
+              <DateRangePicker
+                className="col-span-2 md:col-span-3 lg:col-span-2"
+                startDate={startDate}
+                endDate={endDate}
+                onChange={(start, end) => {
+                  setStartDate(start)
+                  setEndDate(end)
+                  resetListForFilterChange()
+                }}
+              />
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <button
@@ -1558,7 +1661,7 @@ export default function OrderStatusPage() {
                   const defaults = getDefaultDateRange()
                   setStartDate(defaults.start)
                   setEndDate(defaults.end)
-                  setPage(1)
+                  resetListForFilterChange()
                 }}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
                   isLast30Days
@@ -1589,11 +1692,13 @@ export default function OrderStatusPage() {
             </div>
           )}
 
-          {loading && orders.length === 0 && total === 0 ? (
+          {loading && orders.length === 0 ? (
             <div className="crm-card p-12 flex flex-col items-center justify-center gap-3">
               <Loader2 className="w-8 h-8 animate-spin text-purple-500" />
               <p className="text-sm" style={{ color: 'var(--foreground-muted)' }}>Loading order journeys…</p>
-              <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>First sync can take up to a minute.</p>
+              {!lastSynced && (
+                <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>First sync can take up to a minute.</p>
+              )}
             </div>
           ) : total === 0 && !filtersActive && summary.total === 0 ? (
             <div className="crm-card p-12 text-center">
@@ -1637,7 +1742,10 @@ export default function OrderStatusPage() {
                   <span>Per page</span>
                   <select
                     value={pageSize}
-                    onChange={(e) => setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])
+                      resetListForFilterChange()
+                    }}
                     className="px-2 py-1.5 rounded-lg border text-xs"
                     style={{ backgroundColor: 'var(--card)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
                   >
@@ -1694,7 +1802,10 @@ export default function OrderStatusPage() {
                     <span>Per page</span>
                     <select
                       value={pageSize}
-                      onChange={(e) => setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])
+                        resetListForFilterChange()
+                      }}
                       className="px-2 py-1.5 rounded-lg border text-xs"
                       style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
                     >

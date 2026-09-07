@@ -1,7 +1,7 @@
 'use client'
 
 import { apiFetch } from '@/lib/auth'
-import { useEffect, useState, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import {
@@ -671,7 +671,7 @@ export default function SalesDashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isOffline, setIsOffline] = useState(false)
-  const [timeFilter, setTimeFilter] = useState<'all' | '30days' | '7days' | 'today' | 'custom'>('all')
+  const [timeFilter, setTimeFilter] = useState<'all' | '30days' | '7days' | 'today' | 'custom'>('30days')
   const [customStart, setCustomStart] = useState('')
   const [customEnd, setCustomEnd] = useState('')
   const [activeTab, setActiveTab] = useState<'orders' | 'remittance'>('orders')
@@ -681,31 +681,55 @@ export default function SalesDashboardPage() {
   const [txPaymentFilter, setTxPaymentFilter] = useState('all')
   const [txStatusFilter, setTxStatusFilter] = useState('all')
 
-  const fetchAnalytics = async (forceRefresh = false) => {
+  const abortRef = useRef<AbortController | null>(null)
+  const syncRetryRef = useRef(0)
+
+  const fetchAnalytics = useCallback(async (forceRefresh = false) => {
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+
     try {
       setLoading(true)
       const url = buildAnalyticsUrl(timeFilter, customStart, customEnd, forceRefresh)
-      const res = await apiFetch(url)
-      const data = await res.json()
+      const res = await apiFetch(url, { cache: 'no-store', signal: ac.signal })
+      const data = await res.json().catch(() => ({}))
+      if (ac.signal.aborted) return
       if (!res.ok) throw new Error(data.error || 'Failed to fetch sales analytics')
 
       if (data.syncing && !data.overview) {
         setError(null)
-        setTimeout(() => fetchAnalytics(false), 2000)
+        if (syncRetryRef.current < 8) {
+          syncRetryRef.current += 1
+          window.setTimeout(() => {
+            if (!ac.signal.aborted) void fetchAnalytics(false)
+          }, 1500)
+        } else {
+          setError('Orders cache is still warming up. Try Refresh.')
+        }
         return
       }
 
+      syncRetryRef.current = 0
       setAnalytics(data as SalesAnalytics)
       setIsOffline(!!data.isOffline)
       setError(null)
     } catch (err: any) {
-      setError(err.message)
+      if (err?.name === 'AbortError') return
+      setError(err.message || 'Failed to load sales analytics')
     } finally {
-      setLoading(false)
+      if (!ac.signal.aborted) setLoading(false)
+      if (abortRef.current === ac) abortRef.current = null
     }
-  }
+  }, [timeFilter, customStart, customEnd])
 
-  useEffect(() => { fetchAnalytics(false) }, [timeFilter, customStart, customEnd])
+  useEffect(() => {
+    syncRetryRef.current = 0
+    void fetchAnalytics(false)
+    return () => {
+      abortRef.current?.abort()
+    }
+  }, [fetchAnalytics])
 
   const metrics = useMemo(() => analyticsToMetrics(analytics), [analytics])
 
@@ -849,7 +873,18 @@ export default function SalesDashboardPage() {
           )}
           {error && !isOffline && (
             <div className="mb-5 p-4 rounded-xl border border-red-500/30 bg-red-500/8 text-red-600 text-sm flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 shrink-0" />{error}
+              <AlertCircle className="w-5 h-5 shrink-0" />
+              <span className="flex-1">{error}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  syncRetryRef.current = 0
+                  void fetchAnalytics(true)
+                }}
+                className="text-xs font-bold underline shrink-0"
+              >
+                Retry
+              </button>
             </div>
           )}
 
@@ -872,6 +907,24 @@ export default function SalesDashboardPage() {
           {loading && !analytics ? (
             <div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">{[...Array(8)].map((_,i) => <SkeletonCard key={i} />)}</div>
+            </div>
+          ) : !analytics ? (
+            <div className="crm-card p-12 text-center">
+              <AlertCircle className="w-8 h-8 mx-auto mb-2 text-amber-500" />
+              <p className="font-semibold" style={{ color: 'var(--foreground)' }}>Sales data is not available yet</p>
+              <p className="text-sm mt-1 mb-4" style={{ color: 'var(--foreground-muted)' }}>
+                {error || 'Hit Retry to load Shopify / Shiprocket analytics from cache.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  syncRetryRef.current = 0
+                  void fetchAnalytics(true)
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-white bg-purple-600"
+              >
+                <RefreshCw className="w-4 h-4" /> Retry
+              </button>
             </div>
           ) : (
 

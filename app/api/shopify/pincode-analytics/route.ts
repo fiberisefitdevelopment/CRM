@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { getZoneForState, resolveProvince } from '@/lib/india-zones'
+import { loadOrdersForAnalytics } from '@/src/services/analyticsOrders'
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,24 +12,19 @@ export async function GET(req: NextRequest) {
     const stateParam   = searchParams.get('state')   || ''
     const zoneParam    = searchParams.get('zone')    || ''
 
-    // Parse requested pincodes
     const requestedPincodes = pincodeParam
       ? pincodeParam.split(',').map((p) => p.trim()).filter(Boolean)
       : []
 
-    // Fetch all orders
-    const baseUrl = req.nextUrl.origin
-    const ordersRes = await fetch(`${baseUrl}/api/shopify/orders?all=true`, {
-      headers: {
-        authorization: req.headers.get('authorization') || '',
-      },
-    })
-    if (!ordersRes.ok) {
-      return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 502 })
+    const { orders: allOrders, cacheEmpty } = await loadOrdersForAnalytics({ includeTest: false })
+    if (cacheEmpty) {
+      return NextResponse.json({
+        pincodes: [],
+        summary: { totalOrders: 0, totalRevenue: 0, uniquePincodes: 0 },
+        isOffline: false,
+        syncing: true,
+      })
     }
-
-    const data = await ordersRes.json()
-    const allOrders: any[] = data.orders || []
 
     // Filter orders by pincode / city / state / zone
     const matchedOrders = allOrders.filter((order) => {
@@ -130,7 +126,7 @@ export async function GET(req: NextRequest) {
         totalRevenue:  Math.round(totalRevenue),
         uniquePincodes: pincodeResults.length,
       },
-      isOffline: data.isOffline || false,
+      isOffline: false,
     })
   } catch (err: any) {
     console.error('Pincode analytics error:', err)

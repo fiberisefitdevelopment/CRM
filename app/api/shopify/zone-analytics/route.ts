@@ -2,28 +2,23 @@ export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
 import { buildZoneStats, ZONES } from '@/lib/india-zones'
+import { loadOrdersForAnalytics } from '@/src/services/analyticsOrders'
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   try {
-    // Fetch orders from existing Shopify cache endpoint
-    const baseUrl = req.nextUrl.origin
-    const ordersRes = await fetch(`${baseUrl}/api/shopify/orders?all=true`, {
-      headers: {
-        authorization: req.headers.get('authorization') || '',
-      },
-    })
+    const { orders, cacheEmpty } = await loadOrdersForAnalytics({ includeTest: false })
 
-    if (!ordersRes.ok) {
-      return NextResponse.json({ error: 'Failed to fetch orders' }, { status: 502 })
+    if (cacheEmpty) {
+      return NextResponse.json({
+        zones: [],
+        totalOrders: 0,
+        totalRevenue: 0,
+        isOffline: false,
+        syncing: true,
+      })
     }
 
-    const data = await ordersRes.json()
-    const orders: any[] = data.orders || []
-
-    // Build zone-level aggregations
     const zoneStats = buildZoneStats(orders)
-
-    // Compute total for percentage calculations
     const totalOrders = orders.length
     const totalRevenue = orders.reduce((sum, o) => sum + (parseFloat(o.total_price) || 0), 0)
 
@@ -42,7 +37,6 @@ export async function GET(req: NextRequest) {
         ? Math.round((stats.revenue / totalRevenue) * 100)
         : 0
 
-      // Top states by order count
       const topStates = Object.entries(stats.states)
         .sort(([, a], [, b]) => b.orderCount - a.orderCount)
         .slice(0, 5)
@@ -68,7 +62,7 @@ export async function GET(req: NextRequest) {
       zones: result,
       totalOrders,
       totalRevenue: Math.round(totalRevenue),
-      isOffline: data.isOffline || false,
+      isOffline: false,
     })
   } catch (err: any) {
     console.error('Zone analytics error:', err)
