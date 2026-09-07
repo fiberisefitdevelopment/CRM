@@ -80,6 +80,7 @@ export function Sidebar() {
   const visibleMenuItems = menuItems.filter((item) => {
     if (isCareExecutiveRole(user?.role)) {
       return (
+        item.label === 'Order Status' ||
         item.label === 'Tasks' ||
         item.label === 'Delivered Orders' ||
         item.label === 'Care Orders'

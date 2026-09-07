@@ -3,11 +3,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronDown, Loader2 } from 'lucide-react'
 import { assignCareOrderExecutive } from '@/lib/careTasksApi'
+import { useAuth } from '@/lib/auth'
+import { CareExecutiveBadge } from '@/components/orders/CareExecutiveBadge'
 import type { CareOrderAssignmentEntry } from '@/src/services/careAssignmentStore'
 import {
   FALLBACK_CARE_EXECUTIVES,
   careExecutiveDisplayName,
 } from '@/src/services/careTasks/executiveConfig'
+import { isCareExecutiveRole } from '@/src/utils/accessControl'
 
 type ExecutiveOption = { userId: string; email: string; name: string }
 
@@ -31,12 +34,14 @@ export function CareExecutiveAssignControl({
   assignment?: CareOrderAssignmentEntry | null
   onAssigned?: (entry: CareOrderAssignmentEntry) => void
 }) {
+  const { user } = useAuth()
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
   const btnRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const isExec = isCareExecutiveRole(user?.role)
 
   const currentEmail = String(assignment?.email || '').toLowerCase().trim()
   const currentLabel = assignment?.email
@@ -62,6 +67,10 @@ export function CareExecutiveAssignControl({
     document.addEventListener('click', onDoc)
     return () => document.removeEventListener('click', onDoc)
   }, [open])
+
+  if (isExec) {
+    return <CareExecutiveBadge assignment={assignment} />
+  }
 
   const pick = async (email: string) => {
     setOpen(false)
