@@ -469,6 +469,12 @@ async function persistShipLogisticsToFirestore(
     payload.airExpressOrderId = patch.airExpressOrderId
     payload.airExpressUpdatedAt = nowIso
   }
+  if (patch.shipwayOrderId != null) {
+    payload.shipwayOrderId = patch.shipwayOrderId
+    payload.shipwayCarrierId = patch.shipwayCarrierId ?? null
+    payload.shipwayLabelUrl = patch.shipwayLabelUrl ?? null
+    payload.shipwayUpdatedAt = nowIso
+  }
   if (patch.logistics != null) payload.logistics = patch.logistics
 
   const f0 = (payload.fulfillments as any[])?.[0]

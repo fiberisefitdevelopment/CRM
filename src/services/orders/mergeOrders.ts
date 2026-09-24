@@ -18,6 +18,8 @@ const PRESERVE_IF_MISSING = [
   'source',
   'shiprocket_order_id',
   'airExpressOrderId',
+  'shipwayOrderId',
+  'shipwayLabelUrl',
 ] as const
 
 export function mergeShopifyOrderIntoExisting(existing: any | null | undefined, incoming: any): any {

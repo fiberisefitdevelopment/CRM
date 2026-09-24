@@ -20,8 +20,12 @@ export const LOGISTICS_FIELD_BLOCKLIST = [
   'shiprocketOrderId',
   'airExpressOrderId',
   'airExpressShipmentId',
+  'shipwayOrderId',
+  'shipwayCarrierId',
+  'shipwayLabelUrl',
   'shiprocketUpdatedAt',
   'airExpressUpdatedAt',
+  'shipwayUpdatedAt',
   // Fulfillments in the CRM cache are SR-enriched (AWB, shipment_status, tracking_*).
   // Shallow Firestore merge replaces the whole array — omit to preserve logistics.
   'fulfillments',

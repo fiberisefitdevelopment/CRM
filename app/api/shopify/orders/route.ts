@@ -116,8 +116,12 @@ export async function GET(_req: NextRequest) {
           ? 'aisensy_confirmed'
           : 'all'
     const logisticsRaw = (searchParams.get('logistics') || 'all').toLowerCase()
-    const logistics: 'all' | 'air_express' =
-      logisticsRaw === 'air_express' ? 'air_express' : 'all'
+    const logistics: 'all' | 'air_express' | 'shipway' =
+      logisticsRaw === 'air_express'
+        ? 'air_express'
+        : logisticsRaw === 'shipway'
+          ? 'shipway'
+          : 'all'
 
     const filters = {
       tab,
@@ -191,6 +195,7 @@ export async function GET(_req: NextRequest) {
       )
 
       let airExpressIndex = null
+      let shipwayIndex = null
       if (orderStatusView || logistics === 'air_express') {
         try {
           const { loadAirExpressMatchIndex } = await import(
@@ -201,7 +206,17 @@ export async function GET(_req: NextRequest) {
           console.warn('⚠️ Air Express index unavailable:', (e as Error)?.message || e)
         }
       }
-      const filtersWithAe = { ...filters, airExpressIndex }
+      if (orderStatusView || logistics === 'shipway') {
+        try {
+          const { loadShipwayMatchIndex } = await import(
+            '@/src/services/orders/shipwayOrderMatch'
+          )
+          shipwayIndex = await loadShipwayMatchIndex()
+        } catch (e) {
+          console.warn('⚠️ Shipway index unavailable:', (e as Error)?.message || e)
+        }
+      }
+      const filtersWithAe = { ...filters, airExpressIndex, shipwayIndex }
 
       if (orderStatusView && !returnAll) {
         const result = await OrderRepository.getOrderStatusPaginated(page, perPage, {

@@ -50,6 +50,8 @@ import {
 } from '@/src/utils/orderTimeline'
 import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
 import { AirExpressBadge } from '@/components/orders/AirExpressBadge'
+import { ShipwayBadge } from '@/components/orders/ShipwayBadge'
+import { orderTrailUsesShipway } from '@/src/utils/shipwayOrder'
 import { AirExpressOrderDetails } from '@/components/orders/AirExpressOrderDetails'
 import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
 import { formatOrderPhoneDisplay } from '@/src/utils/orderPhone'
@@ -101,6 +103,8 @@ interface OrderRow {
   source?: string
   note?: string | null
   airExpressOrderId?: string | null
+  shipwayOrderId?: string | null
+  logistics?: string | null
 }
 
 function fmtWhen(value?: string | null) {
@@ -331,6 +335,7 @@ function OrderStatusCard({
   const liveDelayDays = usingClone ? opDelayDays : delayDays
   const liveAlerts = usingClone ? buildAlerts(operational) : alerts
   const isAirExpress = orderTrailUsesAirExpress(order, operational, relatedClones)
+  const isShipway = orderTrailUsesShipway(order, operational, relatedClones)
   const timeline = useMemo(
     () => buildTimeline(usingClone ? operational : order, tracking),
     [order, operational, usingClone, tracking],
@@ -452,6 +457,7 @@ function OrderStatusCard({
                   </span>
                 )}
                 <AirExpressBadge order={order} live={operational} relatedClones={relatedClones} />
+                <ShipwayBadge order={order} live={operational} relatedClones={relatedClones} />
                 {hasClones && (
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded border ${badgeTone('emerald')}`}>
                     {relatedClones.length} clone{relatedClones.length === 1 ? '' : 's'}
@@ -519,6 +525,7 @@ function OrderStatusCard({
                   onAssigned={(entry) => onExecutiveAssigned?.(order.id, entry)}
                 />
                 <AirExpressBadge order={order} live={operational} relatedClones={relatedClones} />
+                <ShipwayBadge order={order} live={operational} relatedClones={relatedClones} />
               </div>
               <p className="text-sm font-bold mt-1" style={{ color: 'var(--foreground)' }}>
                 ₹{order.total_price}
@@ -532,7 +539,9 @@ function OrderStatusCard({
                 {fulfillmentStageLabel(liveStatus)}
               </span>
               <p className="text-[11px] mt-1 truncate" style={{ color: 'var(--foreground-muted)' }}>
-                {isAirExpress && !liveFulfillment?.tracking_company
+                {isShipway && !liveFulfillment?.tracking_company
+                  ? 'Shipway'
+                  : isAirExpress && !liveFulfillment?.tracking_company
                   ? 'Air Express (Aaysh)'
                   : liveFulfillment?.tracking_company || 'No courier yet'}
                 {liveAwb ? ` · ${liveAwb}` : ''}
@@ -993,6 +1002,7 @@ const CHANNEL_FILTER_OPTIONS = [
 const LOGISTICS_FILTER_OPTIONS = [
   { value: 'all', label: 'All logistics' },
   { value: 'air_express', label: 'Air Express only' },
+  { value: 'shipway', label: 'Shipway only' },
 ]
 
 const PAYMENT_FILTER_OPTIONS = [
@@ -1107,7 +1117,13 @@ export default function OrderStatusPage() {
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [couriers, setCouriers] = useState<string[]>([])
-  const [channelBreakdown, setChannelBreakdown] = useState({ shopify: 0, shiprocket: 0 })
+  const [channelBreakdown, setChannelBreakdown] = useState({
+    shopify: 0,
+    shiprocket: 0,
+    shipway: 0,
+    shipwayApiTotal: 0,
+    shipwayNotInCrm: 0,
+  })
   const [summary, setSummary] = useState<OrderStatusSummary>({
     total: 0,
     delivered: 0,
@@ -1136,7 +1152,7 @@ export default function OrderStatusPage() {
   // Default "all" so CUSTOM / Shiprocket-only orders match Shiprocket dashboard counts
   const [channel, setChannel] = useState<'shopify' | 'shiprocket' | 'all'>('all')
   const [courier, setCourier] = useState('all')
-  const [logistics, setLogistics] = useState<'all' | 'air_express'>('all')
+  const [logistics, setLogistics] = useState<'all' | 'air_express' | 'shipway'>('all')
   const [paymentStatus, setPaymentStatus] = useState('all')
   const [fulfillmentStatus, setFulfillmentStatus] = useState('all')
   const [deliveryStatus, setDeliveryStatus] = useState('all')
@@ -1189,6 +1205,7 @@ export default function OrderStatusPage() {
         if (channel !== 'all') params.set('channel', channel)
         if (courier !== 'all') params.set('courier', courier)
         if (logistics === 'air_express') params.set('logistics', 'air_express')
+        if (logistics === 'shipway') params.set('logistics', 'shipway')
         if (paymentStatus !== 'all') params.set('payment_status', paymentStatus)
         if (fulfillmentStatus !== 'all') params.set('fulfillment', fulfillmentStatus)
         if (deliveryStatus !== 'all') params.set('delivery', deliveryStatus)
@@ -1438,7 +1455,7 @@ export default function OrderStatusPage() {
                 Order Status
               </h1>
               <p className="text-sm mt-1" style={{ color: 'var(--foreground-muted)' }}>
-                End-to-end timeline for every Shopify / Shiprocket order — from creation to delivery.
+                End-to-end timeline for every Shopify / Shiprocket / Shipway order — from creation to delivery.
               </p>
             </div>
             <button
@@ -1567,9 +1584,41 @@ export default function OrderStatusPage() {
           </div>
           {(summary.total > 0 || total > 0) && (
             <p className="text-xs mb-3" style={{ color: 'var(--foreground-muted)' }}>
-              {summary.total.toLocaleString('en-IN')} in range
-              {' '}({channelBreakdown.shopify.toLocaleString('en-IN')} Shopify · {channelBreakdown.shiprocket.toLocaleString('en-IN')} Shiprocket-only)
-              {` · ${total.toLocaleString('en-IN')} matching filters`}
+              {logistics === 'shipway' ? (
+                <>
+                  {total.toLocaleString('en-IN')} Shipway shipments matched in CRM
+                  {channelBreakdown.shipwayApiTotal > 0 && (
+                    <>
+                      {' '}
+                      · {channelBreakdown.shipwayApiTotal.toLocaleString('en-IN')} on Shipway API
+                    </>
+                  )}
+                  {channelBreakdown.shipwayNotInCrm > 0 && (
+                    <>
+                      {' '}
+                      · {channelBreakdown.shipwayNotInCrm.toLocaleString('en-IN')} on Shipway not in
+                      CRM yet
+                    </>
+                  )}
+                  {' · '}
+                  {summary.total.toLocaleString('en-IN')} in Shopify date range
+                </>
+              ) : (
+                <>
+                  {summary.total.toLocaleString('en-IN')} in range
+                  {' '}
+                  ({channelBreakdown.shopify.toLocaleString('en-IN')} Shopify ·{' '}
+                  {channelBreakdown.shiprocket.toLocaleString('en-IN')} Shiprocket-only
+                  {channelBreakdown.shipway > 0 && (
+                    <>
+                      {' '}
+                      · {channelBreakdown.shipway.toLocaleString('en-IN')} Shipway
+                    </>
+                  )}
+                  )
+                  {` · ${total.toLocaleString('en-IN')} matching filters`}
+                </>
+              )}
             </p>
           )}
 
@@ -1599,7 +1648,7 @@ export default function OrderStatusPage() {
               <FilterSelect
                 value={logistics}
                 onChange={(v) => {
-                  setLogistics(v as 'all' | 'air_express')
+                  setLogistics(v as 'all' | 'air_express' | 'shipway')
                   resetListForFilterChange()
                 }}
                 options={LOGISTICS_FILTER_OPTIONS}

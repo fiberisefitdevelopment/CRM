@@ -48,12 +48,14 @@ import {
 } from 'lucide-react'
 import { CareOrderTagBadge } from '@/components/orders/CareOrderTagBadge'
 import { AirExpressDocumentsButtons } from '@/components/orders/AirExpressDocumentsButtons'
+import { ShipwayBadge } from '@/components/orders/ShipwayBadge'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
 import { isAirExpressOrder } from '@/src/utils/airExpressOrder'
 import {
   downloadAirExpressDocument,
   openAirExpressPdf,
 } from '@/lib/airExpressApi'
+import { fetchShipwayCourierOptions, shipOrderViaShipway } from '@/lib/shipwayApi'
 import type { AayshPdfType } from '@/src/services/aayshExpressClient'
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
@@ -134,6 +136,9 @@ interface ShopifyOrder {
   is_test_order?: boolean
   airExpressOrderId?: string | null
   airExpressShipmentId?: string | null
+  shipwayOrderId?: string | null
+  shipwayCarrierId?: string | number | null
+  shipwayLabelUrl?: string | null
   logistics?: string | null
 }
 
@@ -169,6 +174,27 @@ function isAeShippedOrder(order: ShopifyOrder | any): boolean {
   if (isAirExpressOrder(order) || order.logistics === 'air_express') return true
   const company = String(order.fulfillments?.[0]?.tracking_company || '').toLowerCase()
   return company.includes('air express') || company.includes('aaysh')
+}
+
+function isShipwayShippedOrder(order: ShopifyOrder | any): boolean {
+  if (!order) return false
+  if (order.logistics === 'shipway' || order.shipwayOrderId || (order as any).shipway_order_id) return true
+  const company = String(order.fulfillments?.[0]?.tracking_company || '').toLowerCase()
+  return company.includes('shipway')
+}
+
+type ShipLogisticsProvider = 'shiprocket' | 'air_express' | 'shipway'
+
+function shipProviderLabel(provider: ShipLogisticsProvider | null): string {
+  if (provider === 'air_express') return 'Air Express'
+  if (provider === 'shipway') return 'Shipway'
+  return 'Shiprocket'
+}
+
+function shipProviderAccent(provider: ShipLogisticsProvider | null): 'purple' | 'sky' | 'orange' {
+  if (provider === 'air_express') return 'sky'
+  if (provider === 'shipway') return 'orange'
+  return 'purple'
 }
 
 function statusVariant(status: string | null): 'green' | 'yellow' | 'red' | 'blue' | 'default' {
@@ -400,9 +426,9 @@ export function OrdersPanel({
   
   // Modal / Drawer Trigger States
   const [activeCourierOrder, setActiveCourierOrder] = useState<ShopifyOrder | null>(null)
-  const [shipLoadingProvider, setShipLoadingProvider] = useState<'shiprocket' | 'air_express' | null>(null)
+  const [shipLoadingProvider, setShipLoadingProvider] = useState<'shiprocket' | 'air_express' | 'shipway' | null>(null)
   const [shipModalStep, setShipModalStep] = useState<'provider' | 'rates'>('provider')
-  const [shipSelectedProvider, setShipSelectedProvider] = useState<'shiprocket' | 'air_express' | null>(null)
+  const [shipSelectedProvider, setShipSelectedProvider] = useState<'shiprocket' | 'air_express' | 'shipway' | null>(null)
   const [shipRatesLoading, setShipRatesLoading] = useState(false)
   const [shipRatesError, setShipRatesError] = useState<string | null>(null)
   const [shipCourierOptions, setShipCourierOptions] = useState<
@@ -821,7 +847,7 @@ export function OrdersPanel({
     setShipLoadingProvider(null)
   }
 
-  const openShipRates = async (provider: 'shiprocket' | 'air_express', order: ShopifyOrder) => {
+  const openShipRates = async (provider: ShipLogisticsProvider, order: ShopifyOrder) => {
     setShipSelectedProvider(provider)
     setShipModalStep('rates')
     setShipRatesLoading(true)
@@ -830,6 +856,20 @@ export function OrdersPanel({
     setSelectedShipOptionId(null)
 
     try {
+      if (provider === 'shipway') {
+        const data = await fetchShipwayCourierOptions(order.id)
+        const list = (data.couriers || []).map((c) => ({
+          id: String(c.id ?? c.carrier_id),
+          name: String(c.name || 'Courier'),
+          rate: c.rate != null ? Number(c.rate) : null,
+          rateLabel: c.rateLabel || 'As per contract',
+          etd: c.etd || null,
+        }))
+        setShipCourierOptions(list)
+        if (list[0]) setSelectedShipOptionId(list[0].id)
+        return
+      }
+
       const path =
         provider === 'shiprocket'
           ? `/api/shiprocket/courier-serviceability?orderId=${encodeURIComponent(String(order.id))}`
@@ -979,11 +1019,59 @@ export function OrdersPanel({
     }
   }
 
+  const handleShipViaShipway = async (orderId: number, carrierId?: string | null) => {
+    try {
+      setActionLoadingOrderId(orderId)
+      setShipLoadingProvider('shipway')
+      const data = await shipOrderViaShipway(orderId, carrierId || undefined)
+
+      if (data.order) {
+        setOrders((prev) =>
+          prev.map((o) => (o.id === orderId ? ({ ...o, ...data.order } as ShopifyOrder) : o)),
+        )
+      }
+
+      resetShipModal()
+      setSelectedOrders({})
+      invalidatePageCache()
+      if (!confirmedOnly) setCurrentTab('ready_to_ship')
+
+      const awb = data.awb ? String(data.awb) : ''
+      const courierName = data.courier ? String(data.courier) : 'Shipway'
+      if (awb) {
+        triggerNotification(
+          'success',
+          `Shipped ${data.orderName || ''} via Shipway · AWB ${awb} (${courierName})`,
+        )
+      } else if (data.warning) {
+        triggerNotification('error', String(data.warning))
+      } else {
+        triggerNotification(
+          'success',
+          `Order ${data.orderName || ''} pushed to Shipway. Refresh if AWB is still pending.`,
+        )
+      }
+
+      try {
+        await fetchOrdersPage(currentPage)
+      } catch {
+        // local patch already applied
+      }
+    } catch (err: any) {
+      triggerNotification('error', err?.message || 'Failed to ship on Shipway')
+    } finally {
+      setActionLoadingOrderId(null)
+      setShipLoadingProvider(null)
+    }
+  }
+
   const handleConfirmSelectedShip = () => {
     if (!activeCourierOrder || !shipSelectedProvider || !selectedShipOptionId) return
     const option = shipCourierOptions.find((o) => o.id === selectedShipOptionId)
     if (shipSelectedProvider === 'shiprocket') {
       void handleAssignCourier(activeCourierOrder.id, selectedShipOptionId)
+    } else if (shipSelectedProvider === 'shipway') {
+      void handleShipViaShipway(activeCourierOrder.id, selectedShipOptionId)
     } else {
       void handleShipViaAirExpress(
         activeCourierOrder.id,
@@ -2376,6 +2464,7 @@ export function OrdersPanel({
                                         {order.name}
                                       </span>
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                     </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString('en-US', {
@@ -2532,6 +2621,7 @@ export function OrdersPanel({
                                         {order.name}
                                       </span>
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                     </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString()}
@@ -2656,6 +2746,7 @@ export function OrdersPanel({
                                         {order.name}
                                       </span>
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                     </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString()}
@@ -2757,6 +2848,7 @@ export function OrdersPanel({
                                         {order.name}
                                       </span>
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                     </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString()}
@@ -2846,6 +2938,7 @@ export function OrdersPanel({
                                         {order.name}
                                       </span>
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                     </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(activeShipment?.created_at || order.created_at).toLocaleString('en-US', {
@@ -2980,6 +3073,7 @@ export function OrdersPanel({
                                         {order.name}
                                       </span>
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                     </div>
                                     <span className="text-xs text-white/50 mt-1 font-normal">
                                       {new Date(order.created_at).toLocaleString('en-US', {
@@ -3050,6 +3144,7 @@ export function OrdersPanel({
                                     >
                                       {order.name}
                                       <CareOrderTagBadge tag={order.care_tag} />
+                                      <ShipwayBadge order={order} />
                                       {(order as any).is_test_order && <Badge label="TEST" variant="red" />}
                                     </span>
                                     <span className="text-xs text-white/50 font-normal">ID: {order.id}</span>
@@ -3378,13 +3473,17 @@ export function OrdersPanel({
             <div className="flex items-center gap-3 mb-6">
               <div
                 className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
-                  shipSelectedProvider === 'air_express'
+                  shipProviderAccent(shipSelectedProvider) === 'sky'
                     ? 'bg-sky-500/10 border-sky-500/20 text-sky-400'
-                    : 'bg-purple-500/10 border-purple-500/20 text-purple-400'
+                    : shipProviderAccent(shipSelectedProvider) === 'orange'
+                      ? 'bg-orange-500/10 border-orange-500/20 text-orange-400'
+                      : 'bg-purple-500/10 border-purple-500/20 text-purple-400'
                 }`}
               >
                 {shipSelectedProvider === 'air_express' ? (
                   <Plane className="w-5 h-5" />
+                ) : shipSelectedProvider === 'shipway' ? (
+                  <Package className="w-5 h-5" />
                 ) : (
                   <Truck className="w-5 h-5" />
                 )}
@@ -3396,7 +3495,7 @@ export function OrdersPanel({
                 <p className="text-xs text-white/50 font-normal">
                   {shipModalStep === 'provider'
                     ? `Ship order ${activeCourierOrder.name} on the original order (no clone)`
-                    : `${shipSelectedProvider === 'air_express' ? 'Air Express' : 'Shiprocket'} · ${activeCourierOrder.name}`}
+                    : `${shipProviderLabel(shipSelectedProvider)} · ${activeCourierOrder.name}`}
                 </p>
               </div>
             </div>
@@ -3433,7 +3532,7 @@ export function OrdersPanel({
                 <p className="text-xs font-bold uppercase tracking-wider text-white/40 mb-3">
                   Select provider
                 </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                   <div className="rounded-2xl border border-purple-500/25 bg-purple-500/5 p-4 flex flex-col gap-3">
                     <div className="flex items-center gap-2">
                       <div className="w-9 h-9 rounded-xl bg-purple-500/15 flex items-center justify-center text-purple-300">
@@ -3479,6 +3578,30 @@ export function OrdersPanel({
                     >
                       <Plane className="w-3.5 h-3.5" />
                       View Air Express options
+                    </button>
+                  </div>
+
+                  <div className="rounded-2xl border border-orange-500/25 bg-orange-500/5 p-4 flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-9 h-9 rounded-xl bg-orange-500/15 flex items-center justify-center text-orange-300">
+                        <Package className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-bold text-white">Ship via Shipway</p>
+                        <p className="text-[11px] text-white/45">Choose carrier, then confirm</p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-white/50 leading-relaxed">
+                      Loads Shipway carrier rates for this pincode, then books the order and assigns AWB.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={actionLoadingOrderId === activeCourierOrder.id}
+                      onClick={() => openShipRates('shipway', activeCourierOrder)}
+                      className="mt-auto inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-xs font-bold text-white disabled:opacity-50"
+                    >
+                      <Package className="w-3.5 h-3.5" />
+                      View Shipway rates
                     </button>
                   </div>
                 </div>
@@ -3536,8 +3659,7 @@ export function OrdersPanel({
                   <div className="space-y-2 mb-4 max-h-[40vh] overflow-y-auto pr-1">
                     {shipCourierOptions.map((opt, idx) => {
                       const selected = selectedShipOptionId === opt.id
-                      const accent =
-                        shipSelectedProvider === 'air_express' ? 'sky' : 'purple'
+                      const accent = shipProviderAccent(shipSelectedProvider)
                       return (
                         <button
                           key={opt.id}
@@ -3547,7 +3669,9 @@ export function OrdersPanel({
                             selected
                               ? accent === 'sky'
                                 ? 'border-sky-500/50 bg-sky-500/10'
-                                : 'border-purple-500/50 bg-purple-500/10'
+                                : accent === 'orange'
+                                  ? 'border-orange-500/50 bg-orange-500/10'
+                                  : 'border-purple-500/50 bg-purple-500/10'
                               : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'
                           }`}
                         >
@@ -3558,7 +3682,9 @@ export function OrdersPanel({
                                   selected
                                     ? accent === 'sky'
                                       ? 'border-sky-400 bg-sky-400'
-                                      : 'border-purple-400 bg-purple-400'
+                                      : accent === 'orange'
+                                        ? 'border-orange-400 bg-orange-400'
+                                        : 'border-purple-400 bg-purple-400'
                                     : 'border-white/30'
                                 }`}
                               />
@@ -3608,9 +3734,11 @@ export function OrdersPanel({
                     }
                     onClick={handleConfirmSelectedShip}
                     className={`flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold text-white disabled:opacity-50 ${
-                      shipSelectedProvider === 'air_express'
+                      shipProviderAccent(shipSelectedProvider) === 'sky'
                         ? 'bg-sky-600 hover:bg-sky-500'
-                        : 'bg-purple-600 hover:bg-purple-500'
+                        : shipProviderAccent(shipSelectedProvider) === 'orange'
+                          ? 'bg-orange-600 hover:bg-orange-500'
+                          : 'bg-purple-600 hover:bg-purple-500'
                     }`}
                   >
                     {shipLoadingProvider ? (
@@ -3622,6 +3750,8 @@ export function OrdersPanel({
                       <>
                         {shipSelectedProvider === 'air_express' ? (
                           <Plane className="w-3.5 h-3.5" />
+                        ) : shipSelectedProvider === 'shipway' ? (
+                          <Package className="w-3.5 h-3.5" />
                         ) : (
                           <Truck className="w-3.5 h-3.5" />
                         )}
@@ -3959,11 +4089,17 @@ export function OrdersPanel({
               </div>
 
               {/* Courier logistics + Air Express documents */}
-              {(activeDetailOrder.fulfillment_status === 'fulfilled' || isAeShippedOrder(activeDetailOrder)) && (
+              {(activeDetailOrder.fulfillment_status === 'fulfilled' ||
+                isAeShippedOrder(activeDetailOrder) ||
+                isShipwayShippedOrder(activeDetailOrder)) && (
                 <div>
                   <p className="text-xs font-bold uppercase tracking-wider order-drawer-section-title mb-3 flex items-center gap-1.5">
                     <Truck className="w-3.5 h-3.5" />
-                    {isAeShippedOrder(activeDetailOrder) ? 'Air Express Documents' : 'Shiprocket Courier Routing'}
+                    {isAeShippedOrder(activeDetailOrder)
+                      ? 'Air Express Documents'
+                      : isShipwayShippedOrder(activeDetailOrder)
+                        ? 'Shipway Shipment'
+                        : 'Shiprocket Courier Routing'}
                   </p>
                   <div className="order-drawer-surface p-4 rounded-2xl text-xs space-y-2.5 font-semibold">
                     <div className="flex justify-between gap-4">
@@ -4000,6 +4136,19 @@ export function OrdersPanel({
                             )
                           }
                         />
+                      </div>
+                    )}
+                    {isShipwayShippedOrder(activeDetailOrder) && activeDetailOrder.shipwayLabelUrl && (
+                      <div className="pt-2">
+                        <a
+                          href={activeDetailOrder.shipwayLabelUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center justify-center gap-2 w-full py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-xs font-bold text-white transition-all"
+                        >
+                          <Package className="w-3.5 h-3.5" />
+                          Open shipping label
+                        </a>
                       </div>
                     )}
                   </div>

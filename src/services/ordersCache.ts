@@ -29,7 +29,12 @@ import {
 import { pickFirstRealPhone } from '@/src/utils/orderPhone'
 import type { AirExpressMatchIndex } from '@/src/services/orders/airExpressOrderMatch'
 import { enrichOrderWithAirExpress } from '@/src/services/orders/airExpressOrderMatch'
+import {
+  enrichOrderWithShipway,
+  type ShipwayMatchIndex,
+} from '@/src/services/orders/shipwayOrderMatch'
 import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
+import { orderTrailUsesShipway } from '@/src/utils/shipwayOrder'
 import { isCodOrder } from '@/src/utils/orderPayment'
 import { hasCodConfirmation, resolveCodConfirmationKind } from '@/src/utils/careOrderTags'
 import { lookupCareOrderTag } from '@/src/services/careOrderTagStore'
@@ -157,10 +162,11 @@ export interface OrderFilters {
   includeTest?: boolean
   /** Confirmed tab sub-filter: Care vs AiSensy. */
   careConfirmSource?: 'care_confirmed' | 'aisensy_confirmed' | 'all'
-  /** Order Status: only orders linked to Aaysh Air Express logistics. */
-  logistics?: 'all' | 'air_express'
+  /** Order Status: filter by logistics provider. */
+  logistics?: 'all' | 'air_express' | 'shipway'
   /** Live Aaysh API match index (when cache lacks airExpressOrderId). */
   airExpressIndex?: AirExpressMatchIndex | null
+  shipwayIndex?: ShipwayMatchIndex | null
 }
 
 export function getCachedOrdersCount(filters: OrderFilters = {}, sourceOrders?: any[] | null): number {
@@ -572,9 +578,12 @@ export function getCachedOrdersFiltered(
     })
   }
 
-  // 4c. Logistics provider (Air Express)
+  // 4c. Logistics provider (Air Express / Shipway)
   if (filters.logistics === 'air_express') {
     list = list.filter((o) => orderTrailUsesAirExpress(o, undefined, undefined, filters.airExpressIndex))
+  }
+  if (filters.logistics === 'shipway') {
+    list = list.filter((o) => orderTrailUsesShipway(o, undefined, undefined, filters.shipwayIndex))
   }
 
   // 5. Courier Partner
@@ -804,7 +813,16 @@ export function getOrderStatusPaginated(
       codNotConfirmed: number
     }
   }
-  channelBreakdown: { shopify: number; shiprocket: number }
+  channelBreakdown: {
+    shopify: number
+    shiprocket: number
+    /** Orders in the current view linked to Shipway (index + stored fields). */
+    shipway: number
+    /** Distinct orders returned by Shipway GET /api/getorders (API cap, not full panel). */
+    shipwayApiTotal: number
+    /** Shipway API order ids with no matching Shopify row in CRM cache for this date range. */
+    shipwayNotInCrm: number
+  }
 } {
   // Date / channel / search only here — payment, courier, fulfillment, and
   // delivery cards use operational (clone-aware) matching below.
@@ -823,10 +841,16 @@ export function getOrderStatusPaginated(
   // Stamp Air Express AWB / status onto cache rows *before* bucketing so
   // Not Shipped / Ready for Pickup cards see live Aaysh logistics.
   const aeIndex = filters.airExpressIndex
-  const withAe = (o: any) => (aeIndex ? enrichOrderWithAirExpress(o, aeIndex) : o)
+  const swIndex = filters.shipwayIndex
+  const withLogistics = (o: any) => {
+    let next = o
+    if (aeIndex) next = enrichOrderWithAirExpress(next, aeIndex)
+    if (swIndex) next = enrichOrderWithShipway(next, swIndex)
+    return next
+  }
 
   for (const o of raw) {
-    const enriched = withAe(o)
+    const enriched = withLogistics(o)
     const clean = cleanOrderName(enriched.name)
     if (!clean) continue
     byClean.set(clean, enriched)
@@ -868,6 +892,12 @@ export function getOrderStatusPaginated(
     if (
       filters.logistics === 'air_express' &&
       !orderTrailUsesAirExpress(o, live, relatedClones, filters.airExpressIndex)
+    ) {
+      return false
+    }
+    if (
+      filters.logistics === 'shipway' &&
+      !orderTrailUsesShipway(o, live, relatedClones, filters.shipwayIndex)
     ) {
       return false
     }
@@ -937,6 +967,12 @@ export function getOrderStatusPaginated(
     if (
       filters.logistics === 'air_express' &&
       !orderTrailUsesAirExpress(o, live, relatedClones, filters.airExpressIndex)
+    ) {
+      return false
+    }
+    if (
+      filters.logistics === 'shipway' &&
+      !orderTrailUsesShipway(o, live, relatedClones, filters.shipwayIndex)
     ) {
       return false
     }
@@ -1058,10 +1094,22 @@ export function getOrderStatusPaginated(
 
   let shopify = 0
   let shiprocket = 0
+  let shipway = 0
   for (const o of summaryBase) {
+    const relatedClones = clonesByParent.get(cleanOrderName(o.name)) || []
+    const live = getOperationalOrder(o, relatedClones)
+    if (orderTrailUsesShipway(o, live, relatedClones, swIndex)) shipway++
     if (o.source === 'shiprocket') shiprocket++
     else shopify++
   }
+
+  let shipwayNotInCrm = 0
+  if (swIndex?.keys.size) {
+    for (const key of swIndex.keys) {
+      if (!byClean.has(key)) shipwayNotInCrm++
+    }
+  }
+  const shipwayApiTotal = swIndex?.logisticsByKey?.size ?? 0
 
   return {
     orders: pageOrders,
@@ -1071,7 +1119,13 @@ export function getOrderStatusPaginated(
     totalPages,
     couriers: Array.from(courierSet).sort(),
     summary,
-    channelBreakdown: { shopify, shiprocket },
+    channelBreakdown: {
+      shopify,
+      shiprocket,
+      shipway,
+      shipwayApiTotal,
+      shipwayNotInCrm,
+    },
   }
 }
 
