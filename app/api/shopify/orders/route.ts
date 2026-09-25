@@ -157,8 +157,6 @@ export async function GET(_req: NextRequest) {
     // When reading Firestore, any non-empty snapshot is servable; still refresh cache in background if stale
     const sourceIsFresh = readFromFs ? cacheHasData : cacheHasData && cacheClockFresh
 
-    const lightOrderStatus = orderStatusView && searchParams.get('light') === '1'
-
     // Never block list responses on Shopify — merge in background (TopBar / webhook also update cache).
     if (cacheHasData) {
       if (forceRefresh) {
@@ -198,16 +196,12 @@ export async function GET(_req: NextRequest) {
         applyCareAssignmentsToOrders(applyCareTagsToOrders(applyNotesToOrders(list)))
 
       const snapshot = (await OrderRepository.getCachedOrders()) || []
-      const phoneEnrichedSource = lightOrderStatus
-        ? snapshot
-        : enrichOrdersWithShiprocketPhones(snapshot)
+      const phoneEnrichedSource = enrichOrdersWithShiprocketPhones(snapshot)
 
       let airExpressIndex = null
       let shipwayIndex = null
-      const needAeIndex =
-        !lightOrderStatus && (orderStatusView || logistics === 'air_express')
-      const needShipwayIndex =
-        !lightOrderStatus && (orderStatusView || logistics === 'shipway')
+      const needAeIndex = orderStatusView || logistics === 'air_express'
+      const needShipwayIndex = orderStatusView || logistics === 'shipway'
       if (needAeIndex || needShipwayIndex) {
         try {
           const loaders: Promise<void>[] = []
@@ -229,13 +223,6 @@ export async function GET(_req: NextRequest) {
         } catch (e) {
           console.warn('⚠️ Logistics match index unavailable:', (e as Error)?.message || e)
         }
-      } else if (orderStatusView && lightOrderStatus) {
-        void import('@/src/services/orders/shipwayOrderMatch').then((m) =>
-          m.loadShipwayMatchIndex(),
-        )
-        void import('@/src/services/orders/airExpressOrderMatch').then((m) =>
-          m.loadAirExpressMatchIndex(),
-        )
       }
       const filtersWithAe = { ...filters, airExpressIndex, shipwayIndex }
 

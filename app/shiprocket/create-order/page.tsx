@@ -2,8 +2,6 @@
 
 import { apiFetch } from '@/lib/auth'
 import { useMemo, useState } from 'react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { AlertCircle, CheckCircle2, Loader2, PackagePlus, Plus, Trash2 } from 'lucide-react'
 
 type OrderItem = {
@@ -152,8 +150,6 @@ export default function ShiprocketCreateOrderPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar />
-      <TopBar />
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-6xl mx-auto mt-20">
           <div className="mb-6">

@@ -1,8 +1,6 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/whatsapp/SubNav'
 import { TemplateModal } from '@/components/whatsapp/TemplateModal'
 import {
@@ -144,9 +142,6 @@ export default function TemplatesPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-7xl mx-auto mt-20">
           {/* Header */}

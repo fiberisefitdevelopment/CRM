@@ -3,8 +3,10 @@
 import { apiFetch } from '@/lib/auth'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
+import {
+  readOrderStatusPageCache,
+  writeOrderStatusPageCache,
+} from '@/src/services/orders/orderStatusPageCache'
 import {
   AlertCircle,
   CheckCircle2,
@@ -1079,34 +1081,6 @@ function isAbortError(err: unknown) {
   )
 }
 
-/** Card count that should match "X matching filters" for a delivery tab. */
-function countForDeliveryTab(key: string, summary: OrderStatusSummary): number {
-  switch (key) {
-    case 'all':
-      return summary.total
-    case 'not_shipped':
-      return summary.notShipped
-    case 'ready_for_pickup':
-      return summary.readyForPickup
-    case 'cod_not_confirmed':
-      return summary.codNotConfirmed
-    case 'delayed':
-      return summary.delayed
-    case 'delivered':
-      return summary.delivered
-    case 'in_transit':
-      return summary.inTransit
-    case 'rto':
-      return summary.rto
-    case 'rto_delivered':
-      return summary.rtoDelivered
-    case 'cancelled':
-      return summary.cancelled
-    default:
-      return 0
-  }
-}
-
 export default function OrderStatusPage() {
   const [orders, setOrders] = useState<OrderStatusRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -1181,47 +1155,59 @@ export default function OrderStatusPage() {
 
   const loadOrders = useCallback(
     async (force = false, silent = false) => {
-      let ac: AbortController | null = null
-      if (!silent) {
-        abortRef.current?.abort()
-        ac = new AbortController()
-        abortRef.current = ac
-      }
+      abortRef.current?.abort()
+      const ac = new AbortController()
+      abortRef.current = ac
 
       const gen = ++fetchGenRef.current
 
+      const params = new URLSearchParams({
+        view: 'order_status',
+        page: String(page),
+        per_page: String(pageSize),
+        include_test: 'true',
+      })
+      if (debouncedSearch) params.set('search', debouncedSearch)
+      if (channel !== 'all') params.set('channel', channel)
+      if (courier !== 'all') params.set('courier', courier)
+      if (logistics === 'air_express') params.set('logistics', 'air_express')
+      if (logistics === 'shipway') params.set('logistics', 'shipway')
+      if (paymentStatus !== 'all') params.set('payment_status', paymentStatus)
+      if (fulfillmentStatus !== 'all') params.set('fulfillment', fulfillmentStatus)
+      if (deliveryStatus !== 'all') params.set('delivery', deliveryStatus)
+      if (startDate) params.set('start_date', startDate)
+      if (endDate) params.set('end_date', endDate)
+      if (force) params.set('refresh', 'true')
+
+      const cacheKey = params.toString()
+      const requestKeyRef = cacheKey
+
       try {
-        if (!silent) {
+        setError(null)
+
+        const cached = !force && !silent ? readOrderStatusPageCache(cacheKey) : null
+        if (cached) {
+          setOrders(cached.orders as OrderStatusRow[])
+          setTotal(cached.total)
+          setTotalPages(cached.totalPages)
+          if (cached.summary) {
+            setSummary(cached.summary as OrderStatusSummary)
+          }
+          setCouriers(cached.couriers)
+          setChannelBreakdown(cached.channelBreakdown as typeof channelBreakdown)
+          setLoading(false)
+        } else if (!silent) {
           if (force) setRefreshing(true)
           else setLoading(true)
         }
-        setError(null)
-
-        const params = new URLSearchParams({
-          view: 'order_status',
-          page: String(page),
-          per_page: String(pageSize),
-          include_test: 'true',
-        })
-        if (force) params.set('refresh', 'true')
-        if (silent) params.set('light', '1')
-        if (debouncedSearch) params.set('search', debouncedSearch)
-        if (channel !== 'all') params.set('channel', channel)
-        if (courier !== 'all') params.set('courier', courier)
-        if (logistics === 'air_express') params.set('logistics', 'air_express')
-        if (logistics === 'shipway') params.set('logistics', 'shipway')
-        if (paymentStatus !== 'all') params.set('payment_status', paymentStatus)
-        if (fulfillmentStatus !== 'all') params.set('fulfillment', fulfillmentStatus)
-        if (deliveryStatus !== 'all') params.set('delivery', deliveryStatus)
-        if (startDate) params.set('start_date', startDate)
-        if (endDate) params.set('end_date', endDate)
 
         const res = await apiFetch(`/api/shopify/orders?${params.toString()}`, {
           cache: 'no-store',
-          signal: ac?.signal,
+          signal: ac.signal,
         })
         const data = await res.json().catch(() => ({}))
         if (gen !== fetchGenRef.current) return
+        if (requestKeyRef !== params.toString()) return
         if (!res.ok) throw new Error(data.error || 'Failed to load orders')
 
         // Cold start: keep polling until cache is seeded
@@ -1268,6 +1254,16 @@ export default function OrderStatusPage() {
         }
         if (Array.isArray(data.couriers)) setCouriers(data.couriers)
         if (data.channelBreakdown) setChannelBreakdown(data.channelBreakdown)
+        if (!silent) {
+          writeOrderStatusPageCache(cacheKey, {
+            orders: Array.isArray(data.orders) ? data.orders : [],
+            summary: data.summary || {},
+            total: Number((data.pagination || {}).total || 0),
+            totalPages: Math.max(1, Number((data.pagination || {}).total_pages || 1)),
+            couriers: Array.isArray(data.couriers) ? data.couriers : [],
+            channelBreakdown: data.channelBreakdown || {},
+          })
+        }
         setLastSynced(new Date())
         setLoading(false)
         setRefreshing(false)
@@ -1279,7 +1275,7 @@ export default function OrderStatusPage() {
           setRefreshing(false)
         }
       } finally {
-        if (ac && abortRef.current === ac) abortRef.current = null
+        if (abortRef.current === ac) abortRef.current = null
       }
     },
     [
@@ -1307,18 +1303,14 @@ export default function OrderStatusPage() {
     }
   }, [])
 
-  // Live feed: notification event + light cache refresh (no Shipway/Aaysh API on each tick)
+  // New Shopify orders: refetch current filters (TopBar already merged into server cache).
   useEffect(() => {
     const onNewOrder = () => {
       void loadOrders(false, true)
     }
     window.addEventListener('shopify_new_order_received', onNewOrder)
-    const interval = window.setInterval(() => {
-      void loadOrders(false, true)
-    }, 12_000)
     return () => {
       window.removeEventListener('shopify_new_order_received', onNewOrder)
-      window.clearInterval(interval)
     }
   }, [loadOrders])
 
@@ -1410,7 +1402,6 @@ export default function OrderStatusPage() {
     const next = deliveryStatus === key ? 'all' : key
     setDeliveryStatus(next)
     resetListForFilterChange()
-    setTotal(countForDeliveryTab(next, summary))
   }
 
   const ringFor = (key: string, tone: string) => {
@@ -1439,10 +1430,6 @@ export default function OrderStatusPage() {
   }
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300">
         <div className="max-w-7xl mx-auto mt-20">
           {/* Header */}
@@ -1700,7 +1687,6 @@ export default function OrderStatusPage() {
                 onChange={(v) => {
                   setDeliveryStatus(v)
                   resetListForFilterChange()
-                  setTotal(countForDeliveryTab(v, summary))
                 }}
                 options={DELIVERY_FILTER_OPTIONS}
                 aria-label="Delivery status"
@@ -1950,6 +1936,5 @@ export default function OrderStatusPage() {
           )}
         </div>
       </main>
-    </div>
   )
 }

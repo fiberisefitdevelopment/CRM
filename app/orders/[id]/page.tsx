@@ -3,8 +3,6 @@
 import { apiFetch } from '@/lib/auth'
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import {
   Loader2,
   ArrowLeft,
@@ -283,10 +281,7 @@ export default function OrderDetailPage() {
   // ── Loading ──
   if (loading) {
     return (
-      <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-        <Sidebar />
-        <TopBar />
-        <main className="ml-0 lg:ml-64 p-4 lg:p-6">
+      <main className="ml-0 lg:ml-64 p-4 lg:p-6">
           <div className="max-w-5xl mx-auto mt-20 flex items-center justify-center h-64">
             <div className="flex flex-col items-center gap-3">
               <Loader2 className="w-6 h-6 text-purple-600 dark:text-purple-400 animate-spin" />
@@ -296,17 +291,13 @@ export default function OrderDetailPage() {
             </div>
           </div>
         </main>
-      </div>
     )
   }
 
   // ── Error ──
   if (error || !order) {
     return (
-      <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-        <Sidebar />
-        <TopBar />
-        <main className="ml-0 lg:ml-64 p-4 lg:p-6">
+      <main className="ml-0 lg:ml-64 p-4 lg:p-6">
           <div className="max-w-5xl mx-auto mt-20">
             <button
               onClick={() => router.back()}
@@ -321,7 +312,6 @@ export default function OrderDetailPage() {
             </div>
           </div>
         </main>
-      </div>
     )
   }
 
@@ -329,10 +319,7 @@ export default function OrderDetailPage() {
   const shipped = isOrderShipped(order)
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-      <main className="ml-0 lg:ml-64 p-4 lg:p-6">
+    <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-5xl mx-auto mt-20">
           {/* ── Back ── */}
           <button
@@ -629,6 +616,5 @@ export default function OrderDetailPage() {
           </div>
         </div>
       </main>
-    </div>
   )
 }

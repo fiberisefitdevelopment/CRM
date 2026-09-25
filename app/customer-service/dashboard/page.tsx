@@ -10,8 +10,6 @@ import {
   PhoneOutgoing,
   TrendingUp,
 } from 'lucide-react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { DateRangeBar } from '@/components/customer-service/DateRangeBar'
 import { CallDetailsDrawer } from '@/components/customer-service/CallDetailsDrawer'
@@ -116,9 +114,6 @@ export default function CustomerServiceDashboardPage() {
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-[1400px] mx-auto mt-20 space-y-6">
           <header className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">

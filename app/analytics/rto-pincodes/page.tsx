@@ -2,8 +2,6 @@
 
 import { apiFetch } from '@/lib/auth'
 import { useCallback, useEffect, useState } from 'react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import {
   AlertCircle,
   ChevronLeft,
@@ -120,11 +118,7 @@ export default function RtoPincodeReportPage() {
   }
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-
-      <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300 min-w-0">
+    <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300 min-w-0">
         <div className="max-w-7xl mx-auto mt-20 space-y-5">
             <div className="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
               <div className="min-w-0">
@@ -386,6 +380,5 @@ export default function RtoPincodeReportPage() {
             )}
         </div>
       </main>
-    </div>
   )
 }

@@ -3,8 +3,6 @@
 import { apiFetch } from '@/lib/auth'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useRouter } from 'next/navigation'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { getPaymentLabel, isCodOrder } from '@/src/utils/orderPayment'
 import {
   fulfillmentStageLabel,
@@ -324,6 +322,16 @@ const EXPORT_COLUMNS: ExportColumn[] = [
 
 const ALL_EXPORT_COLUMN_KEYS = EXPORT_COLUMNS.map((c) => c.key)
 
+const ORDERS_PAGE_CACHE_TTL_MS = 30_000
+interface OrdersPageCacheEntry {
+  orders: ShopifyOrder[]
+  pagination: { total: number; total_pages: number }
+  tabCounts: Record<string, number>
+  isOffline: boolean
+  timestamp: number
+}
+const ordersPageCache = new Map<string, OrdersPageCacheEntry>()
+
 function escapeCsvCell(value: string): string {
   return `"${String(value).replace(/"/g, '""')}"`
 }
@@ -579,20 +587,9 @@ export function OrdersPanel({
   // ── Fetch Paginated Orders ──
   const fetchPageRef = useRef<AbortController | null>(null)
 
-  // Client-side page cache — avoids re-fetching pages already visited within the same filter context
-  const PAGE_CACHE_TTL = 30_000 // 30 seconds
-  interface PageCacheEntry {
-    orders: ShopifyOrder[]
-    pagination: { total: number; total_pages: number }
-    tabCounts: Record<string, number>
-    isOffline: boolean
-    timestamp: number
-  }
-  const pageCacheRef = useRef<Map<string, PageCacheEntry>>(new Map())
-
   // Invalidate entire page cache (call after mutations like clone, cancel, etc.)
   const invalidatePageCache = useCallback(() => {
-    pageCacheRef.current.clear()
+    ordersPageCache.clear()
   }, [])
 
   const fetchOrdersPage = useCallback(async (page: number, isInitial = false) => {
@@ -636,19 +633,17 @@ export function OrdersPanel({
     if (filterFulfillmentStatus !== 'all') queryParams.set('fulfillment', filterFulfillmentStatus)
     const cacheKey = queryParams.toString()
 
-    // Check client-side page cache first (not for initial load or sync retries)
-    if (!isInitial) {
-      const cached = pageCacheRef.current.get(cacheKey)
-      if (cached && (Date.now() - cached.timestamp) < PAGE_CACHE_TTL) {
-        setOrders(cached.orders)
-        setIsOffline(cached.isOffline)
-        setTotalOrders(cached.pagination.total)
-        setTotalPages(cached.pagination.total_pages)
-        setServerTabCounts(cached.tabCounts)
-        setError(null)
-        setPageLoading(false)
-        return
-      }
+    const cached = ordersPageCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < ORDERS_PAGE_CACHE_TTL_MS) {
+      setOrders(cached.orders)
+      setIsOffline(cached.isOffline)
+      setTotalOrders(cached.pagination.total)
+      setTotalPages(cached.pagination.total_pages)
+      setServerTabCounts(cached.tabCounts)
+      setError(null)
+      setLoading(false)
+      setPageLoading(false)
+      return
     }
 
     try {
@@ -696,7 +691,7 @@ export function OrdersPanel({
       }
 
       // Store in client-side page cache
-      pageCacheRef.current.set(cacheKey, {
+      ordersPageCache.set(cacheKey, {
         orders: enriched,
         pagination: { total: data.pagination?.total || 0, total_pages: data.pagination?.total_pages || 1 },
         tabCounts: data.tabCounts || {},
@@ -1537,11 +1532,8 @@ export function OrdersPanel({
   const endIndex = startIndex + ordersPerPage
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)', color: 'var(--foreground)' }}>
-      <Sidebar />
-      <TopBar />
-      
-      <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300">
+    <>
+      <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300" style={{ color: 'var(--foreground)' }}>
         <div className="max-w-7xl mx-auto mt-20">
           
           {/* Action toast feedback */}
@@ -4229,7 +4221,7 @@ export function OrdersPanel({
           </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

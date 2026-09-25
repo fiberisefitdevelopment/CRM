@@ -1,7 +1,5 @@
 'use client'
 
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import dynamic from 'next/dynamic'
 import { FilteredUsersTable } from '@/components/dashboard/FilteredUsersTable'
 import { ErrorToast } from '@/components/ErrorToast'
@@ -191,10 +189,7 @@ export default function Dashboard() {
   // Loading skeleton
   if (loading) {
     return (
-      <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-        <Sidebar />
-        <TopBar />
-        <main className="ml-0 lg:ml-64 p-4 lg:p-6">
+      <main className="ml-0 lg:ml-64 p-4 lg:p-6">
           <div className="max-w-7xl mx-auto mt-20">
             <div className="flex items-center justify-center h-[600px]">
               <div className="text-center">
@@ -204,16 +199,12 @@ export default function Dashboard() {
             </div>
           </div>
         </main>
-      </div>
     )
   }
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
+    <>
       {error && <ErrorToast message={error} onClose={() => setError(null)} />}
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-7xl mx-auto mt-20">
           {/* Header */}
@@ -395,6 +386,6 @@ export default function Dashboard() {
           </div>
         </div>
       </main>
-    </div>
+    </>
   )
 }

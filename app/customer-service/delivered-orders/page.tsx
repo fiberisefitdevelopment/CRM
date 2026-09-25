@@ -18,8 +18,6 @@ import {
   Truck,
   User,
 } from 'lucide-react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { ErrorToast } from '@/components/ErrorToast'
 import { OrderIdLink } from '@/components/customer-service/OrderIdLink'
@@ -667,9 +665,6 @@ export default function DeliveredOrdersPage() {
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-6xl mx-auto mt-20">
           {!isExec && <SubNav />}

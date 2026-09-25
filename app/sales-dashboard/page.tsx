@@ -2,8 +2,6 @@
 
 import { apiFetch } from '@/lib/auth'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import {
   TrendingUp, ShoppingBag, DollarSign, CreditCard, Truck, RefreshCw,
   Loader2, AlertCircle, Award, ChevronRight, Sparkles, TrendingDown,
@@ -767,11 +765,7 @@ export default function SalesDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-
-      <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300">
+    <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300">
         <div className="max-w-7xl mx-auto mt-20">
 
           {/* ── Page Header ── */}
@@ -1296,6 +1290,5 @@ export default function SalesDashboardPage() {
           )}
         </div>
       </main>
-    </div>
   )
 }

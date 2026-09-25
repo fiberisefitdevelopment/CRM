@@ -1,8 +1,6 @@
 'use client'
 
 import { Plane } from 'lucide-react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/air-express/SubNav'
 
 export function AirExpressShell({
@@ -19,10 +17,7 @@ export function AirExpressShell({
   children: React.ReactNode
 }) {
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
-      <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300">
+    <main className="ml-0 lg:ml-64 p-4 lg:p-6 transition-all duration-300">
         <div className="max-w-7xl mx-auto mt-20">
           <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-6">
             <div>
@@ -50,7 +45,6 @@ export function AirExpressShell({
           {children}
         </div>
       </main>
-    </div>
   )
 }
 

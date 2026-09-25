@@ -2,8 +2,6 @@
 
 import { apiFetch } from '@/lib/auth'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { AlertCircle, CheckCircle2, Loader2, RefreshCw, Send, Ticket } from 'lucide-react'
 import {
   getComments,
@@ -215,9 +213,6 @@ export default function TicketsPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-7xl mx-auto mt-20">
           <div className="mb-6">

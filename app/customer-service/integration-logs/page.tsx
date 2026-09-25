@@ -2,8 +2,6 @@
 
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, ScrollText, Search } from 'lucide-react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { DateRangeBar } from '@/components/customer-service/DateRangeBar'
 import { CallStatusBadge, integrationStatusVariant } from '@/components/customer-service/CallStatusBadge'
@@ -71,9 +69,6 @@ export default function IntegrationLogsPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-7xl mx-auto mt-20">
           <div className="mb-6">

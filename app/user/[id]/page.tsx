@@ -5,8 +5,6 @@ import { useRouter, useParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { db } from '@/src/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { useHealthMetrics } from '@/hooks/useHealthMetrics'
 import { ArrowLeft, User, Phone, Calendar, AlertCircle, Filter, Calendar as CalendarIcon, ToggleLeft, ToggleRight, Loader2 } from 'lucide-react'
 
@@ -298,9 +296,6 @@ export default function UserDetailPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar />
-      <TopBar />
-      
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-7xl mx-auto mt-20">
           {/* Header */}

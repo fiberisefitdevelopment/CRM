@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Sidebar } from '@/components/layout/Sidebar';
-import { TopBar } from '@/components/layout/TopBar';
+;
+;
 import { apiFetch } from '@/lib/auth';
 import {
   FileText,
@@ -61,9 +61,6 @@ export default function ReportsPage() {
 
   return (
     <div className="min-h-screen bg-[#030014]">
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6 min-h-screen relative overflow-hidden">
         {/* Atmosphere/Glow Effects */}
         <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-purple-900/10 blur-[150px] pointer-events-none" />

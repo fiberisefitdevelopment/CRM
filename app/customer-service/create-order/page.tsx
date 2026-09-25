@@ -10,8 +10,6 @@ import {
   Trash2,
 } from 'lucide-react'
 import Link from 'next/link'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { ErrorToast } from '@/components/ErrorToast'
 import { useAuth } from '@/lib/auth'
@@ -214,8 +212,6 @@ export default function CareCreateShopifyOrderPage() {
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--background)' }}>
-      <Sidebar />
-      <TopBar />
       <main className="lg:ml-64 pt-16 min-h-screen">
         <div className="p-4 md:p-6 max-w-4xl mx-auto">
           {!isExec && <SubNav />}

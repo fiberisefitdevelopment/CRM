@@ -24,8 +24,6 @@ import {
   PhoneOutgoing,
   Percent,
 } from 'lucide-react'
-import { Sidebar } from '@/components/layout/Sidebar'
-import { TopBar } from '@/components/layout/TopBar'
 import { SubNav } from '@/components/customer-service/SubNav'
 import { DateRangeBar } from '@/components/customer-service/DateRangeBar'
 import { StatsCard } from '@/components/whatsapp/StatsCard'
@@ -76,9 +74,6 @@ export default function CustomerServiceAnalyticsPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <Sidebar />
-      <TopBar />
-
       <main className="ml-0 lg:ml-64 p-4 lg:p-6">
         <div className="max-w-7xl mx-auto mt-20">
           <div className="mb-6">
