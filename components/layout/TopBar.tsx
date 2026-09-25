@@ -241,7 +241,7 @@ export function TopBar() {
 
     let interval: ReturnType<typeof setInterval> | undefined
     checkNewOrders(true).then(() => {
-      interval = setInterval(() => checkNewOrders(false), 5000)
+      interval = setInterval(() => checkNewOrders(false), 2500)
     })
     return () => {
       if (interval) clearInterval(interval)

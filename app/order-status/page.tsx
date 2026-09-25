@@ -43,6 +43,9 @@ import {
   isShiprocketDeliveredStatus,
   isShiprocketInTransitStatus,
   normalizeShipmentStatus,
+  formatDateIST,
+  formatDateTimeIST,
+  getPickupScheduledDate,
   parseFlexibleDate,
   paymentLabel,
   toIstDateKey,
@@ -108,23 +111,11 @@ interface OrderRow {
 }
 
 function fmtWhen(value?: string | null) {
-  if (!value) return '—'
-  const d = parseFlexibleDate(value)
-  if (!d) return String(value)
-  return d.toLocaleString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTimeIST(value)
 }
 
 function fmtDay(value?: string | null) {
-  if (!value) return '—'
-  const d = parseFlexibleDate(value)
-  if (!d) return String(value)
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+  return formatDateIST(value)
 }
 
 function orderValue(order: OrderRow | any): number {
@@ -313,6 +304,7 @@ function OrderStatusCard({
   const alerts = buildAlerts(order)
   const meta = order.shiprocket_meta || {}
   const shipmentDate = getShipmentDate(order)
+  const pickupScheduledDate = getPickupScheduledDate(order)
   const delayDays = getDelayDays(order)
   const isClone = isCloneOrderName(order.name)
   const hasClones = relatedClones.length > 0
@@ -324,6 +316,7 @@ function OrderStatusCard({
   const opDelayed = isOrderDelayed(operational)
   const opMeta = operational.shiprocket_meta || {}
   const opShipmentDate = getShipmentDate(operational)
+  const opPickupScheduledDate = getPickupScheduledDate(operational)
   const opDelayDays = getDelayDays(operational)
   // Card “live” view follows clone when present
   const liveStatus = usingClone ? opStatus : status
@@ -332,6 +325,7 @@ function OrderStatusCard({
   const liveFulfillment = usingClone ? opFulfillment : fulfillment
   const liveMeta = usingClone ? opMeta : meta
   const liveShipmentDate = usingClone ? opShipmentDate : shipmentDate
+  const livePickupScheduledDate = usingClone ? opPickupScheduledDate : pickupScheduledDate
   const liveDelayDays = usingClone ? opDelayDays : delayDays
   const liveAlerts = usingClone ? buildAlerts(operational) : alerts
   const isAirExpress = orderTrailUsesAirExpress(order, operational, relatedClones)
@@ -473,7 +467,7 @@ function OrderStatusCard({
                 {order.name}
               </p>
               <p className="text-[11px]" style={{ color: 'var(--foreground-muted)' }}>
-                ID {order.id} · {fmtWhen(order.created_at)}
+                ID {order.id} · Placed {fmtWhen(order.created_at)} IST
               </p>
               {usingClone && (
                 <p className="text-[11px] mt-0.5 font-semibold text-emerald-600">
@@ -564,7 +558,11 @@ function OrderStatusCard({
                   : fulfillmentStageLabel(liveStatus)
                 : 'Not shipped'}
             </span>
-            {liveAwb ? fmtDay(liveShipmentDate) : null}
+            {liveAwb && isReadyForPickupStatus(usingClone ? operational : order) && livePickupScheduledDate
+              ? ` · Pickup ${fmtDay(livePickupScheduledDate)}`
+              : liveAwb && !isReadyForPickupStatus(usingClone ? operational : order) && liveShipmentDate
+                ? ` · ${fmtDay(liveShipmentDate)}`
+                : null}
           </span>
           {liveMeta.etd_date && (
             <span className="inline-flex items-center gap-1.5">
@@ -1177,15 +1175,14 @@ export default function OrderStatusPage() {
 
   const loadOrders = useCallback(
     async (force = false, silent = false) => {
-      if (silent && abortRef.current) return
-
+      let ac: AbortController | null = null
       if (!silent) {
         abortRef.current?.abort()
+        ac = new AbortController()
+        abortRef.current = ac
       }
 
       const gen = ++fetchGenRef.current
-      const ac = new AbortController()
-      abortRef.current = ac
 
       try {
         if (!silent) {
@@ -1201,6 +1198,7 @@ export default function OrderStatusPage() {
           include_test: 'true',
         })
         if (force) params.set('refresh', 'true')
+        if (silent || force) params.set('live', '1')
         if (debouncedSearch) params.set('search', debouncedSearch)
         if (channel !== 'all') params.set('channel', channel)
         if (courier !== 'all') params.set('courier', courier)
@@ -1214,7 +1212,7 @@ export default function OrderStatusPage() {
 
         const res = await apiFetch(`/api/shopify/orders?${params.toString()}`, {
           cache: 'no-store',
-          signal: ac.signal,
+          signal: ac?.signal,
         })
         const data = await res.json().catch(() => ({}))
         if (gen !== fetchGenRef.current) return
@@ -1273,7 +1271,7 @@ export default function OrderStatusPage() {
           setRefreshing(false)
         }
       } finally {
-        if (abortRef.current === ac) abortRef.current = null
+        if (ac && abortRef.current === ac) abortRef.current = null
       }
     },
     [
@@ -1301,7 +1299,7 @@ export default function OrderStatusPage() {
     }
   }, [])
 
-  // Live feed: TopBar latest-poll + 5s silent refresh so new Shopify orders appear instantly
+  // Live feed: TopBar latest-poll + frequent silent refresh (live=1 awaits Shopify merge)
   useEffect(() => {
     const onNewOrder = () => {
       void loadOrders(false, true)
@@ -1309,7 +1307,7 @@ export default function OrderStatusPage() {
     window.addEventListener('shopify_new_order_received', onNewOrder)
     const interval = window.setInterval(() => {
       void loadOrders(false, true)
-    }, 5000)
+    }, 2500)
     return () => {
       window.removeEventListener('shopify_new_order_received', onNewOrder)
       window.clearInterval(interval)

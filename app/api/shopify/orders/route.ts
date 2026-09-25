@@ -15,7 +15,10 @@ import {
   matchShiprocketToShopify,
 } from '@/src/services/orders/shiprocketMergeHelpers'
 import { parseShiprocketDate } from '@/src/utils/orderPayment'
-import { triggerLiveShopifyPull } from '@/src/services/orders/liveOrderSync'
+import {
+  pullLiveShopifyOrdersIntoSnapshot,
+  triggerLiveShopifyPull,
+} from '@/src/services/orders/liveOrderSync'
 
 const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
@@ -154,11 +157,16 @@ export async function GET(_req: NextRequest) {
     // When reading Firestore, any non-empty snapshot is servable; still refresh cache in background if stale
     const sourceIsFresh = readFromFs ? cacheHasData : cacheHasData && cacheClockFresh
 
-    // Order Status: merge new Shopify orders in the background. Do not await —
-    // waiting up to 1.5s on every tab/filter request races concurrent clicks
-    // and returns mismatched list vs summary from different cache snapshots.
-    if (orderStatusView && cacheHasData) {
-      triggerLiveShopifyPull(50)
+    const liveParam = searchParams.get('live') === '1'
+    const liveSync = liveParam || forceRefresh
+
+    // Await Shopify on live polls / refresh; Order Status also kicks a background pull on normal loads.
+    if (cacheHasData) {
+      if (liveSync) {
+        await pullLiveShopifyOrdersIntoSnapshot(50, { force: liveParam || forceRefresh })
+      } else if (orderStatusView) {
+        triggerLiveShopifyPull(50)
+      }
     }
 
     // Helper: build a paginated JSON response from current repository source

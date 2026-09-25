@@ -49,6 +49,35 @@ const ACTIVITY_TO_STEP: Record<string, TimelineStepKey> = {
   CANCELLED: 'cancelled',
 }
 
+const IST_TIMEZONE = 'Asia/Kolkata'
+
+/** Date + time in India (matches Shopify Admin for IST stores). */
+export function formatDateTimeIST(value?: string | null): string {
+  const d = parseFlexibleDate(value)
+  if (!d) return value ? String(value) : '—'
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: IST_TIMEZONE,
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(d)
+}
+
+/** Calendar date in India. */
+export function formatDateIST(value?: string | null): string {
+  const d = parseFlexibleDate(value)
+  if (!d) return value ? String(value) : '—'
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: IST_TIMEZONE,
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  }).format(d)
+}
+
 /** Calendar date key in Asia/Kolkata (Shiprocket / India business day). */
 export function toIstDateKey(value?: string | null): string {
   if (!value) return ''
@@ -446,6 +475,14 @@ export function parseFlexibleDate(value?: string | null): Date | null {
     }
   }
 
+  // Shipway / SQL datetime without TZ — treat as Asia/Kolkata (not browser local).
+  const sqlLocal = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/)
+  if (sqlLocal) {
+    const isoIst = `${sqlLocal[1]}-${sqlLocal[2]}-${sqlLocal[3]}T${String(sqlLocal[4]).padStart(2, '0')}:${sqlLocal[5]}:${sqlLocal[6] || '00'}+05:30`
+    const istDate = new Date(isoIst)
+    if (!isNaN(istDate.getTime())) return istDate
+  }
+
   // ISO / RFC / unambiguous native parse (e.g. 2026-07-31T11:46:00Z)
   if (/^\d{4}-\d{2}-\d{2}/.test(raw) || raw.includes('T') || raw.endsWith('Z')) {
     const iso = new Date(raw)
@@ -468,6 +505,20 @@ export function getShipmentDate(order: any): string | null {
     fulfillment.dispatch_date,
     fulfillment.created_at,
   ]
+  for (const c of candidates) {
+    if (c && parseFlexibleDate(c)) return String(c)
+  }
+  return null
+}
+
+/**
+ * Date shown beside “Ready for pickup” — pickup booked / dispatch, not Shopify order time.
+ * Avoids using fulfillment.created_at (often AWB assign or Shipway push time).
+ */
+export function getPickupScheduledDate(order: any): string | null {
+  const meta = order?.shiprocket_meta || {}
+  const fulfillment = order?.fulfillments?.[0] || {}
+  const candidates = [meta.pickup_booked_date, fulfillment.dispatch_date, meta.picked_up_date]
   for (const c of candidates) {
     if (c && parseFlexibleDate(c)) return String(c)
   }

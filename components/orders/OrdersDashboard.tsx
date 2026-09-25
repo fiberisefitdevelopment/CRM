@@ -595,7 +595,11 @@ export function OrdersPanel({
     pageCacheRef.current.clear()
   }, [])
 
-  const fetchOrdersPage = useCallback(async (page: number, isInitial = false) => {
+  const fetchOrdersPage = useCallback(async (
+    page: number,
+    isInitial = false,
+    opts?: { live?: boolean },
+  ) => {
     // Abort any in-flight page request
     if (fetchPageRef.current) {
       fetchPageRef.current.abort()
@@ -634,11 +638,12 @@ export function OrdersPanel({
     if (startDate) queryParams.set('start_date', startDate)
     if (endDate) queryParams.set('end_date', endDate)
     if (filterFulfillmentStatus !== 'all') queryParams.set('fulfillment', filterFulfillmentStatus)
+    if (opts?.live) queryParams.set('live', '1')
 
     const cacheKey = queryParams.toString()
 
     // Check client-side page cache first (not for initial load or sync retries)
-    if (!isInitial) {
+    if (!isInitial && !opts?.live) {
       const cached = pageCacheRef.current.get(cacheKey)
       if (cached && (Date.now() - cached.timestamp) < PAGE_CACHE_TTL) {
         setOrders(cached.orders)
@@ -793,7 +798,7 @@ export function OrdersPanel({
           return [newOrder, ...prev]
         })
         invalidatePageCache()
-        fetchOrdersPage(1, false)
+        fetchOrdersPage(1, false, { live: true })
       }
     }
 

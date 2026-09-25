@@ -21,6 +21,7 @@ import {
   BadgeCheck,
   PackageCheck,
   ClipboardList,
+  MapPin,
 } from 'lucide-react'
 import { isCareExecutiveRole } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
@@ -32,6 +33,7 @@ const menuItems = [
   { icon: PackagePlus,   label: 'Create Order', href: '/shiprocket/create-order' },
   { icon: Headphones,    label: 'Customer Service', href: '/customer-service' },
   { icon: TrendingUp,    label: 'Sales Analytics', href: '/sales-dashboard' },
+  { icon: MapPin,        label: 'RTO by Pincode', href: '/analytics/rto-pincodes' },
   { icon: Route,         label: 'Customer Journey', href: '/crm/customer-journeys' },
   { icon: Plane,         label: 'Air Express', href: '/air-express' },
   { icon: Megaphone,     label: 'Meta Analytics', href: '/meta-analytics' },

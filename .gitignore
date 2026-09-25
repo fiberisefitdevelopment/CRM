@@ -36,6 +36,7 @@ yarn-error.log*
 .shiprocket-phones.json
 .order-notes.json
 .care-order-tags.json
+/exports/
 
 
 # vercel
