@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server'
 import { OrderRepository } from '@/src/repositories/orderRepository'
 import { pullLiveShopifyOrdersIntoSnapshot } from '@/src/services/orders/liveOrderSync'
 
-const LATEST_LIMIT = 80
+const LATEST_LIMIT = 40
 
 /**
  * Lightweight new-order poll for TopBar + Order Status live feed.

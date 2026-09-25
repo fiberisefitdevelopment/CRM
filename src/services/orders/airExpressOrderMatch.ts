@@ -23,7 +23,10 @@ export interface AirExpressMatchIndex {
   loadedAt: number
 }
 
-const CACHE_TTL_MS = 60_000
+const CACHE_TTL_MS = 5 * 60_000
+const STALE_OK_MS = 30 * 60_000
+
+let revalidateScheduled = false
 
 let cachedIndex: AirExpressMatchIndex | null = null
 let loadPromise: Promise<AirExpressMatchIndex> | null = null
@@ -221,12 +224,25 @@ async function buildIndex(): Promise<AirExpressMatchIndex> {
 }
 
 /** In-memory index of Aaysh order ids keyed by Shopify order name / id. */
+function scheduleAirExpressRevalidate() {
+  if (revalidateScheduled || loadPromise) return
+  revalidateScheduled = true
+  void loadAirExpressMatchIndex({ force: true }).finally(() => {
+    revalidateScheduled = false
+  })
+}
+
 export async function loadAirExpressMatchIndex(options?: {
   force?: boolean
 }): Promise<AirExpressMatchIndex> {
   const now = Date.now()
-  if (!options?.force && cachedIndex && now - cachedIndex.loadedAt < CACHE_TTL_MS) {
-    return cachedIndex
+  if (!options?.force && cachedIndex) {
+    const age = now - cachedIndex.loadedAt
+    if (age < CACHE_TTL_MS) return cachedIndex
+    if (age < STALE_OK_MS) {
+      scheduleAirExpressRevalidate()
+      return cachedIndex
+    }
   }
   if (loadPromise) return loadPromise
 

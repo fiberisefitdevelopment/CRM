@@ -1048,6 +1048,7 @@ type OrderStatusSummary = {
   inTransit: number
   delayed: number
   rto: number
+  rtoDelivered: number
   cancelled: number
   notShipped: number
   readyForPickup: number
@@ -1058,6 +1059,7 @@ type OrderStatusSummary = {
     inTransit: number
     delayed: number
     rto: number
+    rtoDelivered: number
     cancelled: number
     notShipped: number
     readyForPickup: number
@@ -1096,6 +1098,8 @@ function countForDeliveryTab(key: string, summary: OrderStatusSummary): number {
       return summary.inTransit
     case 'rto':
       return summary.rto
+    case 'rto_delivered':
+      return summary.rtoDelivered
     case 'cancelled':
       return summary.cancelled
     default:
@@ -1128,6 +1132,7 @@ export default function OrderStatusPage() {
     inTransit: 0,
     delayed: 0,
     rto: 0,
+    rtoDelivered: 0,
     cancelled: 0,
     notShipped: 0,
     readyForPickup: 0,
@@ -1138,6 +1143,7 @@ export default function OrderStatusPage() {
       inTransit: 0,
       delayed: 0,
       rto: 0,
+      rtoDelivered: 0,
       cancelled: 0,
       notShipped: 0,
       readyForPickup: 0,
@@ -1198,7 +1204,7 @@ export default function OrderStatusPage() {
           include_test: 'true',
         })
         if (force) params.set('refresh', 'true')
-        if (silent || force) params.set('live', '1')
+        if (silent) params.set('light', '1')
         if (debouncedSearch) params.set('search', debouncedSearch)
         if (channel !== 'all') params.set('channel', channel)
         if (courier !== 'all') params.set('courier', courier)
@@ -1241,6 +1247,7 @@ export default function OrderStatusPage() {
             inTransit: Number(data.summary.inTransit || 0),
             delayed: Number(data.summary.delayed || 0),
             rto: Number(data.summary.rto || 0),
+            rtoDelivered: Number(data.summary.rtoDelivered || 0),
             cancelled: Number(data.summary.cancelled || 0),
             notShipped: Number(data.summary.notShipped || 0),
             readyForPickup: Number(data.summary.readyForPickup || 0),
@@ -1251,6 +1258,7 @@ export default function OrderStatusPage() {
               inTransit: Number(data.summary.values?.inTransit || 0),
               delayed: Number(data.summary.values?.delayed || 0),
               rto: Number(data.summary.values?.rto || 0),
+              rtoDelivered: Number(data.summary.values?.rtoDelivered || 0),
               cancelled: Number(data.summary.values?.cancelled || 0),
               notShipped: Number(data.summary.values?.notShipped || 0),
               readyForPickup: Number(data.summary.values?.readyForPickup || 0),
@@ -1299,7 +1307,7 @@ export default function OrderStatusPage() {
     }
   }, [])
 
-  // Live feed: TopBar latest-poll + frequent silent refresh (live=1 awaits Shopify merge)
+  // Live feed: notification event + light cache refresh (no Shipway/Aaysh API on each tick)
   useEffect(() => {
     const onNewOrder = () => {
       void loadOrders(false, true)
@@ -1307,7 +1315,7 @@ export default function OrderStatusPage() {
     window.addEventListener('shopify_new_order_received', onNewOrder)
     const interval = window.setInterval(() => {
       void loadOrders(false, true)
-    }, 2500)
+    }, 12_000)
     return () => {
       window.removeEventListener('shopify_new_order_received', onNewOrder)
       window.clearInterval(interval)
@@ -1467,7 +1475,7 @@ export default function OrderStatusPage() {
           </div>
 
           {/* Summary — click a card to filter the list */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9 gap-3 mb-5">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-10 gap-3 mb-5">
             {([
               {
                 label: 'Orders',
@@ -1524,6 +1532,13 @@ export default function OrderStatusPage() {
                 amount: summary.values.rto,
                 tone: 'purple',
                 key: 'rto',
+              },
+              {
+                label: 'RTO Delivered',
+                value: summary.rtoDelivered,
+                amount: summary.values.rtoDelivered,
+                tone: 'amber',
+                key: 'rto_delivered',
               },
               {
                 label: 'Cancelled',

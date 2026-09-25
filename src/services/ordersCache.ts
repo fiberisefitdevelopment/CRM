@@ -797,6 +797,7 @@ export function getOrderStatusPaginated(
     inTransit: number
     delayed: number
     rto: number
+    rtoDelivered: number
     cancelled: number
     notShipped: number
     readyForPickup: number
@@ -807,6 +808,7 @@ export function getOrderStatusPaginated(
       inTransit: number
       delayed: number
       rto: number
+      rtoDelivered: number
       cancelled: number
       notShipped: number
       readyForPickup: number
@@ -988,6 +990,7 @@ export function getOrderStatusPaginated(
     inTransit: 0,
     delayed: 0,
     rto: 0,
+    rtoDelivered: 0,
     cancelled: 0,
     notShipped: 0,
     readyForPickup: 0,
@@ -998,6 +1001,7 @@ export function getOrderStatusPaginated(
       inTransit: 0,
       delayed: 0,
       rto: 0,
+      rtoDelivered: 0,
       cancelled: 0,
       notShipped: 0,
       readyForPickup: 0,
@@ -1008,6 +1012,7 @@ export function getOrderStatusPaginated(
   for (const o of summaryBase) {
     const relatedClones = clonesByParent.get(cleanOrderName(o.name)) || []
     const live = getOperationalOrder(o, relatedClones)
+    const status = normalizeShipmentStatus(live)
     const price = orderPrice(o)
     const cancelled = isOrderCancelled(live)
     const activeRto = !cancelled && trailHasActiveRto(o, relatedClones)
@@ -1044,6 +1049,10 @@ export function getOrderStatusPaginated(
     if (activeRto) {
       summary.rto++
       summary.values.rto += price
+    }
+    if (status === 'rto_delivered') {
+      summary.rtoDelivered++
+      summary.values.rtoDelivered += price
     }
     if (!activeRto && !hasRtoInitiated(live) && isOrderDelayed(live)) {
       summary.delayed++

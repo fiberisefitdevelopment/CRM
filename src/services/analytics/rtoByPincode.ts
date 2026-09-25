@@ -36,6 +36,13 @@ export type RtoOrderDetailRow = {
   createdAt: string
 }
 
+export type RtoByPincodePagination = {
+  page: number
+  per_page: number
+  total: number
+  total_pages: number
+}
+
 export type RtoByPincodeReport = {
   summary: {
     totalRtoInitiated: number
@@ -47,6 +54,14 @@ export type RtoByPincodeReport = {
   }
   byPincode: RtoPincodeRow[]
   orders: RtoOrderDetailRow[]
+  pagination?: RtoByPincodePagination
+}
+
+export type BuildRtoByPincodeOptions = {
+  page?: number
+  perPage?: number
+  /** When false, omits heavy per-order detail (paginated JSON responses). */
+  includeOrderDetails?: boolean
 }
 
 function cleanPincode(zip: unknown): string {
@@ -114,7 +129,10 @@ function customerName(order: any): string {
   return `${s?.first_name || ''} ${s?.last_name || ''}`.trim() || 'Guest'
 }
 
-export function buildRtoByPincodeReport(orders: any[]): RtoByPincodeReport {
+export function buildRtoByPincodeReport(
+  orders: any[],
+  options: BuildRtoByPincodeOptions = {},
+): RtoByPincodeReport {
   const parents = orders.filter((o) => !isCloneOrderName(o?.name))
 
   type PinAgg = {
@@ -195,7 +213,7 @@ export function buildRtoByPincodeReport(orders: any[]): RtoByPincodeReport {
     })
   }
 
-  const byPincode: RtoPincodeRow[] = [...pinMap.values()]
+  const allPincodeRows: RtoPincodeRow[] = [...pinMap.values()]
     .filter((p) => p.rtoInitiated > 0 || p.rtoDelivered > 0)
     .sort(
       (a, b) =>
@@ -223,19 +241,41 @@ export function buildRtoByPincodeReport(orders: any[]): RtoByPincodeReport {
       }
     })
 
+  const paginate =
+    options.page !== undefined ||
+    options.perPage !== undefined ||
+    options.includeOrderDetails === false
+
+  let byPincode = allPincodeRows
+  let pagination: RtoByPincodePagination | undefined
+
+  if (paginate) {
+    const perPage = Math.max(1, Math.min(100, options.perPage ?? 25))
+    const total = allPincodeRows.length
+    const totalPages = Math.max(1, Math.ceil(total / perPage) || 1)
+    const page = Math.min(Math.max(1, options.page ?? 1), totalPages)
+    const start = (page - 1) * perPage
+    byPincode = allPincodeRows.slice(start, start + perPage)
+    pagination = { page, per_page: perPage, total, total_pages: totalPages }
+  }
+
   const initiatedOrders = detailRows.filter((o) => o.rtoType === 'initiated')
   const deliveredOrders = detailRows.filter((o) => o.rtoType === 'delivered')
   detailRows.sort((a, b) => b.orderValue - a.orderValue)
+
+  const includeOrders =
+    options.includeOrderDetails !== false && !paginate
 
   return {
     summary: {
       totalRtoInitiated: initiatedOrders.length,
       totalRtoDelivered: deliveredOrders.length,
-      uniquePincodesWithRto: byPincode.length,
+      uniquePincodesWithRto: allPincodeRows.length,
       totalOrdersInRange: parents.length,
     },
     byPincode,
-    orders: detailRows,
+    orders: includeOrders ? detailRows : [],
+    pagination,
   }
 }
 

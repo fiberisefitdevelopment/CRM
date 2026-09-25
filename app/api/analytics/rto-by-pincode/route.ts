@@ -14,6 +14,12 @@ export async function GET(req: NextRequest) {
     const endDate = searchParams.get('end_date') || undefined
     const datePreset = searchParams.get('date_preset') || undefined
     const format = (searchParams.get('format') || 'json').toLowerCase()
+    const pageParam = searchParams.get('page')
+    const perPageParam = searchParams.get('per_page')
+    const page = pageParam ? Math.max(1, parseInt(pageParam, 10) || 1) : 1
+    const perPage = perPageParam
+      ? Math.max(1, Math.min(100, parseInt(perPageParam, 10) || 25))
+      : 25
 
     const { orders, cacheEmpty } = await loadOrdersForAnalytics({
       startDate,
@@ -32,13 +38,26 @@ export async function GET(req: NextRequest) {
       }
       return NextResponse.json({
         syncing: true,
-        summary: { totalRtoInitiated: 0, uniquePincodesWithRto: 0, totalOrdersInRange: 0 },
+        summary: {
+          totalRtoInitiated: 0,
+          totalRtoDelivered: 0,
+          uniquePincodesWithRto: 0,
+          totalOrdersInRange: 0,
+        },
         byPincode: [],
         orders: [],
+        pagination: { page: 1, per_page: perPage, total: 0, total_pages: 1 },
       })
     }
 
-    const report = buildRtoByPincodeReport(orders)
+    const report =
+      format === 'csv'
+        ? buildRtoByPincodeReport(orders)
+        : buildRtoByPincodeReport(orders, {
+            page,
+            perPage,
+            includeOrderDetails: false,
+          })
     report.summary.dateStart = startDate
     report.summary.dateEnd = endDate
 

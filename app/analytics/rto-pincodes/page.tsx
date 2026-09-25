@@ -6,6 +6,8 @@ import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
 import {
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
   Download,
   FileSpreadsheet,
   Loader2,
@@ -30,42 +32,64 @@ const fmtInr = (n: number) =>
     n,
   )
 
+const PAGE_SIZE_OPTIONS = [25, 50, 100] as const
+
 export default function RtoPincodeReportPage() {
   const [startDate, setStartDate] = useState(localDaysAgoKey(29))
   const [endDate, setEndDate] = useState(localTodayKey())
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(25)
   const [loading, setLoading] = useState(true)
+  const [pageLoading, setPageLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<RtoByPincodeReport | null>(null)
   const [downloading, setDownloading] = useState(false)
 
-  const loadReport = useCallback(async (refresh = false) => {
-    try {
-      setLoading(true)
-      setError(null)
-      const params = new URLSearchParams({
-        start_date: startDate,
-        end_date: endDate,
-      })
-      if (refresh) params.set('refresh', 'true')
-      const res = await apiFetch(`/api/analytics/rto-by-pincode?${params}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to load report')
-      if (data.syncing) {
-        setError('Orders cache is still syncing. Try Refresh in a moment.')
-        setReport(null)
-        return
+  const pagination = report?.pagination
+  const totalPincodes = pagination?.total ?? report?.byPincode.length ?? 0
+  const totalPages = pagination?.total_pages ?? 1
+  const safePage = pagination?.page ?? page
+  const pageStart = totalPincodes === 0 ? 0 : (safePage - 1) * (pagination?.per_page ?? pageSize)
+
+  const loadReport = useCallback(
+    async (refresh = false, opts?: { silent?: boolean }) => {
+      const silent = opts?.silent === true
+      try {
+        if (silent) setPageLoading(true)
+        else setLoading(true)
+        setError(null)
+        const params = new URLSearchParams({
+          start_date: startDate,
+          end_date: endDate,
+          page: String(page),
+          per_page: String(pageSize),
+        })
+        if (refresh) params.set('refresh', 'true')
+        const res = await apiFetch(`/api/analytics/rto-by-pincode?${params}`)
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.error || 'Failed to load report')
+        if (data.syncing) {
+          setError('Orders cache is still syncing. Try Refresh in a moment.')
+          setReport(null)
+          return
+        }
+        setReport(data as RtoByPincodeReport)
+        if (data.pagination?.page && data.pagination.page !== page) {
+          setPage(data.pagination.page)
+        }
+      } catch (e: any) {
+        setError(e?.message || 'Failed to load report')
+        if (!silent) setReport(null)
+      } finally {
+        setLoading(false)
+        setPageLoading(false)
       }
-      setReport(data as RtoByPincodeReport)
-    } catch (e: any) {
-      setError(e?.message || 'Failed to load report')
-      setReport(null)
-    } finally {
-      setLoading(false)
-    }
-  }, [startDate, endDate])
+    },
+    [startDate, endDate, page, pageSize],
+  )
 
   useEffect(() => {
-    void loadReport()
+    void loadReport(false, { silent: !!report })
   }, [loadReport])
 
   const downloadSheet = async () => {
@@ -119,7 +143,11 @@ export default function RtoPincodeReportPage() {
                   <input
                     type="date"
                     value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
+                    onChange={(e) => {
+                      setStartDate(e.target.value)
+                      setPage(1)
+                      setReport(null)
+                    }}
                     className="mt-1 block px-3 py-2 rounded-xl border text-sm"
                     style={{ borderColor: 'var(--border)', background: 'var(--card)', color: 'var(--foreground)' }}
                   />
@@ -129,7 +157,11 @@ export default function RtoPincodeReportPage() {
                   <input
                     type="date"
                     value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
+                    onChange={(e) => {
+                      setEndDate(e.target.value)
+                      setPage(1)
+                      setReport(null)
+                    }}
                     className="mt-1 block px-3 py-2 rounded-xl border text-sm"
                     style={{ borderColor: 'var(--border)', background: 'var(--card)', color: 'var(--foreground)' }}
                   />
@@ -147,7 +179,7 @@ export default function RtoPincodeReportPage() {
                 <button
                   type="button"
                   onClick={() => void downloadSheet()}
-                  disabled={downloading || !report?.byPincode.length}
+                  disabled={downloading || !report?.summary.uniquePincodesWithRto}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white disabled:opacity-50"
                 >
                   {downloading ? (
@@ -202,13 +234,39 @@ export default function RtoPincodeReportPage() {
                 </div>
 
                 <div className="crm-card rounded-2xl overflow-hidden">
-                  <div className="px-4 py-3 border-b flex items-center gap-2" style={{ borderColor: 'var(--border)' }}>
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                    <h2 className="text-sm font-bold" style={{ color: 'var(--foreground)' }}>
-                      Top pincodes by RTO (initiated + delivered)
-                    </h2>
+                  <div
+                    className="px-4 py-3 border-b flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                      <h2 className="text-sm font-bold" style={{ color: 'var(--foreground)' }}>
+                        Top pincodes by RTO (initiated + delivered)
+                      </h2>
+                    </div>
+                    {totalPincodes > 0 && (
+                      <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
+                        Showing{' '}
+                        <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                          {pageStart + 1}–{Math.min(pageStart + report.byPincode.length, totalPincodes)}
+                        </span>{' '}
+                        of{' '}
+                        <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                          {totalPincodes.toLocaleString('en-IN')}
+                        </span>{' '}
+                        pincodes
+                      </p>
+                    )}
                   </div>
-                  <div className="overflow-x-auto">
+                  <div className="overflow-x-auto relative">
+                    {pageLoading && (
+                      <div
+                        className="absolute inset-0 z-10 flex items-center justify-center bg-black/5 dark:bg-black/20"
+                        aria-busy="true"
+                      >
+                        <Loader2 className="w-6 h-6 animate-spin text-purple-500" />
+                      </div>
+                    )}
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-left text-[10px] uppercase tracking-wider" style={{ color: 'var(--foreground-muted)' }}>
@@ -229,7 +287,7 @@ export default function RtoPincodeReportPage() {
                       <tbody>
                         {report.byPincode.length === 0 ? (
                           <tr>
-                            <td colSpan={11} className="px-4 py-8 text-center" style={{ color: 'var(--foreground-muted)' }}>
+                            <td colSpan={12} className="px-4 py-8 text-center" style={{ color: 'var(--foreground-muted)' }}>
                               No RTO initiated or delivered orders in this date range.
                             </td>
                           </tr>
@@ -258,6 +316,65 @@ export default function RtoPincodeReportPage() {
                       </tbody>
                     </table>
                   </div>
+                  {totalPincodes > 0 && (
+                    <div
+                      className="px-4 py-3 border-t flex flex-col sm:flex-row items-center justify-between gap-3"
+                      style={{ borderColor: 'var(--border)' }}
+                    >
+                      <p className="text-xs" style={{ color: 'var(--foreground-muted)' }}>
+                        Page{' '}
+                        <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                          {safePage}
+                        </span>{' '}
+                        of{' '}
+                        <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+                          {totalPages}
+                        </span>
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--foreground-muted)' }}>
+                          Per page
+                          <select
+                            value={pageSize}
+                            onChange={(e) => {
+                              setPageSize(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])
+                              setPage(1)
+                            }}
+                            className="px-2 py-1.5 rounded-lg border text-xs"
+                            style={{
+                              backgroundColor: 'var(--card)',
+                              borderColor: 'var(--border)',
+                              color: 'var(--foreground)',
+                            }}
+                          >
+                            {PAGE_SIZE_OPTIONS.map((n) => (
+                              <option key={n} value={n}>{n}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          disabled={safePage <= 1 || pageLoading}
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border text-xs font-semibold disabled:opacity-40"
+                          style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                        >
+                          <ChevronLeft className="w-4 h-4" />
+                          Previous
+                        </button>
+                        <button
+                          type="button"
+                          disabled={safePage >= totalPages || pageLoading}
+                          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border text-xs font-semibold disabled:opacity-40"
+                          style={{ borderColor: 'var(--border)', color: 'var(--foreground)' }}
+                        >
+                          Next
+                          <ChevronRight className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}

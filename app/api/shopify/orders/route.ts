@@ -157,14 +157,13 @@ export async function GET(_req: NextRequest) {
     // When reading Firestore, any non-empty snapshot is servable; still refresh cache in background if stale
     const sourceIsFresh = readFromFs ? cacheHasData : cacheHasData && cacheClockFresh
 
-    const liveParam = searchParams.get('live') === '1'
-    const liveSync = liveParam || forceRefresh
+    const lightOrderStatus = orderStatusView && searchParams.get('light') === '1'
 
-    // Await Shopify on live polls / refresh; Order Status also kicks a background pull on normal loads.
+    // Never block list responses on Shopify — merge in background (TopBar / webhook also update cache).
     if (cacheHasData) {
-      if (liveSync) {
-        await pullLiveShopifyOrdersIntoSnapshot(50, { force: liveParam || forceRefresh })
-      } else if (orderStatusView) {
+      if (forceRefresh) {
+        await pullLiveShopifyOrdersIntoSnapshot(50, { force: true })
+      } else {
         triggerLiveShopifyPull(50)
       }
     }
@@ -198,31 +197,45 @@ export async function GET(_req: NextRequest) {
       const decorate = (list: any[]) =>
         applyCareAssignmentsToOrders(applyCareTagsToOrders(applyNotesToOrders(list)))
 
-      const phoneEnrichedSource = enrichOrdersWithShiprocketPhones(
-        (await OrderRepository.getCachedOrders()) || [],
-      )
+      const snapshot = (await OrderRepository.getCachedOrders()) || []
+      const phoneEnrichedSource = lightOrderStatus
+        ? snapshot
+        : enrichOrdersWithShiprocketPhones(snapshot)
 
       let airExpressIndex = null
       let shipwayIndex = null
-      if (orderStatusView || logistics === 'air_express') {
+      const needAeIndex =
+        !lightOrderStatus && (orderStatusView || logistics === 'air_express')
+      const needShipwayIndex =
+        !lightOrderStatus && (orderStatusView || logistics === 'shipway')
+      if (needAeIndex || needShipwayIndex) {
         try {
-          const { loadAirExpressMatchIndex } = await import(
-            '@/src/services/orders/airExpressOrderMatch'
-          )
-          airExpressIndex = await loadAirExpressMatchIndex()
+          const loaders: Promise<void>[] = []
+          if (needAeIndex) {
+            loaders.push(
+              import('@/src/services/orders/airExpressOrderMatch').then(async (m) => {
+                airExpressIndex = await m.loadAirExpressMatchIndex()
+              }),
+            )
+          }
+          if (needShipwayIndex) {
+            loaders.push(
+              import('@/src/services/orders/shipwayOrderMatch').then(async (m) => {
+                shipwayIndex = await m.loadShipwayMatchIndex()
+              }),
+            )
+          }
+          await Promise.all(loaders)
         } catch (e) {
-          console.warn('⚠️ Air Express index unavailable:', (e as Error)?.message || e)
+          console.warn('⚠️ Logistics match index unavailable:', (e as Error)?.message || e)
         }
-      }
-      if (orderStatusView || logistics === 'shipway') {
-        try {
-          const { loadShipwayMatchIndex } = await import(
-            '@/src/services/orders/shipwayOrderMatch'
-          )
-          shipwayIndex = await loadShipwayMatchIndex()
-        } catch (e) {
-          console.warn('⚠️ Shipway index unavailable:', (e as Error)?.message || e)
-        }
+      } else if (orderStatusView && lightOrderStatus) {
+        void import('@/src/services/orders/shipwayOrderMatch').then((m) =>
+          m.loadShipwayMatchIndex(),
+        )
+        void import('@/src/services/orders/airExpressOrderMatch').then((m) =>
+          m.loadAirExpressMatchIndex(),
+        )
       }
       const filtersWithAe = { ...filters, airExpressIndex, shipwayIndex }
 
@@ -245,7 +258,6 @@ export async function GET(_req: NextRequest) {
             summary: result.summary,
             couriers: result.couriers,
             channelBreakdown: result.channelBreakdown,
-            tabCounts: await OrderRepository.computeTabCounts(filtersWithAe),
             isOffline,
             syncing: false,
           },

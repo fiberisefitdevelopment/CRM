@@ -31,7 +31,10 @@ export interface ShipwayMatchIndex {
   loadedAt: number
 }
 
-const CACHE_TTL_MS = 60_000
+const CACHE_TTL_MS = 5 * 60_000
+const STALE_OK_MS = 30 * 60_000
+
+let revalidateScheduled = false
 
 let cachedIndex: ShipwayMatchIndex | null = null
 let loadPromise: Promise<ShipwayMatchIndex> | null = null
@@ -140,12 +143,25 @@ async function buildIndex(): Promise<ShipwayMatchIndex> {
   return index
 }
 
+function scheduleShipwayRevalidate() {
+  if (revalidateScheduled || loadPromise) return
+  revalidateScheduled = true
+  void loadShipwayMatchIndex({ force: true }).finally(() => {
+    revalidateScheduled = false
+  })
+}
+
 export async function loadShipwayMatchIndex(options?: {
   force?: boolean
 }): Promise<ShipwayMatchIndex> {
   const now = Date.now()
-  if (!options?.force && cachedIndex && now - cachedIndex.loadedAt < CACHE_TTL_MS) {
-    return cachedIndex
+  if (!options?.force && cachedIndex) {
+    const age = now - cachedIndex.loadedAt
+    if (age < CACHE_TTL_MS) return cachedIndex
+    if (age < STALE_OK_MS) {
+      scheduleShipwayRevalidate()
+      return cachedIndex
+    }
   }
   if (loadPromise) return loadPromise
 

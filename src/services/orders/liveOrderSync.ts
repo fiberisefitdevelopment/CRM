@@ -11,7 +11,7 @@ const SHOP_DOMAIN = process.env.NEXT_PUBLIC_SHOPIFY_SHOP_DOMAIN
 const API_VERSION = process.env.NEXT_PUBLIC_SHOPIFY_API_VERSION || '2024-01'
 const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN
 
-const MIN_INTERVAL_MS = 2_000
+const MIN_INTERVAL_MS = 5_000
 const DEFAULT_LIMIT = 50
 
 let inflight: Promise<any[]> | null = null
