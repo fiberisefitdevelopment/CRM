@@ -1,3 +1,5 @@
+import { generateUuid } from '@/lib/uuid'
+
 const REFRESH_KEY = 'fiberise_refresh_token'
 const DEVICE_KEY = 'fiberise_device_id'
 
@@ -35,12 +37,12 @@ export function getOrCreateDeviceId(): string {
   try {
     let id = localStorage.getItem(DEVICE_KEY)
     if (!id) {
-      id = crypto.randomUUID()
+      id = generateUuid()
       localStorage.setItem(DEVICE_KEY, id)
     }
     return id
   } catch {
-    return crypto.randomUUID()
+    return generateUuid()
   }
 }
 

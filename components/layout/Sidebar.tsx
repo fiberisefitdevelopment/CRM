@@ -22,8 +22,9 @@ import {
   PackageCheck,
   ClipboardList,
   MapPin,
+  Phone,
 } from 'lucide-react'
-import { isCareExecutiveRole } from '@/src/utils/accessControl'
+import { isCareExecutiveRole, isAgvaHealthUser } from '@/src/utils/accessControl'
 import { useAuth } from '@/lib/auth'
 
 const menuItems = [
@@ -42,6 +43,11 @@ const menuItems = [
   { icon: PackageCheck,  label: 'Delivered Orders', href: '/customer-service/delivered-orders' },
   { icon: ClipboardList, label: 'Care Orders', href: '/customer-service/created-orders' },
   { icon: ShieldCheck,   label: 'Audit Logs', href: '/audit-logs' },
+]
+
+const agvaMenuItems = [
+  { icon: Phone, label: 'D&D Calls', href: '/agva/calls' },
+  { icon: ShieldCheck, label: 'Audit Logs', href: '/agva/audit-logs' },
 ]
 
 export function Sidebar() {
@@ -79,7 +85,11 @@ export function Sidebar() {
     }
   }
 
-  const visibleMenuItems = menuItems.filter((item) => {
+  const visibleMenuItems = (() => {
+    if (isAgvaHealthUser(user?.email)) {
+      return agvaMenuItems
+    }
+    return menuItems.filter((item) => {
     if (isCareExecutiveRole(user?.role)) {
       return (
         item.label === 'Order Status' ||
@@ -97,6 +107,7 @@ export function Sidebar() {
     }
     return true
   })
+  })()
 
   const isActive = (href: string) =>
     href === '/' ? pathname === '/' : pathname.startsWith(href)
@@ -125,10 +136,16 @@ export function Sidebar() {
             </div>
             <div className="flex flex-col leading-none">
               <span className="font-extrabold text-sm tracking-tight" style={{ color: 'var(--foreground)' }}>
-                Fiberise Fit
+                {isAgvaHealthUser(user?.email) ? 'Agva Health Tech' : 'Fiberise Fit'}
               </span>
               {user && (
-                <span className="text-[9px] font-bold capitalize mt-0.5 px-1.5 py-0.5 rounded-md bg-purple-500/10 text-purple-500 w-fit">
+                <span
+                  className={`text-[9px] font-bold capitalize mt-0.5 px-1.5 py-0.5 rounded-md w-fit ${
+                    isAgvaHealthUser(user.email)
+                      ? 'bg-teal-500/10 text-teal-600'
+                      : 'bg-purple-500/10 text-purple-500'
+                  }`}
+                >
                   {user.role.replace('_', ' ')}
                 </span>
               )}
@@ -215,7 +232,7 @@ export function Sidebar() {
       </nav>
 
       {/* ── Super Admin IP HUD ── */}
-      {user?.role === 'super_admin' && (
+      {user?.role === 'super_admin' && !isAgvaHealthUser(user.email) && (
         <div className="px-3 py-2">
           {!collapsed ? (
             <div className="p-3 rounded-xl border relative overflow-hidden select-none"

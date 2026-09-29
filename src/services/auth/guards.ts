@@ -3,6 +3,7 @@ import admin from 'firebase-admin'
 import { getFirebaseAdmin } from '@/src/firebase/firebase.config'
 import { getAuthFromRequest } from './getAuth'
 import type { AuthUser } from './types'
+import { isAgvaHealthUser } from '@/src/utils/accessControl'
 
 export class AuthError extends Error {
   status: number
@@ -84,6 +85,15 @@ export async function requireRole(
 ): Promise<AuthUser> {
   const user = await requireAuth(req)
   if (!roles.includes(user.role)) {
+    throw new AuthError('Forbidden', 403)
+  }
+  return user
+}
+
+/** Agva Health Tech workspace — blocks Fiberise CRM users. */
+export async function requireAgvaUser(req: NextRequest | Request): Promise<AuthUser> {
+  const user = await requireAuth(req)
+  if (!isAgvaHealthUser(user.email)) {
     throw new AuthError('Forbidden', 403)
   }
   return user

@@ -46,7 +46,13 @@ export function mapShipwayStatusToShipmentStatus(
 ): string {
   const c = String(code || '').toUpperCase().trim()
   const n = String(name || '').toLowerCase().trim()
-  if (c === 'DEL' || n.includes('delivered')) return 'delivered'
+  if (
+    n.includes('rto') &&
+    (n.includes('delivered') || n.includes('acknowledged') || n.includes('returned to'))
+  ) {
+    return 'rto_delivered'
+  }
+  if (c === 'DEL' || (n.includes('delivered') && !n.includes('rto'))) return 'delivered'
   if (c === 'RTO' || n.includes('rto')) return 'rto'
   if (c === 'OOD' || n.includes('out for delivery')) return 'out_for_delivery'
   if (c === 'INT' || c === 'RAD' || n.includes('in transit') || n.includes('destination hub')) {

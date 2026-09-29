@@ -38,6 +38,7 @@ export { getAuthFromRequest, getBearerToken } from './getAuth'
 export {
   requireAuth,
   requireRole,
+  requireAgvaUser,
   optionalAuth,
   authErrorResponse,
   AuthError,

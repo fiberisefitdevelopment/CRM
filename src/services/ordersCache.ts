@@ -38,6 +38,7 @@ import { orderTrailUsesShipway } from '@/src/utils/shipwayOrder'
 import { isCodOrder } from '@/src/utils/orderPayment'
 import { hasCodConfirmation, resolveCodConfirmationKind } from '@/src/utils/careOrderTags'
 import { lookupCareOrderTag } from '@/src/services/careOrderTagStore'
+import { isRtoDeliveredForAnalytics } from '@/src/services/analytics/rtoByPincode'
 
 export let cachedOrders: any[] | null = null
 export let cacheExpiresAt = 0
@@ -912,7 +913,7 @@ export function getOrderStatusPaginated(
     if (deliveryStatus === 'in_transit' && !isShiprocketInTransitStatus(live)) return false
     if (deliveryStatus === 'out_for_delivery' && status !== 'out_for_delivery') return false
     if (deliveryStatus === 'rto' && !activeRto) return false
-    if (deliveryStatus === 'rto_delivered' && status !== 'rto_delivered') return false
+    if (deliveryStatus === 'rto_delivered' && !isRtoDeliveredForAnalytics(live)) return false
     if (deliveryStatus === 'cancelled' && !isOrderCancelled(live)) return false
     if (
       deliveryStatus === 'not_shipped' &&
@@ -1050,7 +1051,7 @@ export function getOrderStatusPaginated(
       summary.rto++
       summary.values.rto += price
     }
-    if (status === 'rto_delivered') {
+    if (isRtoDeliveredForAnalytics(live)) {
       summary.rtoDelivered++
       summary.values.rtoDelivered += price
     }

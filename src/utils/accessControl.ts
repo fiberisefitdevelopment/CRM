@@ -1,3 +1,17 @@
+/** Agva Health Tech accounts — isolated workspace (no Fiberise CRM data). */
+export const AGVA_HEALTH_HOME = '/agva/calls'
+
+const AGVA_HEALTH_EMAIL_SUFFIX = '@agvahealthtech.com'
+
+const AGVA_ALLOWED_PREFIXES = ['/agva', '/api/auth']
+
+export function isAgvaHealthUser(email?: string | null): boolean {
+  const normalized = String(email || '')
+    .toLowerCase()
+    .trim()
+  return normalized.endsWith(AGVA_HEALTH_EMAIL_SUFFIX)
+}
+
 /** Care executive: Tasks + Delivered Orders + Care-created orders + Order Status. */
 export const CARE_EXEC_HOME = '/customer-service/care-tasks'
 
@@ -50,6 +64,14 @@ export function homePathForRole(role?: string | null): string {
   return isCareExecutiveRole(role) ? CARE_EXEC_HOME : '/orders'
 }
 
+export function homePathForUser(
+  email?: string | null,
+  role?: string | null,
+): string {
+  if (isAgvaHealthUser(email)) return AGVA_HEALTH_HOME
+  return homePathForRole(role)
+}
+
 /** Pages / APIs a care executive may open. Everything else is blocked. */
 export function isPathAllowedForRole(role: string | undefined | null, pathname: string): boolean {
   if (!isCareExecutiveRole(role)) return true
@@ -58,4 +80,27 @@ export function isPathAllowedForRole(role: string | undefined | null, pathname: 
   return CARE_EXEC_ALLOWED_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   )
+}
+
+/** Route + API access for the signed-in user (Agva sandbox overrides role defaults). */
+export function isPathAllowedForUser(
+  email: string | undefined | null,
+  role: string | undefined | null,
+  pathname: string,
+): boolean {
+  if (isAgvaHealthUser(email)) {
+    return AGVA_ALLOWED_PREFIXES.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+    )
+  }
+  return isPathAllowedForRole(role, pathname)
+}
+
+export function isAgvaHealthApiAllowed(pathname: string): boolean {
+  if (pathname === '/api/auth/me') return true
+  if (pathname.startsWith('/api/auth/login')) return true
+  if (pathname.startsWith('/api/auth/logout')) return true
+  if (pathname.startsWith('/api/auth/refresh')) return true
+  if (pathname === '/api/agva' || pathname.startsWith('/api/agva/')) return true
+  return false
 }

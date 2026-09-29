@@ -181,6 +181,8 @@ export interface AuditQueryParams {
   startDate?: string
   endDate?: string
   ipAddress?: string
+  /** When set, only logs whose userEmail ends with this suffix (e.g. @agvahealthtech.com). */
+  emailDomainSuffix?: string
 }
 
 export async function getActionLogsPaginated(params: AuditQueryParams): Promise<{
@@ -263,6 +265,15 @@ export async function getActionLogsPaginated(params: AuditQueryParams): Promise<
           (d.userName || '').toLowerCase().includes(q)
         )
       })
+    }
+
+    if (params.emailDomainSuffix) {
+      const suffix = params.emailDomainSuffix.toLowerCase()
+      allDocs = allDocs.filter((doc) =>
+        String(doc.data().userEmail || '')
+          .toLowerCase()
+          .endsWith(suffix),
+      )
     }
 
     const total = allDocs.length

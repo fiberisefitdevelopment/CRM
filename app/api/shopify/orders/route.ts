@@ -224,6 +224,12 @@ export async function GET(_req: NextRequest) {
           console.warn('⚠️ Logistics match index unavailable:', (e as Error)?.message || e)
         }
       }
+      const shipwayKeyCount = (shipwayIndex as { keys?: Set<string> } | null)?.keys?.size ?? 0
+      if (orderStatusView && needShipwayIndex && shipwayKeyCount === 0) {
+        console.warn(
+          '⚠️ Shipway index empty on Order Status — Not Shipped / RTO counts may be wrong. Verify SHIPWAY_EMAIL and SHIPWAY_LICENSE_KEY on this server.',
+        )
+      }
       const filtersWithAe = { ...filters, airExpressIndex, shipwayIndex }
 
       if (orderStatusView && !returnAll) {
@@ -556,6 +562,17 @@ export async function GET(_req: NextRequest) {
     if (forceRefresh) {
       OrderRepository.expireFirestoreOrdersSnapshot()
       triggerBackgroundSync()
+      // Order Status summary cards need Shiprocket + Shipway enrichment — wait for merge.
+      if (orderStatusView) {
+        const active = OrderRepository.getActiveFetchPromise()
+        if (active) {
+          try {
+            await active
+          } catch {
+            // serve best-effort snapshot below
+          }
+        }
+      }
       if (cacheHasData) return serveCachedResponse()
       return NextResponse.json(
         {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { jwtVerify } from 'jose'
+import { isAgvaHealthApiAllowed, isAgvaHealthUser } from '@/src/utils/accessControl'
 
 function getAccessSecret(): Uint8Array {
   const secret =
@@ -19,25 +20,32 @@ function extractBearer(req: NextRequest): string | null {
   return header.match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || null
 }
 
-async function isValidAccessToken(token: string): Promise<boolean> {
-  if (!token || (token.includes(':') && !token.startsWith('eyJ'))) return false
+async function verifyAccessToken(
+  token: string,
+): Promise<{ valid: boolean; email?: string }> {
+  if (!token || (token.includes(':') && !token.startsWith('eyJ'))) {
+    return { valid: false }
+  }
   try {
     const { payload } = await jwtVerify(token, getAccessSecret(), {
       algorithms: ['HS256'],
     })
     const id = String(payload.sub || '')
     const email = String(payload.email || '')
+      .toLowerCase()
+      .trim()
     const role = String(payload.role || '')
-    if (!id || !email || !role) return false
+    if (!id || !email || !role) return { valid: false }
     const expiresAt =
       typeof payload.expiresAt === 'number'
         ? payload.expiresAt
         : typeof payload.exp === 'number'
           ? payload.exp * 1000
           : 0
-    return Boolean(expiresAt && Date.now() <= expiresAt)
+    if (!expiresAt || Date.now() > expiresAt) return { valid: false }
+    return { valid: true, email }
   } catch {
-    return false
+    return { valid: false }
   }
 }
 
@@ -86,10 +94,18 @@ export async function middleware(req: NextRequest) {
 
   // Logout / me / register require a valid access token (or handle auth themselves)
   const token = extractBearer(req)
-  const valid = token ? await isValidAccessToken(token) : false
+  const verified = token ? await verifyAccessToken(token) : { valid: false as const }
 
-  if (!valid) {
+  if (!verified.valid) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  if (
+    verified.email &&
+    isAgvaHealthUser(verified.email) &&
+    !isAgvaHealthApiAllowed(pathname)
+  ) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   }
 
   return NextResponse.next()
@@ -113,6 +129,8 @@ export const config = {
     '/products/:path*',
     '/user/:path*',
     '/crm/:path*',
+    '/agva',
+    '/agva/:path*',
     '/login',
     '/api/:path*',
   ],

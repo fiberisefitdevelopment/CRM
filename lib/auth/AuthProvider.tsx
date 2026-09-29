@@ -11,9 +11,8 @@ import {
 } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import {
-  homePathForRole,
-  isCareExecutiveRole,
-  isPathAllowedForRole,
+  homePathForUser,
+  isPathAllowedForUser,
 } from '@/src/utils/accessControl'
 import { apiFetch, ensureFreshToken } from './apiFetch'
 import {
@@ -100,7 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (loading) return
     if (pathname === '/login') {
       if (user) {
-        router.replace(homePathForRole(user.role))
+        router.replace(homePathForUser(user.email, user.role))
       }
       return
     }
@@ -110,8 +109,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    if (isCareExecutiveRole(user.role) && !isPathAllowedForRole(user.role, pathname)) {
-      router.replace(homePathForRole(user.role))
+    if (!isPathAllowedForUser(user.email, user.role, pathname)) {
+      router.replace(homePathForUser(user.email, user.role))
     }
   }, [loading, user, pathname, router])
 

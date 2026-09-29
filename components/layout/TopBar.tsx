@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { usePathname } from 'next/navigation'
 import { Heart, Bell, Menu, X, Check, Trash2, ShoppingBag, Sparkles, BellRing, Sun, Moon, Package, Settings2 } from 'lucide-react'
 import { useAuth, apiFetch } from '@/lib/auth'
-import { isCareExecutiveRole, isAdminRole } from '@/src/utils/accessControl'
+import { isCareExecutiveRole, isAdminRole, isAgvaHealthUser } from '@/src/utils/accessControl'
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 
@@ -161,7 +161,7 @@ export function TopBar() {
 
   // ── 3. Silent Shopify Live Polling Listener ───────────────────────────────
   useEffect(() => {
-    if (!user) return
+    if (!user || isAgvaHealthUser(user.email)) return
 
     const checkNewOrders = async (isFirstRun: boolean) => {
       try {
@@ -250,7 +250,7 @@ export function TopBar() {
 
   // ── 3b. Care-task due / overdue notifications ─────────────────────────────
   useEffect(() => {
-    if (!user) return
+    if (!user || isAgvaHealthUser(user.email)) return
     const role = user.role
     const isCare =
       isCareExecutiveRole(role) || isAdminRole(role)
@@ -404,6 +404,7 @@ export function TopBar() {
   }, [])
 
   const unreadCount = notifications.filter((n) => n.unread).length
+  const agvaWorkspace = isAgvaHealthUser(user?.email)
 
   const filteredNotifications =
     categoryFilter === 'all'
@@ -453,8 +454,15 @@ export function TopBar() {
             <Menu className="w-5 h-5" />
           </button>
           <div className="hidden lg:flex items-center gap-2">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
-            <span className="text-xs text-muted font-semibold">Live Sync Active</span>
+            {!agvaWorkspace && (
+              <>
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
+                <span className="text-xs text-muted font-semibold">Live Sync Active</span>
+              </>
+            )}
+            {agvaWorkspace && (
+              <span className="text-xs text-muted font-semibold">Agva workspace</span>
+            )}
           </div>
         </div>
 
@@ -481,13 +489,15 @@ export function TopBar() {
             </div>
           </button>
 
-          {/* ❤️ Favorites */}
-          <button className="text-muted hover:text-theme transition-colors p-2 rounded-lg hover:bg-white/5">
-            <Heart className="w-5 h-5" />
-          </button>
+          {!agvaWorkspace && (
+            <>
+              {/* ❤️ Favorites */}
+              <button className="text-muted hover:text-theme transition-colors p-2 rounded-lg hover:bg-white/5">
+                <Heart className="w-5 h-5" />
+              </button>
 
-          {/* 🔔 LIVE BELL ICON CONTAINER */}
-          <div className="relative" ref={dropdownRef}>
+              {/* 🔔 LIVE BELL ICON CONTAINER */}
+              <div className="relative" ref={dropdownRef}>
             <button
               onClick={() => setShowDropdown(!showDropdown)}
               className={`relative text-muted hover:text-theme transition-all duration-300 p-2 rounded-lg hover:bg-white/5 ${
@@ -638,12 +648,14 @@ export function TopBar() {
               </div>
             )}
           </div>
+            </>
+          )}
 
         </div>
       </header>
 
       {/* ── 🚀 LIVE VIEWPORT ORDER TOAST NOTIFICATION OVERLAY ── */}
-      {activeToast && (
+      {!agvaWorkspace && activeToast && (
         <div className="fixed top-20 right-4 lg:right-6 z-[9999] w-full max-w-sm bg-card-theme border border-purple-500/40 rounded-2xl p-4 shadow-2xl backdrop-blur-md select-none animate-in slide-in-from-right-4 duration-300">
           <div className="flex gap-3.5 items-start">
 

@@ -94,6 +94,17 @@ export async function seedAdminUser(): Promise<void> {
       careExecutive: true,
     })
 
+    const agvaDefaultPassword = 'agva@1234'
+    await seedUserIfMissing('abhi@agvahealthtech.com', agvaDefaultPassword, 'care_executive', {
+      syncRole: true,
+    })
+    await seedUserIfMissing('anoop@agvahealthtech.com', agvaDefaultPassword, 'super_admin', {
+      syncRole: true,
+    })
+    await seedUserIfMissing('hareesh@agvahealthtech.com', agvaDefaultPassword, 'admin', {
+      syncRole: true,
+    })
+
     const migrated = await migrateLegacyCareExecutiveEmails()
     if (migrated > 0) {
       console.log(`🔄 Migrated ${migrated} care records to new executive emails`)
