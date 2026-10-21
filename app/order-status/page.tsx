@@ -61,6 +61,8 @@ import { AirExpressOrderDetails } from '@/components/orders/AirExpressOrderDetai
 import { orderTrailUsesAirExpress } from '@/src/utils/airExpressOrder'
 import { formatOrderPhoneDisplay } from '@/src/utils/orderPhone'
 import { CareExecutiveAssignControl } from '@/components/orders/CareExecutiveAssignControl'
+import { OrderUtmStatus } from '@/components/orders/OrderUtmStatus'
+import type { OrderConversion } from '@/src/utils/orderConversion'
 import { FilterSelect } from '@/components/ui/FilterSelect'
 import { DateRangePicker } from '@/components/ui/DateRangePicker'
 import type { CareOrderTagEntry } from '@/src/utils/careOrderTags'
@@ -280,6 +282,9 @@ function OrderStatusCard({
   relatedClones = [],
   parentOrder = null,
   onOpenRelated,
+  conversion,
+  conversionLoading = false,
+  conversionError = null,
 }: {
   order: OrderRow
   expanded: boolean
@@ -289,6 +294,9 @@ function OrderStatusCard({
   relatedClones?: OrderRow[]
   parentOrder?: OrderRow | null
   onOpenRelated?: (orderId: number) => void
+  conversion?: OrderConversion | null
+  conversionLoading?: boolean
+  conversionError?: string | null
 }) {
   const router = useRouter()
   const [tracking, setTracking] = useState<any>(null)
@@ -581,6 +589,12 @@ function OrderStatusCard({
                 : 'Delayed (ETD today / flagged)'}
             </span>
           )}
+          <OrderUtmStatus
+            tracked={order.source !== 'shiprocket'}
+            conversion={conversion}
+            loading={conversionLoading}
+            error={conversionError}
+          />
         </div>
 
         {liveAlerts.length > 0 && (
@@ -1028,6 +1042,15 @@ const FULFILLMENT_FILTER_OPTIONS = [
   { value: 'cancelled', label: 'Cancelled' },
 ]
 
+const UTM_FILTER_OPTIONS = [
+  { value: 'all', label: 'All UTM status' },
+  { value: 'has_utm', label: 'Has UTM' },
+  { value: 'no_utm', label: 'No UTM' },
+  { value: 'source:instagram', label: 'Instagram' },
+  { value: 'source:facebook', label: 'Facebook' },
+  { value: 'source:google', label: 'Google' },
+]
+
 const DELIVERY_FILTER_OPTIONS = [
   { value: 'all', label: 'All Delivery Status' },
   { value: 'not_shipped', label: 'Not Shipped' },
@@ -1083,6 +1106,9 @@ function isAbortError(err: unknown) {
 
 export default function OrderStatusPage() {
   const [orders, setOrders] = useState<OrderStatusRow[]>([])
+  const [conversions, setConversions] = useState<Record<string, OrderConversion | null>>({})
+  const [conversionLoading, setConversionLoading] = useState(false)
+  const [conversionError, setConversionError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -1134,6 +1160,7 @@ export default function OrderStatusPage() {
   const [paymentStatus, setPaymentStatus] = useState('all')
   const [fulfillmentStatus, setFulfillmentStatus] = useState('all')
   const [deliveryStatus, setDeliveryStatus] = useState('all')
+  const [utmStatus, setUtmStatus] = useState('all')
   const [startDate, setStartDate] = useState(() => getDefaultDateRange().start)
   const [endDate, setEndDate] = useState(() => getDefaultDateRange().end)
 
@@ -1175,6 +1202,7 @@ export default function OrderStatusPage() {
       if (paymentStatus !== 'all') params.set('payment_status', paymentStatus)
       if (fulfillmentStatus !== 'all') params.set('fulfillment', fulfillmentStatus)
       if (deliveryStatus !== 'all') params.set('delivery', deliveryStatus)
+      if (utmStatus !== 'all') params.set('utm', utmStatus)
       if (startDate) params.set('start_date', startDate)
       if (endDate) params.set('end_date', endDate)
       if (force) params.set('refresh', 'true')
@@ -1288,6 +1316,7 @@ export default function OrderStatusPage() {
       paymentStatus,
       fulfillmentStatus,
       deliveryStatus,
+      utmStatus,
       startDate,
       endDate,
     ],
@@ -1296,6 +1325,51 @@ export default function OrderStatusPage() {
   useEffect(() => {
     loadOrders(false)
   }, [loadOrders])
+
+  const conversionsRef = useRef(conversions)
+  conversionsRef.current = conversions
+
+  useEffect(() => {
+    const known = conversionsRef.current
+    const ids = orders
+      .filter((order) => order.source !== 'shiprocket')
+      .map((order) => String(order.id))
+      .filter((id) => !(id in known))
+    if (!ids.length) return
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        setConversionLoading(true)
+        setConversionError(null)
+        const res = await apiFetch('/api/shopify/orders/conversion', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data.error || 'Failed to load UTM status')
+        if (cancelled) return
+        setConversions((prev) => {
+          const next = { ...prev, ...(data.conversions || {}) }
+          for (const id of ids) {
+            if (!(id in next)) next[id] = null
+          }
+          return next
+        })
+      } catch (err: unknown) {
+        if (!cancelled) {
+          setConversionError(err instanceof Error ? err.message : 'Failed to load UTM status')
+        }
+      } finally {
+        if (!cancelled) setConversionLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [orders])
 
   useEffect(() => {
     return () => {
@@ -1331,6 +1405,7 @@ export default function OrderStatusPage() {
     setPaymentStatus('all')
     setFulfillmentStatus('all')
     setDeliveryStatus('all')
+    setUtmStatus('all')
     setStartDate(defaults.start)
     setEndDate(defaults.end)
     resetListForFilterChange()
@@ -1355,6 +1430,7 @@ export default function OrderStatusPage() {
     paymentStatus !== 'all' ||
     fulfillmentStatus !== 'all' ||
     deliveryStatus !== 'all' ||
+    utmStatus !== 'all' ||
     !isLast30Days
 
   const courierOptions = useMemo(
@@ -1635,7 +1711,7 @@ export default function OrderStatusPage() {
                 style={{ backgroundColor: 'var(--background)', borderColor: 'var(--border)', color: 'var(--foreground)' }}
               />
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-8 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9 gap-2">
               <FilterSelect
                 value={channel}
                 onChange={(v) => {
@@ -1690,6 +1766,15 @@ export default function OrderStatusPage() {
                 }}
                 options={DELIVERY_FILTER_OPTIONS}
                 aria-label="Delivery status"
+              />
+              <FilterSelect
+                value={utmStatus}
+                onChange={(v) => {
+                  setUtmStatus(v)
+                  resetListForFilterChange()
+                }}
+                options={UTM_FILTER_OPTIONS}
+                aria-label="UTM status"
               />
               <DateRangePicker
                 className="col-span-2 md:col-span-3 lg:col-span-2"
@@ -1823,6 +1908,9 @@ export default function OrderStatusPage() {
                       relatedClones={relatedClones}
                       parentOrder={parentOrder}
                       onOpenRelated={openRelatedOrder}
+                      conversion={conversions[String(order.id)]}
+                      conversionLoading={conversionLoading && !(String(order.id) in conversions)}
+                      conversionError={String(order.id) in conversions ? null : conversionError}
                       onNoteSaved={(orderId, note) => {
                         setOrders((prev) =>
                           prev.map((o) => (o.id === orderId ? { ...o, note: note || null } : o)),

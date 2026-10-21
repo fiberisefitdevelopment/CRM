@@ -61,7 +61,7 @@ export function roleSatisfiesRequired(
 }
 
 export function homePathForRole(role?: string | null): string {
-  return isCareExecutiveRole(role) ? CARE_EXEC_HOME : '/orders'
+  return isCareExecutiveRole(role) ? CARE_EXEC_HOME : '/order-status'
 }
 
 export function homePathForUser(

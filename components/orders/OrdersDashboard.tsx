@@ -1,7 +1,7 @@
 'use client'
 
 import { apiFetch } from '@/lib/auth'
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { getPaymentLabel, isCodOrder } from '@/src/utils/orderPayment'
 import {
@@ -367,6 +367,7 @@ export function OrdersPanel({
   const PAGE_SIZE_OPTIONS = [20, 50, 100] as const
   const [currentPage, setCurrentPage] = useState<number>(1)
   const [ordersPerPage, setOrdersPerPage] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(20)
+  const [manifestPage, setManifestPage] = useState(1)
   const [totalOrders, setTotalOrders] = useState<number>(0)
   const [totalPages, setTotalPages] = useState<number>(1)
   const [serverTabCounts, setServerTabCounts] = useState<Record<string, number>>({
@@ -766,6 +767,10 @@ export function OrdersPanel({
     sortOrder,
     ordersPerPage,
   ])
+
+  useEffect(() => {
+    setManifestPage(1)
+  }, [ordersPerPage, manifestSubtab])
 
   // Component unmount cleanup
   useEffect(() => {
@@ -1527,9 +1532,28 @@ export function OrdersPanel({
     return sortOrder === 'desc' ? dateB - dateA : dateA - dateB
   })
 
-  // Server-driven pagination metadata
+  // Server-driven pagination metadata (every order tab). Manifests are paged locally.
   const startIndex = (currentPage - 1) * ordersPerPage
   const endIndex = startIndex + ordersPerPage
+  const isManifestTab = currentTab === 'pickups_manifests'
+  const manifestTotalPages = Math.max(1, Math.ceil(manifests.length / ordersPerPage) || 1)
+  const safeManifestPage = Math.min(manifestPage, manifestTotalPages)
+  const pagedManifests = manifests.slice(
+    (safeManifestPage - 1) * ordersPerPage,
+    safeManifestPage * ordersPerPage,
+  )
+  const sectionTotal = isManifestTab ? manifests.length : totalOrders
+  const sectionPages = isManifestTab ? manifestTotalPages : totalPages
+  const sectionPage = isManifestTab ? safeManifestPage : currentPage
+  const sectionStart = sectionTotal === 0 ? 0 : (sectionPage - 1) * ordersPerPage + 1
+  const sectionEnd = isManifestTab
+    ? Math.min(sectionPage * ordersPerPage, manifests.length)
+    : Math.min(endIndex, totalOrders)
+  const goToSectionPage = (page: number) => {
+    const next = Math.min(Math.max(1, page), sectionPages)
+    if (isManifestTab) setManifestPage(next)
+    else setCurrentPage(next)
+  }
 
   return (
     <>
@@ -2155,10 +2179,10 @@ export function OrdersPanel({
           )}
 
           {/* ── Render Tables according to shipping states ── */}
-          <div className="bg-card rounded-3xl border border-white/10 overflow-hidden shadow-2xl backdrop-blur-2xl relative">
+          <div className="bg-card rounded-2xl border border-white/10 shadow-sm relative overflow-hidden">
             {/* Page transition overlay */}
             {pageLoading && (
-              <div className="absolute inset-0 bg-[#07090e]/60 backdrop-blur-sm z-10 flex items-center justify-center rounded-3xl">
+              <div className="absolute inset-0 bg-[#07090e]/60 backdrop-blur-sm z-10 flex items-center justify-center rounded-2xl">
                 <div className="flex items-center gap-3 bg-white/5 border border-white/10 rounded-2xl px-5 py-3">
                   <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
                   <span className="text-sm text-white/70 font-medium">Loading page {currentPage}...</span>
@@ -2257,7 +2281,7 @@ export function OrdersPanel({
               </div>
             ) : (
               <>
-                <div className="overflow-x-auto">
+                <div className="overflow-x-auto rounded-t-2xl">
                   <table className="min-w-full text-sm table-auto border-collapse">
                   
                   {/* Custom headers dynamically rendered per tab with exact min-widths */}
@@ -2376,7 +2400,7 @@ export function OrdersPanel({
                   <tbody className="divide-y divide-white/10">
                     {/* Render Pickups & Manifests Mock DB separately */}
                     {currentTab === 'pickups_manifests' ? (
-                      manifests.map((m) => (
+                      pagedManifests.map((m) => (
                         <tr key={m.id} className="hover:bg-white/5 transition-all text-white/90 align-top">
                           <td className="px-6 py-4 font-bold text-purple-400 hover:text-purple-300">
                             {m.id}
@@ -3184,99 +3208,21 @@ export function OrdersPanel({
                 </table>
               </div>
               
-              {/* Pagination Controls */}
-              {totalOrders > 0 && (
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6 pt-4 border-t border-white/10 px-2 select-none">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-                    <p className="text-xs text-white/50 font-normal">
-                      Showing <span className="font-bold text-white">{totalOrders === 0 ? 0 : startIndex + 1}</span> to{' '}
-                      <span className="font-bold text-white">{Math.min(endIndex, totalOrders)}</span> of{' '}
-                      <span className="font-bold text-white">{totalOrders}</span> orders
-                    </p>
-                    <label className="inline-flex items-center gap-2 text-xs text-white/50">
-                      <span>Per page</span>
-                      <select
-                        value={ordersPerPage}
-                        onChange={(e) =>
-                          setOrdersPerPage(Number(e.target.value) as (typeof PAGE_SIZE_OPTIONS)[number])
-                        }
-                        className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80"
-                      >
-                        {PAGE_SIZE_OPTIONS.map((n) => (
-                          <option key={n} value={n}>
-                            {n}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-
-                  {totalPages > 1 && (
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setCurrentPage(1)}
-                        disabled={currentPage === 1}
-                        className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                      >
-                        First
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-                        disabled={currentPage === 1}
-                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                      >
-                        Prev
-                      </button>
-
-                      {Array.from({ length: totalPages }).map((_, i) => {
-                        const pageNum = i + 1
-                        if (pageNum === 1 || pageNum === totalPages || Math.abs(pageNum - currentPage) <= 1) {
-                          return (
-                            <button
-                              key={pageNum}
-                              type="button"
-                              onClick={() => setCurrentPage(pageNum)}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                                currentPage === pageNum
-                                  ? 'bg-purple-600 border border-purple-500 text-white shadow-lg shadow-purple-500/20'
-                                  : 'border border-white/10 bg-white/5 text-white/80 hover:bg-white/10 hover:text-white'
-                              }`}
-                            >
-                              {pageNum}
-                            </button>
-                          )
-                        }
-                        if (pageNum === 2 || pageNum === totalPages - 1) {
-                          return (
-                            <span key={pageNum} className="text-white/40 text-xs px-1 select-none">
-                              ...
-                            </span>
-                          )
-                        }
-                        return null
-                      })}
-
-                      <button
-                        type="button"
-                        onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))}
-                        disabled={currentPage === totalPages}
-                        className="px-3 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                      >
-                        Next
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCurrentPage(totalPages)}
-                        disabled={currentPage === totalPages}
-                        className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-white/5 text-xs text-white/80 hover:bg-white/10 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/5 transition-all font-semibold"
-                      >
-                        Last
-                      </button>
-                    </div>
-                  )}
-                </div>
+              {sectionTotal > 0 && (
+                <OrdersSectionPager
+                  start={sectionStart}
+                  end={sectionEnd}
+                  total={sectionTotal}
+                  noun={isManifestTab ? 'records' : 'orders'}
+                  page={sectionPage}
+                  totalPages={sectionPages}
+                  pageSize={ordersPerPage}
+                  pageSizeOptions={PAGE_SIZE_OPTIONS}
+                  onPageSizeChange={(n) =>
+                    setOrdersPerPage(n as (typeof PAGE_SIZE_OPTIONS)[number])
+                  }
+                  onPageChange={goToSectionPage}
+                />
               )}
             </>
           )}
@@ -3541,9 +3487,9 @@ export function OrdersPanel({
                       type="button"
                       disabled={actionLoadingOrderId === activeCourierOrder.id}
                       onClick={() => openShipRates('shiprocket', activeCourierOrder)}
-                      className="mt-auto inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white disabled:opacity-50"
+                      className="ship-cta mt-auto w-full min-h-10 px-3 py-2.5 rounded-xl bg-purple-700 hover:bg-purple-800 text-[13px] font-semibold leading-tight tracking-tight disabled:opacity-50"
                     >
-                      <Truck className="w-3.5 h-3.5" />
+                      <Truck className="w-4 h-4 shrink-0" />
                       View Shiprocket rates
                     </button>
                   </div>
@@ -3565,9 +3511,9 @@ export function OrdersPanel({
                       type="button"
                       disabled={actionLoadingOrderId === activeCourierOrder.id}
                       onClick={() => openShipRates('air_express', activeCourierOrder)}
-                      className="mt-auto inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-xs font-bold text-white disabled:opacity-50"
+                      className="ship-cta mt-auto w-full min-h-10 px-3 py-2.5 rounded-xl bg-sky-700 hover:bg-sky-800 text-[13px] font-semibold leading-tight tracking-tight disabled:opacity-50"
                     >
-                      <Plane className="w-3.5 h-3.5" />
+                      <Plane className="w-4 h-4 shrink-0" />
                       View Air Express options
                     </button>
                   </div>
@@ -3589,9 +3535,9 @@ export function OrdersPanel({
                       type="button"
                       disabled={actionLoadingOrderId === activeCourierOrder.id}
                       onClick={() => openShipRates('shipway', activeCourierOrder)}
-                      className="mt-auto inline-flex items-center justify-center gap-2 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-xs font-bold text-white disabled:opacity-50"
+                      className="ship-cta mt-auto w-full min-h-10 px-3 py-2.5 rounded-xl bg-orange-700 hover:bg-orange-800 text-[13px] font-semibold leading-tight tracking-tight disabled:opacity-50"
                     >
-                      <Package className="w-3.5 h-3.5" />
+                      <Package className="w-4 h-4 shrink-0" />
                       View Shipway rates
                     </button>
                   </div>
@@ -3724,12 +3670,12 @@ export function OrdersPanel({
                       Boolean(shipRatesError)
                     }
                     onClick={handleConfirmSelectedShip}
-                    className={`flex-1 inline-flex items-center justify-center gap-2 py-2.5 rounded-xl text-xs font-bold text-white disabled:opacity-50 ${
+                    className={`ship-cta flex-1 min-h-10 px-3 py-2.5 rounded-xl text-[13px] font-semibold disabled:opacity-50 ${
                       shipProviderAccent(shipSelectedProvider) === 'sky'
-                        ? 'bg-sky-600 hover:bg-sky-500'
+                        ? 'bg-sky-700 hover:bg-sky-800'
                         : shipProviderAccent(shipSelectedProvider) === 'orange'
-                          ? 'bg-orange-600 hover:bg-orange-500'
-                          : 'bg-purple-600 hover:bg-purple-500'
+                          ? 'bg-orange-700 hover:bg-orange-800'
+                          : 'bg-purple-700 hover:bg-purple-800'
                     }`}
                   >
                     {shipLoadingProvider ? (
@@ -4223,6 +4169,160 @@ export function OrdersPanel({
       )}
     </>
   )
+}
+
+function OrdersSectionPager({
+  start,
+  end,
+  total,
+  noun,
+  page,
+  totalPages,
+  pageSize,
+  pageSizeOptions,
+  onPageSizeChange,
+  onPageChange,
+}: {
+  start: number
+  end: number
+  total: number
+  noun: string
+  page: number
+  totalPages: number
+  pageSize: number
+  pageSizeOptions: readonly number[]
+  onPageSizeChange: (size: number) => void
+  onPageChange: (page: number) => void
+}) {
+  const items = pagerItems(page, totalPages)
+  const controlStyle = {
+    backgroundColor: 'var(--card)',
+    borderColor: 'var(--border)',
+    color: 'var(--foreground)',
+  } as const
+
+  return (
+    <div
+      className="flex flex-col gap-3 border-t px-5 py-4 lg:flex-row lg:items-center lg:justify-between"
+      style={{ borderColor: 'var(--border)', backgroundColor: 'var(--card)' }}
+    >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <p className="text-xs leading-none" style={{ color: 'var(--foreground-muted)' }}>
+          Showing{' '}
+          <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+            {start}
+          </span>{' '}
+          to{' '}
+          <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+            {end}
+          </span>{' '}
+          of{' '}
+          <span className="font-semibold" style={{ color: 'var(--foreground)' }}>
+            {total.toLocaleString('en-IN')}
+          </span>{' '}
+          {noun}
+        </p>
+        <label className="inline-flex items-center gap-2 text-xs" style={{ color: 'var(--foreground-muted)' }}>
+          <span>Per page</span>
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            className="h-8 rounded-lg border px-2 text-xs font-semibold outline-none"
+            style={controlStyle}
+          >
+            {pageSizeOptions.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <PagerButton disabled={page <= 1} onClick={() => onPageChange(1)} style={controlStyle}>
+          First
+        </PagerButton>
+        <PagerButton disabled={page <= 1} onClick={() => onPageChange(page - 1)} style={controlStyle}>
+          Prev
+        </PagerButton>
+        {items.map((item, idx) =>
+          item === 'ellipsis' ? (
+            <span
+              key={`ellipsis-${idx}`}
+              className="inline-flex h-8 min-w-8 items-center justify-center text-xs"
+              style={{ color: 'var(--foreground-muted)' }}
+            >
+              …
+            </span>
+          ) : (
+            <button
+              key={item}
+              type="button"
+              onClick={() => onPageChange(item)}
+              className="inline-flex h-8 min-w-8 items-center justify-center rounded-lg border px-2 text-xs font-semibold"
+              style={
+                item === page
+                  ? { backgroundColor: '#7C3AED', borderColor: '#7C3AED', color: '#ffffff' }
+                  : controlStyle
+              }
+            >
+              {item}
+            </button>
+          ),
+        )}
+        <PagerButton
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+          style={controlStyle}
+        >
+          Next
+        </PagerButton>
+        <PagerButton
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(totalPages)}
+          style={controlStyle}
+        >
+          Last
+        </PagerButton>
+      </div>
+    </div>
+  )
+}
+
+function PagerButton({
+  children,
+  disabled,
+  onClick,
+  style,
+}: {
+  children: ReactNode
+  disabled: boolean
+  onClick: () => void
+  style: CSSProperties
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="inline-flex h-8 items-center justify-center rounded-lg border px-2.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-40"
+      style={style}
+    >
+      {children}
+    </button>
+  )
+}
+
+function pagerItems(current: number, totalPages: number): Array<number | 'ellipsis'> {
+  const pages = new Set<number>([1, totalPages, current - 1, current, current + 1])
+  const visible = [...pages].filter((p) => p >= 1 && p <= totalPages).sort((a, b) => a - b)
+  const items: Array<number | 'ellipsis'> = []
+  visible.forEach((p, idx) => {
+    if (idx > 0 && p - visible[idx - 1] > 1) items.push('ellipsis')
+    items.push(p)
+  })
+  return items.length ? items : [1]
 }
 
 function tabName(tab: string): string {

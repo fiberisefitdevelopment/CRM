@@ -125,6 +125,7 @@ export async function GET(_req: NextRequest) {
         : logisticsRaw === 'shipway'
           ? 'shipway'
           : 'all'
+    const utmFilter = (searchParams.get('utm') || 'all').toLowerCase()
 
     const filters = {
       tab,
@@ -233,11 +234,43 @@ export async function GET(_req: NextRequest) {
       const filtersWithAe = { ...filters, airExpressIndex, shipwayIndex }
 
       if (orderStatusView && !returnAll) {
-        const result = await OrderRepository.getOrderStatusPaginated(page, perPage, {
+        const statusFilters = {
           ...filtersWithAe,
           deliveryStatus: deliveryStatus as any,
           fulfillmentStatusUi: fulfillmentStatus,
           paymentStatusUi: paymentStatusUi || paymentType,
+        }
+        let utmOrderIds: Set<string> | undefined
+        if (utmFilter !== 'all') {
+          const candidates = await OrderRepository.getOrderStatusPaginated(
+            1,
+            0,
+            statusFilters,
+            phoneEnrichedSource,
+          )
+          const shopifyIds = candidates.orders
+            .filter((order) => order?.source !== 'shiprocket')
+            .map((order) => String(order.id))
+          const { fetchOrderConversions } = await import(
+            '@/src/services/orders/shopifyCustomerJourney'
+          )
+          const conversions = await fetchOrderConversions(shopifyIds)
+          utmOrderIds = new Set()
+          for (const [id, conversion] of Object.entries(conversions)) {
+            if (!conversion || conversion.ready === false) continue
+            const source = conversion.statusLabel.toLowerCase()
+            const matches =
+              (utmFilter === 'has_utm' && conversion.viaUtm) ||
+              (utmFilter === 'no_utm' && !conversion.viaUtm) ||
+              (utmFilter.startsWith('source:') &&
+                conversion.viaUtm &&
+                source === utmFilter.slice('source:'.length))
+            if (matches) utmOrderIds.add(id)
+          }
+        }
+        const result = await OrderRepository.getOrderStatusPaginated(page, perPage, {
+          ...statusFilters,
+          utmOrderIds,
         }, phoneEnrichedSource)
         return NextResponse.json(
           {

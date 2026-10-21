@@ -769,6 +769,8 @@ export interface OrderStatusListFilters extends OrderFilters {
   deliveryStatus?: OrderStatusDeliveryFilter
   fulfillmentStatusUi?: string
   paymentStatusUi?: string
+  /** When set, only these order ids stay in the list. Summary cards stay unfiltered. */
+  utmOrderIds?: Set<string>
 }
 
 function orderPrice(order: any): number {
@@ -905,6 +907,7 @@ export function getOrderStatusPaginated(
       return false
     }
     if (filters.courier && filters.courier !== 'all' && company !== filters.courier) return false
+    if (filters.utmOrderIds && !filters.utmOrderIds.has(String(o.id))) return false
     if (paymentStatus !== 'all' && pay.toLowerCase() !== paymentStatus) return false
     if (fulfillmentStatus !== 'all' && status !== fulfillmentStatus) return false
 
